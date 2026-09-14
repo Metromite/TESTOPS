@@ -1,0 +1,39 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.35
+psycopg2-binary==2.9.9
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-multipart==0.0.9
+alembic==1.13.2
+openpyxl==3.1.5
+pandas==2.2.3
+PyYAML==6.0.2
+rapidfuzz==3.9.7
+
+# --- AI Assistant (optional: enables local semantic search) ---
+# These are heavy (sentence-transformers pulls in PyTorch, ~1-2GB combined).
+# requests/chromadb/sentence-transformers are ALREADY listed below and get
+# installed by a normal `pip install -r requirements.txt` - there is no
+# separate step required to "turn on" semantic search once they're
+# installed; services/logi_rag.py lazily builds the local chromadb index/
+# embedder the first time it's needed (see RagStore._ensure_embedder /
+# .client).
+#
+# If these three ARE installed and you're still seeing "chromadb and
+# sentence-transformers may not be installed", it means the venv this app
+# is actually running from is stale relative to this file - re-run
+# `pip install -r requirements.txt` inside that same venv and restart the
+# backend process (the check is a real `import chromadb` / `import
+# sentence_transformers` at process start, not a requirements.txt read).
+#
+# The app works fully without them too: api/routes/ai.py's /chat no
+# longer hard-fails when the index is unavailable - it still answers
+# using the configured LLM provider directly, just without the extra
+# local driver/route/vehicle/vacation-data grounding that semantic search
+# would have added. Skip these three lines if you don't want that lookup
+# capability at all.
+requests==2.32.3

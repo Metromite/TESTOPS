@@ -1,0 +1,1 @@
+Validation retry fix: after the first Save attempt, validation should be recalculated from the current form values on every input/change so the error message contains only fields that are still missing. Save must remain enabled while validation errors are present and must proceed once all required fields are valid.

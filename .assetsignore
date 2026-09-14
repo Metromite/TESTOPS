@@ -1,0 +1,17 @@
+.git/
+.github/
+backend/
+frontend/
+node_modules/
+.wrangler/
+Dockerfile
+.dockerignore
+.gitignore
+wrangler.toml
+wrangler.json
+wrangler.jsonc
+.assetsignore
+*.b64
+_debug-save.txt
+_test_write.txt
+_validation_retry_fix.txt

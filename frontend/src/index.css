@@ -1,0 +1,359 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------
+   NOTE ON THIS FILE
+   This app is mid-migration to the Tailwind/HeroUI/shadcn/Glass* design
+   system (see src/design-system/). Everything below the Tailwind
+   directives is the ORIGINAL hand-written stylesheet the app already
+   shipped with - it's left in place, untouched in behavior, because
+   pages that haven't been migrated yet (.glass-card, .btn, .nav-link,
+   .data-table, .badge, ...) still depend on these exact class names and
+   still read the same --navy/--blue/--glass-* CSS variables. New pages
+   should reach for the Glass* components + Tailwind utilities instead of
+   adding to this file.
+--------------------------------------------------------------------- */
+
+* { box-sizing: border-box; }
+/*
+ * BUGFIX (background changes color partway down the page): this used to
+ * be `height: 100%` on html/body/#root, which pins body's own box to
+ * exactly one viewport tall. Any page taller than that (nearly every
+ * page here) had real content overflowing past the bottom edge of
+ * body's box - past that point you're scrolling over whatever's behind
+ * body, which is exactly the "dark block suddenly appears, custom
+ * background disappears" symptom. min-height still guarantees full
+ * coverage on short pages but lets the box grow to match real content
+ * height on tall ones.
+ *
+ * Full-viewport coverage on SHORT pages (shorter than one viewport) is
+ * handled by an existing browser mechanism, not by anything here: when
+ * <html> has no background of its own, browsers automatically extend
+ * <body>'s background to paint the entire canvas/viewport, however
+ * short body's own box actually is (CSS Backgrounds spec section 3.3).
+ * An earlier version of this fix tried to "help" by also setting an
+ * explicit background directly on <html> - that backfired, because it
+ * disabled that automatic propagation (it only applies while html's own
+ * background is transparent) and replaced it with a flatter fallback
+ * that didn't match body's gradient, producing a visible seam right at
+ * body's content edge on any short page. Leaving html's background
+ * alone and single-sourcing it on body is what actually fixes this.
+ */
+/*
+ * BUGFIX (background changes color partway down short pages): the
+ * min-height:100% attempt above didn't actually work - confirmed by
+ * measuring live computed styles on a short page: <html> resolved to
+ * the full 900px viewport (percentages against the viewport/initial
+ * containing block are always definite), but <body> only resolved to
+ * 406px (its actual content height), because percentage heights need
+ * a DEFINITE height somewhere up the ancestor chain to resolve against,
+ * and html's own `height` property computes to 'auto' (only min-height
+ * was set on it too) - so body's min-height:100% had nothing definite
+ * to be 100% of and effectively did nothing. The remaining ~500px of
+ * viewport below body's short box then painted with html's automatic
+ * canvas-propagated background-color (flat, no gradient) instead of
+ * body's actual gradient, which is exactly the visible seam. Viewport
+ * units don't have this problem - 100vh always resolves against the
+ * viewport directly, no ancestor chain involved - so body reliably
+ * covers at least the full viewport (and still grows taller for
+ * content that exceeds it, since this is min-height not height).
+ */
+html, body { min-height: 100vh; margin: 0; }
+#root { min-height: 100vh; }
+
+/* Accessibility quality floor */
+:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; border-radius: var(--radius-sm); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+}
+
+/*
+ * Page-transition fade, used by ProtectedLayout.tsx instead of a Framer
+ * Motion AnimatePresence/motion.div (whose exit/enter handshake was
+ * stalling and leaving pages stuck invisible - see the comment in that
+ * file). animation-fill-mode: forwards guarantees the element ends at
+ * opacity: 1 even if something interrupts the animation partway - it
+ * cannot get stuck invisible the way the JS-driven version could.
+ */
+@keyframes page-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.page-fade-in {
+  animation: page-fade-in 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+body {
+  font-family: var(--font);
+  font-weight: 500;
+  background: var(--navy);
+  background-image:
+    radial-gradient(at 15% 20%, rgba(40,120,214,0.20) 0px, transparent 50%),
+    radial-gradient(at 85% 10%, rgba(0,212,168,0.14) 0px, transparent 45%),
+    radial-gradient(at 50% 90%, rgba(124,58,237,0.10) 0px, transparent 50%);
+  background-attachment: fixed;
+  color: var(--text);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+a { color: inherit; }
+
+/* --- Top navigation: .top-nav is now a bare hook class (styling comes
+   from Tailwind utility classes on GlassSidebarShell itself) kept alive
+   only so kiosk/executive mode's `.top-nav { display: none }` rules below
+   still have something to select - removing it would silently break the
+   nav-hiding behavior in both modes. --- */
+.top-nav { /* intentionally no layout/visual properties here - see note above */ }
+
+.nav-dropdown-panel {
+  background: color-mix(in srgb, var(--navy2) 90%, transparent);
+  backdrop-filter: blur(32px) saturate(200%);
+  -webkit-backdrop-filter: blur(32px) saturate(200%);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elevation-2);
+}
+
+.theme-switch {
+  display: flex;
+  gap: 6px;
+  background: var(--navy3);
+  border-radius: var(--radius-lg);
+  padding: 4px;
+}
+.theme-switch button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 12px;
+}
+.theme-switch button.active { background: var(--blue); color: #fff; }
+
+/* --- Glass card, the app's signature surface (iOS-inspired: strong blur, saturation boost, soft inner highlight) --- */
+.glass-card {
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elevation-1), var(--glass-highlight);
+  padding: 20px;
+}
+/* ITEM PASS 3 (Glass UI, round 2): the specular sheen that makes this read
+   as "Apple Liquid Glass" rather than a generic frosted box - a soft
+   highlight catching the surface from the upper-left, like light hitting
+   curved glass/acrylic. Pure CSS gradient (no image asset, no external
+   package - see note in tokens.ts about why an actual open-source glass
+   package couldn't be npm-installed in this sandbox).
+   DELIBERATELY NOT using `isolation: isolate` or a forced z-index on
+   `.glass-card`'s children here: several dropdowns app-wide (the
+   Salesman/Experience autocomplete suggestion lists) render inline with
+   `z-index: 9999` rather than through a portal, and a new stacking
+   context at the card boundary would cap/trap that z-index inside this
+   card instead of letting it win against later page siblings - exactly
+   the dropdown-behind-glass regression the spec explicitly says not to
+   reintroduce. Relying on plain DOM paint order instead: this ::before is
+   the FIRST thing painted inside the card (no z-index needed at all for
+   it to sit under every real child), and `pointer-events: none` keeps it
+   out of the way of clicks/hover on real content. */
+.glass-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--glass-sheen);
+  pointer-events: none;
+}
+
+/* ITEM PASS 6 (Part 5/6, glass surface hierarchy): Level 2 (nav/persistent
+   chrome) and Level 3 (modals/dropdowns) - same visual language as
+   `.glass-card` (Level 1: border, sheen, highlight, elevation shadow all
+   shared/unchanged) but reading the `-2`/`-3` blur+alpha tokens from
+   tokens.ts instead, so these read as progressively MORE frosted/opaque
+   than a plain card, matching real layered-glass depth rather than one
+   flat translucency reused everywhere. Every consumer (GlassSidebar's top
+   nav, GlassModal, MultiSelectSlicer's portaled dropdown panel) swaps
+   its OWN background/backdrop-filter declaration to point at these two
+   classes below instead of duplicating alpha/blur values inline per
+   component - single source of truth stays in tokens.ts either way. */
+.glass-level-2 {
+  position: relative;
+  background: var(--glass-bg-2);
+  backdrop-filter: blur(var(--glass-blur-2)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--glass-blur-2)) saturate(180%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--elevation-1), var(--glass-highlight);
+}
+.glass-level-3 {
+  position: relative;
+  background: var(--glass-bg-3);
+  backdrop-filter: blur(var(--glass-blur-3)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--glass-blur-3)) saturate(180%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--elevation-2), var(--glass-highlight);
+}
+.glass-level-2::before, .glass-level-3::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--glass-sheen);
+  pointer-events: none;
+}
+
+/* ITEM 7: gentle idle-state float for the LOGI mascot launcher button
+   (components/FloatingAiWidget.tsx). Respects prefers-reduced-motion via
+   the global rule above, which zeroes animation-duration for everyone. */
+@keyframes logi-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+.logi-float { animation: logi-float 3.2s ease-in-out infinite; }
+
+.page { max-width: 1440px; margin: 0 auto; padding: 24px; }
+@media (min-width: 1800px) { .page { max-width: 1680px; padding: 28px 32px; } }
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.kpi-card { text-align: left; cursor: pointer; transition: transform 0.18s cubic-bezier(0.16,1,0.3,1), box-shadow 0.18s ease; }
+.kpi-card:hover { transform: translateY(-3px); box-shadow: var(--elevation-2), var(--glass-highlight); }
+.kpi-card .value { font-family: var(--font-mono); font-size: 28px; font-weight: 700; color: var(--teal); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.kpi-card .label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-top: 6px; }
+
+table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: auto; font-weight: 500; }
+table.data-table th {
+  text-align: left; padding: 11px 14px; color: var(--muted); font-size: 11.5px;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border); font-weight: 700; white-space: nowrap;
+}
+table.data-table td { padding: 10px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; font-weight: 500; transition: background-color 0.1s ease; }
+table.data-table tr:nth-child(even) { background: var(--row-alt); }
+table.data-table tr:hover { background: var(--row-hover); }
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: var(--radius-md); }
+
+input, select, button.btn {
+  font-family: var(--font);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--navy3);
+  color: var(--text);
+  padding: 9px 14px;
+  font-size: 14px;
+  transition: transform 0.15s cubic-bezier(0.16,1,0.3,1), box-shadow 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+input:focus-visible, select:focus-visible { border-color: var(--cyan); }
+
+/*
+ * Date icon visibility fix: the native calendar-picker icon defaults to
+ * a near-black glyph, which is close to invisible against this app's
+ * dark navy inputs (and blends into a light-mode glass card too). Invert
+ * it to a bright, legible icon and give it a small hit-area/hover state
+ * so it reads clearly as an interactive control in both themes.
+ */
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(1.6);
+  opacity: 0.85;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 3px;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+  background-color: rgba(255, 255, 255, 0.12);
+}
+[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.35) brightness(0.9);
+}
+button.btn {
+  background: var(--blue);
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+}
+button.btn:hover { background: var(--blue2); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.18); }
+button.btn:active { transform: scale(0.97) translateY(0); }
+button.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+
+.badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+.badge.excluded { background: rgba(239,68,68,0.12); color: var(--red); border-color: rgba(239,68,68,0.25); }
+.badge.ok { background: rgba(34,197,94,0.12); color: var(--green); border-color: rgba(34,197,94,0.25); }
+
+.login-wrap {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@keyframes modal-pop-in {
+  from { opacity: 0; transform: scale(0.92) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.modal-pop { animation: modal-pop-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.login-card { width: 340px; }
+.login-card h1 { font-size: 20px; margin: 0 0 4px; }
+.login-card p { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+.login-card label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 6px; }
+.login-card .field { margin-bottom: 14px; }
+.login-card input { width: 100%; }
+.error-text { color: var(--red); font-size: 13px; margin-top: 8px; }
+
+/* ---------------------------------------------------------------------
+   Operations Control Center (Phase 1 - see ControlCenter.tsx header for
+   what's built vs. explicitly deferred)
+--------------------------------------------------------------------- */
+body.occ-kiosk-active .top-nav,
+body.occ-kiosk-active .floating-ai-widget {
+  display: none !important;
+}
+
+.occ-root { min-height: 100%; }
+.occ-kiosk { position: fixed; inset: 0; background: var(--navy); z-index: 500; overflow: auto; }
+.occ-cursor-hidden, .occ-cursor-hidden * { cursor: none !important; }
+
+.occ-kiosk-stage { padding: 24px; }
+.occ-preview-stage { padding: 0 24px 24px; }
+
+.occ-kiosk-topbar {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 10px 4px 18px; font-size: 20px; font-weight: 700; color: var(--text);
+}
+
+@keyframes occ-slide-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.occ-slide { animation: occ-slide-in 0.5s ease; }
+
+.occ-executive { font-size: 1.35em; }
+.occ-executive .top-nav { display: none !important; }
+.occ-executive .glass-card { padding: 28px; }
+
+.occ-exit-overlay {
+  position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.55); backdrop-filter: blur(4px);
+}
+
+/* round -11: solid alternative to .glass-card for cards with "Glass
+   transparency" turned off in their style popover */
+.occ-card-solid { background: var(--navy3); border: 1px solid var(--border); }

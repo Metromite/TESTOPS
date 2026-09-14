@@ -1,0 +1,44 @@
+name: Verify Price Change Portal
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'index.html'
+      - '.github/workflows/build-corrected-index.yml'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify portal
+        run: |
+          test -f index.html
+          grep -q 'id="loginBtn"' index.html
+          grep -q 'dispatchops_driver_login' index.html
+          if grep -q 'Price Portal validation retry controller' index.html; then
+            echo 'ERROR: legacy validation controller is present'
+            exit 1
+          fi
+          grep -q 'async function saveVisit' index.html
+          grep -q 'Please complete the following before saving' index.html
+          echo 'Portal verification passed: login preserved and validation is handled by saveVisit.'
+
+      - name: Package portal
+        run: |
+          mkdir -p price-change-portal
+          cp index.html price-change-portal/index.html
+          cd price-change-portal
+          zip -9 ../PriceChangePortal-index.zip index.html
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PriceChangePortal-index
+          path: PriceChangePortal-index.zip
+          retention-days: 7

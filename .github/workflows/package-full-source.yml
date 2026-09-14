@@ -1,0 +1,28 @@
+name: Package Full Price Change Portal
+
+on:
+  push:
+    paths:
+      - 'frontend/index.html'
+      - '.github/workflows/package-full-source.yml'
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout full repository
+        uses: actions/checkout@v4
+      - name: Verify frontend source
+        run: test -f frontend/package.json && test -f frontend/src/main.tsx
+      - name: Package full source
+        run: |
+          zip -r -9 PriceChangePortal-FULL.zip . -x '.git/*' 'frontend/node_modules/*' 'backend/.venv/*' '__pycache__/*' '*.pyc'
+      - name: Upload full source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PriceChangePortal-FULL
+          path: PriceChangePortal-FULL.zip
+          retention-days: 7
