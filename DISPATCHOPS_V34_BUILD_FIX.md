@@ -1,0 +1,1 @@
+v34: Corrected BulkOrganizer drag/drop event typing. The previous v33 edit incorrectly converted some event handlers to the global DOM Event type and renamed a local parameter inconsistently. Handlers now use React.DragEvent so dataTransfer is typed correctly. No database, API, business logic, or workflow changes.
