@@ -1,0 +1,11 @@
+# Price Change V9 fixes
+- Price Change sections collapse/expand and default collapsed.
+- Save List now persists the list and all currently edited items together.
+- Campaign delete RPC now explicitly deletes child visit/item/assignment rows first, allowing the first/older list to be deleted safely.
+- Added Driver Activity + Recent Updates panel.
+- Price Change Manager header uses the exact attached cart logo asset `frontend/public/price-change-logo.png`.
+- Driver portal uses the exact attached logo image and no longer uses the alternate SVG logo.
+- Driver initial password is `driver` + driver code, e.g. T046 => `driverT046`.
+- Location locked assignments render as disabled/read-only and backend remains authoritative.
+- Signature clear resets the actual canvas surface.
+- Restored execute permission for the admin delete RPC on the live Secondary project.
