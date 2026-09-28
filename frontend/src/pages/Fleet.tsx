@@ -481,7 +481,7 @@ function VehiclesPanel({ meta }: { meta: MetaOptions }) {
             </select>
           </Field>
           <Field label="Capacity (tons)"><input type="number" min="0" step="0.1" value={form.capacity_tons} onChange={(e) => setForm({ ...form, capacity_tons: e.target.value })} placeholder="e.g. 10" /></Field>
-          <Field label="Pallet Capacity (Big Equivalent)"><input type="number" min="0" step="1" value={form.pallet_capacity} onChange={(e) => setForm({ ...form, pallet_capacity: e.target.value })} placeholder="e.g. 10 big pallets" /></Field>
+          <Field label="Total Big Pallet Capacity (Big Equivalent)"><input type="number" min="0" step="1" value={form.pallet_capacity} onChange={(e) => setForm({ ...form, pallet_capacity: e.target.value })} placeholder="e.g. 10 big pallets" /></Field>
           <Field label="Status">
             <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
               <option>Active</option><option>Under Service</option>
@@ -501,7 +501,7 @@ function VehiclesPanel({ meta }: { meta: MetaOptions }) {
       {error && <div className="glass-card error-text" style={{ marginBottom: 20 }}>{error}</div>}
       <div className="glass-card table-scroll">
         <table className="data-table">
-          <thead><tr><th>Number</th><th>Type</th><th>Capacity</th><th>Pallet Capacity</th><th>Division Restriction</th><th>Status</th><th>Permitted Areas</th>{canWrite && <th></th>}</tr></thead>
+          <thead><tr><th>Number</th><th>Type</th><th>Capacity</th><th>Total Big Pallet Capacity</th><th>Division Restriction</th><th>Status</th><th>Permitted Areas</th>{canWrite && <th></th>}</tr></thead>
           <tbody>
             {rows.map((v) => (
               <tr key={v.id}>

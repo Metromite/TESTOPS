@@ -109,22 +109,16 @@ class MultiReadQueryState {
   }
   async resolve(): Promise<any> {
     const results = await Promise.all(this.builders.map((b) => Promise.resolve(b)));
-    const successful = results.filter((r) => !r?.error);
     const errors = results.map((r) => r?.error).filter(Boolean);
-    // Federation is a resilience layer: an unavailable/errored project must not
-    // take down reads from the healthy projects. Only surface an error when every
-    // configured project failed, so the UI can still operate during failover.
-    if (!successful.length) {
-      return { data: null, error: errors[0] ?? new Error("No Supabase project is available"), count: null, status: results[0]?.status, statusText: results[0]?.statusText };
-    }
+    if (errors.length) return { data: null, error: errors[0], count: null, status: results[0]?.status, statusText: results[0]?.statusText };
     if (this.singleMode) {
-      const rows = successful.flatMap((r) => r?.data == null ? [] : [r.data]).filter(Boolean);
+      const rows = results.flatMap((r) => r?.data == null ? [] : [r.data]).filter(Boolean);
       if (this.singleMode === "maybeSingle") {
-        return { ...successful.find((r) => r?.data != null) ?? successful[0], data: rows[0] ?? null, count: successful.reduce((s,r)=>s+(r?.count ?? 0),0) || null };
+        return { ...results.find((r) => r?.data != null) ?? results[0], data: rows[0] ?? null, count: results.reduce((s,r)=>s+(r?.count ?? 0),0) || null };
       }
-      return { ...successful[0], data: rows[0] ?? null, count: successful.reduce((s,r)=>s+(r?.count ?? 0),0) || null };
+      return { ...results[0], data: rows[0] ?? null, count: results.reduce((s,r)=>s+(r?.count ?? 0),0) || null };
     }
-    const rawData = successful.flatMap((r) => Array.isArray(r?.data) ? r.data : []);
+    const rawData = results.flatMap((r) => Array.isArray(r?.data) ? r.data : []);
     const seen = new Set<string>();
     const data = rawData.filter((row: any) => {
       if (!row || typeof row !== "object") return true;
@@ -135,8 +129,8 @@ class MultiReadQueryState {
       seen.add(k);
       return true;
     });
-    const count = successful.some((r) => typeof r?.count === "number") ? successful.reduce((s,r)=>s+(typeof r?.count === "number" ? r.count : 0),0) : null;
-    return { ...successful[0], data, count };
+    const count = results.some((r) => typeof r?.count === "number") ? results.reduce((s,r)=>s+(typeof r?.count === "number" ? r.count : 0),0) : null;
+    return { ...results[0], data, count };
   }
 }
 
@@ -245,23 +239,17 @@ export async function chooseImportProject(fileSizeBytes = 0): Promise<SupabasePr
   const DATABASE_LIMIT = 500 * 1024 * 1024;
   const SAFETY_THRESHOLD = 0.85;
   const projectedGrowth = Math.max(0, Number(fileSizeBytes || 0));
-  const unavailable: string[] = [];
-  // Check in strict failover order. A failed health/capacity check means the
-  // project is unavailable for this import right now, so continue to the next
-  // project instead of aborting the whole workflow.
-  for (let i = 0; i < clients.length; i++) {
-    const x = clients[i];
+  const usages = await Promise.all(clients.map(async x => {
     const { data, error } = await x.client.rpc("dispatchops_database_size");
-    if (error) {
-      unavailable.push(`${x.project}: ${error.message}`);
-      continue;
-    }
-    const used = Math.max(0, Number(data?.used_bytes ?? data ?? 0));
-    const ceiling = i < clients.length - 1 ? DATABASE_LIMIT * SAFETY_THRESHOLD : DATABASE_LIMIT;
-    if (used + projectedGrowth <= ceiling) return x.project;
+    if (error) throw new Error(`${x.project} database capacity check failed: ${error.message}`);
+    return { ...x, used: Math.max(0, Number(data?.used_bytes ?? data ?? 0)) };
+  }));
+  for (let i = 0; i < usages.length; i++) {
+    const x = usages[i];
+    const ceiling = i < usages.length - 1 ? DATABASE_LIMIT * SAFETY_THRESHOLD : DATABASE_LIMIT;
+    if (x.used + projectedGrowth <= ceiling) return x.project;
   }
-  const detail = unavailable.length ? ` Unavailable checks: ${unavailable.join(" | ")}` : "";
-  throw new Error(`All DispatchOPS Supabase database projects are at capacity or unavailable. No import was started.${detail}`);
+  throw new Error("All DispatchOPS Supabase database projects are at capacity. No import was started.");
 }
 
 export async function getSupabaseClientForImport(fileSizeBytes = 0): Promise<{ project: SupabaseProject; client: SupabaseClient }> {

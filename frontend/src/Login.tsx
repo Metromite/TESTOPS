@@ -2,8 +2,10 @@ import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTheme } from "./theme/ThemeProvider";
 
-const USERNAME = "admin";
-const PASSWORD = "0000";
+const ACCOUNTS = {
+  admin: { password: "0000", role: "admin" },
+  user: { password: "0000", role: "user" },
+} as const;
 
 export default function Login() {
   const navigate = useNavigate();
@@ -29,12 +31,14 @@ export default function Login() {
 
     const cleanUsername = username.trim();
 
-    if (cleanUsername !== USERNAME || password !== PASSWORD) {
+    const account = ACCOUNTS[cleanUsername as keyof typeof ACCOUNTS];
+    if (!account || password !== account.password) {
       setError("Invalid username or password.");
       return;
     }
 
     sessionStorage.setItem("dispatchops-auth", "true");
+    sessionStorage.setItem("dispatchops-role", account.role);
 
 window.dispatchEvent(
   new Event("dispatchops-auth-change")

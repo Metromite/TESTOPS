@@ -5,11 +5,12 @@ export function isAuthenticated(): boolean {
 }
 
 export function getRole(): string | null {
-  return isAuthenticated() ? "admin" : null;
+  return isAuthenticated() ? (sessionStorage.getItem("dispatchops-role") || "user") : null;
 }
 
 export function logout(): void {
   sessionStorage.removeItem(AUTH_KEY);
+  sessionStorage.removeItem("dispatchops-role");
 }
 
 export function isAuthEnabled(): boolean {
