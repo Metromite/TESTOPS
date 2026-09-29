@@ -1,0 +1,28 @@
+DispatchOPS v4 changes
+======================
+
+1) Excel exports now save into a dedicated local folder:
+   %USERPROFILE%\Downloads\DispatchOPS Exports
+   - duplicate filenames are preserved with (2), (3), etc.
+   - dashboard exports, route-plan exports, and Fleet Database exports use this folder
+   - app-matched progress + success/error status is shown for dashboard and table exports
+
+2) Import page Storage counters
+   - Files in Supabase Storage
+   - File Storage Used (bytes from Storage object metadata)
+   - Uploaded Import Batches
+   These are file-storage metrics, not PostgreSQL database size.
+
+3) In-app Supabase project manager
+   Admin > Cloud Connection
+   - add multiple Supabase project profiles
+   - edit URL / publishable key / profile name
+   - test connection before activation
+   - activate/switch project without rebuilding the EXE
+   - remove local project profiles
+   - service-role and sb_secret_* keys are blocked from the desktop app
+
+4) Multiple Supabase projects are profiles, not pooled storage.
+   Each Supabase project remains an independent database + Storage bucket.
+   DispatchOPS intentionally does not automatically shard one live dataset across multiple free projects,
+   because that would split imports/dashboard state and can be used to circumvent provider quotas.
