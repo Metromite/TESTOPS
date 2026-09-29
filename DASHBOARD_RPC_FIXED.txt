@@ -1,0 +1,11 @@
+DASHBOARD RPC FIX
+
+The production Supabase databases now contain the unified dashboard RPC:
+public.dispatchops_dashboard_snapshot(date,date,jsonb)
+
+It was restored on both configured Supabase projects and PostgREST schema reload was requested.
+The RPC excludes blank/UNKNOWN/UNCLASSIFIED/N/A-style division and facility classification values from dashboard analytics.
+
+The frontend also restores the getLeadTimeData() compatibility export required by the Lead Time widget.
+
+- Driver Performance charts are grouped by resolved Driver Name across all vehicles; Route Detail remains vehicle-level for audit/detail.
