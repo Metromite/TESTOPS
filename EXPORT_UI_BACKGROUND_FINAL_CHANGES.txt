@@ -1,0 +1,25 @@
+DispatchOPS — Export UI + Shared Live Background Final Changes
+
+1. Excel export destination
+   - Windows desktop exports are saved directly beside DispatchOPS.exe.
+   - No Downloads folder and no separate DispatchOPS Exports folder.
+   - Existing files are never overwritten; duplicates receive (2), (3), etc.
+
+2. Export UI restored
+   - Dashboard Export to Excel now has the richer export menu based on the previous Dispatch Dashboard.
+   - Options: Full Dashboard Export, KPI Summary, Driver Performance, Lead Time Analytics, Order Summary, Area Analytics, Not Supplied.
+   - Full export restores KPI Summary, Filtered Data, Lead Time, Order Summary, Area Analytics, Not Supplied, Zero Boxes, Driver Performance, GPS Stop Detail and Master Data.
+   - Export progress appears in the app UI and success/error states have a Close button.
+   - Status banner remains in normal page flow with spacing so it does not overlap the dashboard/filter UI.
+
+3. Shared background images
+   - The existing Settings > Appearance > Background Images controls remain the upload location.
+   - Light and Dark backgrounds are stored in the shared Supabase Storage wallpaper bucket and the shared appearance_config row.
+   - A newly uploaded image becomes the shared default for that mode immediately.
+   - All open DispatchOPS windows subscribe to appearance_config Realtime changes and reload the background live.
+   - New users/PCs load the same shared background when they open DispatchOPS.
+   - Old replaced wallpaper files are removed after the new setting is successfully saved to prevent unnecessary Storage growth.
+   - Auto/Light/Dark mode selects the corresponding shared Light/Dark background.
+
+4. Important
+   - This package is build-ready source; it is not a compiled native Windows EXE.
