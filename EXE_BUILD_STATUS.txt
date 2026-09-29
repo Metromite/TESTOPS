@@ -1,0 +1,18 @@
+DispatchOPS EXE BUILD STATUS
+
+Database: FIXED and verified in Supabase project DispatchOPS (chrokbnrlvrfejckmzuz).
+Tauri bundling: ENABLED.
+
+Important: this ChatGPT build environment is Linux and does not have the Windows Rust/Tauri toolchain, so a native Windows .exe cannot be compiled here. The package includes BUILD_DISPATCHOPS_EXE.bat which builds the Windows EXE automatically on the Windows machine where Node.js, npm, and Rust/Cargo are installed.
+
+After the build, the EXE is copied to:
+release\DispatchOPS\DispatchOPS.exe
+
+Schema hardening update (2026-09-02):
+- Added full frontend/schema compatibility for canonical + legacy field names.
+- Added dashboard_config_rules.rule_type/value and compatibility fields.
+- Added compatibility for drivers, helpers, areas, vehicles, SAP invoice facts, landmark facts, consumer salesmen, feature flags and related operational tables.
+- Added database triggers to keep canonical and legacy names synchronized on insert/update.
+- Verified the live Supabase project accepts representative queries used by the dashboard and operational screens.
+
+FINAL FRONTEND SCHEMA REPAIR (2026-09-02): repaired import_batches storage/deletion/label fields, SAP area field, created required Storage buckets/policies, and removed the learned_values jsonb ILIKE runtime error. Live Supabase project verified after repair.
