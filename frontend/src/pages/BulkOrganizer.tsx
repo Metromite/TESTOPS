@@ -286,18 +286,17 @@ export default function BulkOrganizer() {
       setPlan(x => ({ ...x, invoices: merged, pallets: merged as any, customers: Array.from(customerMap2.values()), pallet_assignments: nextAssignments }));
 
       // Secondary libraries do not block the invoice cards. They can arrive a little later.
-      const [allCustomers, d, h, monthPrimary, monthTertiary] = await Promise.all([
+      const [allCustomers, d, h, monthTertiary] = await Promise.all([
         primaryDb.from("sap_invoice_facts").select("customer_name").not("customer_name", "is", null).order("customer_name").limit(5000),
         primaryDb.from("drivers").select("id,code,name,status").order("name"),
         primaryDb.from("helpers").select("id,code,name,status").order("name"),
-        primaryDb.from("bulk_organizer_plans").select("plan_date,invoices").gte("plan_date", mk).lt("plan_date", nextMonthKey(selectedDate)),
         departmentDb.from("bulk_organizer_plans").select("plan_date,invoices").gte("plan_date", mk).lt("plan_date", nextMonthKey(selectedDate)),
       ]);
       if (selectedDate !== date) return;
       setDriverLibrary((d as any)?.data || []); setHelperLibrary((h as any)?.data || []);
       setCustomerLibrary(Array.from(new Set((allCustomers.data ?? []).map((x: any) => String(x.customer_name || "").trim()).filter(Boolean))));
       const monthWaitingMap = new Map<string, InvoicePlan>();
-      for (const row of ([...(((monthPrimary as any)?.data || [])), ...(((monthTertiary as any)?.data || []))] as any[])) {
+      for (const row of (((monthTertiary as any)?.data || []) as any[])) {
         for (const rawInv of ((row as any).invoices || [])) {
           const inv = canonicalizeInvoice(rawInv);
           if (!inv.scheduled_date) {
@@ -348,38 +347,11 @@ export default function BulkOrganizer() {
           });
         })
       .subscribe();
-    const primaryChannel = primaryDb.channel(`bulk-organizer-primary-${date}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "bulk_organizer_plans", filter: `plan_date=eq.${date}` },
-        (payload: any) => {
-          const row = payload.new as PlanV3 | null;
-          if (!row) return;
-          // Realtime can emit a Primary shell row while the populated historical
-          // plan still lives in Tertiary. Never let an empty Primary invoice array
-          // erase invoices/assignments already visible on screen.
-          if (payload.eventType === "DELETE") {
-            void loadSourceData(date);
-            return;
-          }
-          setPlan(p => {
-            const hasInvoices = Array.isArray(row.invoices) && row.invoices.length > 0;
-            const hasPallets = Array.isArray(row.pallets) && row.pallets.length > 0;
-            const hasAssignments = !!row.pallet_assignments && Object.keys(row.pallet_assignments).length > 0;
-            return {
-              ...p,
-              ...row,
-              plan_date: date,
-              invoices: hasInvoices ? row.invoices : p.invoices,
-              pallets: hasPallets ? row.pallets : p.pallets,
-              pallet_assignments: hasAssignments ? row.pallet_assignments : p.pallet_assignments,
-            };
-          });
-        })
-      .subscribe();
     const tertiaryChannel = departmentDb.channel(`bulk-organizer-tertiary-${date}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "bulk_organizer_plans", filter: `plan_date=eq.${date}` },
         () => { void loadSourceData(date); })
       .subscribe();
-    return () => { void supabase.removeChannel(channel); void supabase.removeChannel(primaryChannel); void supabase.removeChannel(tertiaryChannel); };
+    return () => { void supabase.removeChannel(channel); void supabase.removeChannel(tertiaryChannel); };
   }, [date]);
 
   const vehicleMap = useMemo(() => new Map(fleet.map(v => [v.id, v])), [fleet]);
@@ -1098,23 +1070,47 @@ export default function BulkOrganizer() {
       return;
     }
     try {
-      if (next.scheduled_date && canonicalInvoiceDate(next.scheduled_date) !== canonicalInvoiceDate(date)) {
-        const target = await loadBulkOrganizerPlan(next.scheduled_date);
-        const targetPlan = target || emptyPlan(next.scheduled_date);
-        targetPlan.invoices = [...(targetPlan.invoices || []).filter(i => i.id !== next.id && i.invoice_no !== next.invoice_no), next];
-        targetPlan.pallets = targetPlan.invoices as any;
-        await saveBulkOrganizerPlan(targetPlan);
-        const currentNext = { ...planRef.current, invoices: (planRef.current.invoices || []).filter(i => i.id !== editingInvoice.id) };
-        currentNext.pallets = currentNext.invoices as any;
-        (currentNext as any).__preserveExistingWhenEmpty = false;
-        setPlan(currentNext);
-        await saveBulkOrganizerPlan(currentNext);
-      } else {
-        const currentNext = { ...planRef.current, invoices: (planRef.current.invoices || []).map(i => i.id === editingInvoice.id ? next : i) };
-        currentNext.pallets = currentNext.invoices as any;
-        setPlan(currentNext);
-        await saveBulkOrganizerPlan(currentNext);
+      const targetDate = canonicalInvoiceDate(next.scheduled_date);
+      const currentDate = canonicalInvoiceDate(date);
+      const targetPlan = targetDate ? (await loadBulkOrganizerPlan(targetDate) || emptyPlan(targetDate)) : null;
+
+      // Waiting invoices are not in plan.invoices on the currently selected day;
+      // they live in the month-wide waiting collection. Always remove the old
+      // copy from every Tertiary daily row before writing the new scheduled copy.
+      const monthStart = monthKey(date);
+      const monthEnd = nextMonthKey(date);
+      const { data: monthRows, error: monthError } = await departmentDb
+        .from("bulk_organizer_plans").select("*")
+        .gte("plan_date", monthStart).lt("plan_date", monthEnd);
+      if (monthError) throw monthError;
+
+      const oldId = String(editingInvoice.id || "");
+      const oldNo = norm(editingInvoice.invoice_no);
+      for (const row of ((monthRows || []) as any[])) {
+        const oldInvoices = Array.isArray(row.invoices) ? row.invoices : [];
+        const kept = oldInvoices.filter((i:any) => String(i?.id || "") !== oldId && norm(i?.invoice_no) !== oldNo);
+        const oldAssignments = { ...(row.pallet_assignments || {}) };
+        Object.keys(oldAssignments).filter(k => k.startsWith(`${oldId}::`)).forEach(k => delete oldAssignments[k]);
+        const changed = kept.length !== oldInvoices.length || Object.keys(oldAssignments).length !== Object.keys(row.pallet_assignments || {}).length;
+        if (changed) {
+          await saveBulkOrganizerPlan({ ...row, invoices: kept, pallets: kept, pallet_assignments: oldAssignments, __preserveExistingWhenEmpty: false } as any);
+        }
       }
+
+      if (targetPlan) {
+        const cleanTarget = (targetPlan.invoices || []).filter(i => String(i?.id || "") !== oldId && norm(i?.invoice_no) !== oldNo);
+        const savedNext = { ...targetPlan, plan_date: targetDate!, invoices: [...cleanTarget, { ...next, scheduled_date: targetDate }], pallets: [...cleanTarget, { ...next, scheduled_date: targetDate }] };
+        await saveBulkOrganizerPlan(savedNext as any);
+      } else if (!targetDate) {
+        // Keep Waiting as an explicit persisted invoice on today's Tertiary row.
+        const base = await loadBulkOrganizerPlan(currentDate!) || emptyPlan(currentDate!);
+        const savedNext = { ...base, invoices: [...(base.invoices || []), { ...next, scheduled_date: null }], pallets: [...(base.invoices || []), { ...next, scheduled_date: null }] };
+        await saveBulkOrganizerPlan(savedNext as any);
+      }
+
+      // Reload from the single source of truth so the UI cannot retain a stale
+      // Waiting object after a successful reschedule.
+      await loadSourceData(date);
       setEditingInvoice(null);
       setError("");
     } catch (e:any) { setError(e?.message || "Could not reschedule the invoice."); }
