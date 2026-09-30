@@ -89,6 +89,21 @@ export default function Vacations() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  async function deleteVacation(row: Vacation) {
+    if (!window.confirm(`Delete vacation for ${row.person_name || row.person_code}?`)) return;
+    setError("");
+    try {
+      if (editingId === row.id) {
+        setEditingId(null);
+        setForm(empty);
+      }
+      await vacationsService.remove(row.id);
+      await load();
+    } catch (e: any) {
+      setError(e?.message || "Failed to delete vacation");
+    }
+  }
+
 
 
   return (
@@ -136,7 +151,15 @@ export default function Vacations() {
             {rows.map((r) => (
               <tr key={r.id}>
                 <td>{r.person_code}</td><td>{r.person_name}</td><td>{r.person_type || "Driver"}</td><td>{r.start_date}</td><td>{r.end_date}</td>
-                <td>{r.status ? <span className={"badge " + statusBadgeClass(r.status)}>{r.status}</span> : "—"}</td><td><button className="btn" type="button" onClick={() => startEdit(r)}>Edit</button></td>
+                <td>{r.status ? <span className={"badge " + statusBadgeClass(r.status)}>{r.status}</span> : "—"}</td>
+                <td>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button className="btn" type="button" onClick={() => startEdit(r)}>Edit</button>
+                    {canWrite && (
+                      <button className="btn" type="button" onClick={() => deleteVacation(r)}>Delete</button>
+                    )}
+                  </div>
+                </td>
                 
               </tr>
             ))}

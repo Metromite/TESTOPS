@@ -33,77 +33,84 @@ const STATIC_FIELDS: Record<string, string[]> = {};
 
 /** Supabase replacement for the old `/api/autocomplete/{field}` endpoint. */
 async function fetchAutocomplete(field: string, q: string): Promise<string[]> {
-  const needle = q.trim().toLowerCase();
-  const limit = needle ? 20 : 20;
+  const needle = q.trim();
 
   if (STATIC_FIELDS[field]) {
-    return STATIC_FIELDS[field].filter((v) => v.toLowerCase().includes(needle)).slice(0, limit);
+    return STATIC_FIELDS[field].filter((v) => v.toLowerCase().includes(needle.toLowerCase())).slice(0, 10);
   }
 
-  try {
-    switch (field) {
-      case "driver": {
-        // Restore the proven pre-regression path: server-side code/name match,
-        // with the old 500-row local fallback if the OR query is unavailable.
-        const query = supabase.from("drivers").select("code,name");
-        const { data, error } = needle
-          ? await query.or(`code.ilike.%${needle}%,name.ilike.%${needle}%`).limit(10)
-          : await query.limit(10);
-        if (!error && (data ?? []).length) return (data ?? []).map((d: any) => `${d.code} - ${d.name}`);
-        const fallback = await supabase.from("drivers").select("code,name").limit(500);
-        if (fallback.error) return [];
-        const n = needle.toLowerCase();
-        return (fallback.data ?? []).filter((d: any) => `${d.code} ${d.name}`.toLowerCase().includes(n)).slice(0, 10).map((d: any) => `${d.code} - ${d.name}`);
-      }
-      case "helper": {
-        // Same proven path for Helpers.
-        const query = supabase.from("helpers").select("code,name");
-        const { data, error } = needle
-          ? await query.or(`code.ilike.%${needle}%,name.ilike.%${needle}%`).limit(10)
-          : await query.limit(10);
-        if (!error && (data ?? []).length) return (data ?? []).map((h: any) => `${h.code} - ${h.name}`);
-        const fallback = await supabase.from("helpers").select("code,name").limit(500);
-        if (fallback.error) return [];
-        const n = needle.toLowerCase();
-        return (fallback.data ?? []).filter((h: any) => `${h.code} ${h.name}`.toLowerCase().includes(n)).slice(0, 10).map((h: any) => `${h.code} - ${h.name}`);
-      }
-      case "area_code":
-      case "area_name": {
-        const { data, error } = await supabase.from("areas").select("code,name").limit(500);
-        if (error) return [];
-        return (data ?? []).map((a: any) => `${a.code} - ${a.name}`).filter((v) => v.toLowerCase().includes(needle)).slice(0, limit);
-      }
-      case "vehicle_type": {
-        const { data, error } = await supabase.from("vehicles").select("type").limit(500);
-        if (error) return [];
-        return Array.from(new Set((data ?? []).map((v: any) => String(v.type || "").trim()).filter(Boolean)))
-          .filter((v) => v.toLowerCase().includes(needle)).slice(0, limit);
-      }
-      case "vehicle_number": {
-        const { data, error } = await supabase.from("vehicles").select("number").limit(500);
-        if (error) return [];
-        return (data ?? []).map((v: any) => String(v.number || "").trim()).filter(Boolean).filter((v) => v.toLowerCase().includes(needle)).slice(0, limit);
-      }
-      case "salesman": {
-        const { data, error } = await supabase.from("sap_invoice_facts").select("salesman").limit(1000);
-        if (error) return [];
-        return Array.from(new Set((data ?? []).map((r: any) => String(r.salesman || "").trim()).filter(Boolean))).filter((v) => v.toLowerCase().includes(needle)).slice(0, limit);
-      }
-      case "customer": {
-        const { data, error } = await supabase.from("sap_invoice_facts").select("customer_name").limit(1000);
-        if (error) return [];
-        return Array.from(new Set((data ?? []).map((r: any) => String(r.customer_name || "").trim()).filter(Boolean))).filter((v) => v.toLowerCase().includes(needle)).slice(0, limit);
-      }
-      default:
-        return [];
+  switch (field) {
+    case "area_code":
+    case "area_name": {
+      const col = field === "area_code" ? "code" : "name";
+      const { data, error } = await supabase.from("areas").select("code,name").ilike(col, `%${needle}%`).limit(10);
+      if (error) return [];
+      return (data ?? []).map((a) => `${a.code} - ${a.name}`);
     }
-  } catch {
-    return [];
+    case "driver": {
+      const query = supabase.from("drivers").select("code,name");
+      const { data, error } = needle
+        ? await query.or(`code.ilike.%${needle}%,name.ilike.%${needle}%`).limit(10)
+        : await query.limit(10);
+      if (!error && (data ?? []).length) return (data ?? []).map((d) => `${d.code} - ${d.name}`);
+      const fallback = await supabase.from("drivers").select("code,name").limit(500);
+      if (fallback.error) return [];
+      const n = needle.toLowerCase();
+      return (fallback.data ?? []).filter((d: any) => `${d.code} ${d.name}`.toLowerCase().includes(n)).slice(0, 10).map((d: any) => `${d.code} - ${d.name}`);
+    }
+    case "helper": {
+      const query = supabase.from("helpers").select("code,name");
+      const { data, error } = needle
+        ? await query.or(`code.ilike.%${needle}%,name.ilike.%${needle}%`).limit(10)
+        : await query.limit(10);
+      if (!error && (data ?? []).length) return (data ?? []).map((h) => `${h.code} - ${h.name}`);
+      const fallback = await supabase.from("helpers").select("code,name").limit(500);
+      if (fallback.error) return [];
+      const n = needle.toLowerCase();
+      return (fallback.data ?? []).filter((h: any) => `${h.code} ${h.name}`.toLowerCase().includes(n)).slice(0, 10).map((h: any) => `${h.code} - ${h.name}`);
+    }
+    case "vehicle_type": {
+      const { data, error } = await supabase.from("vehicles").select("type").ilike("type", `%${needle}%`).limit(100);
+      if (error) return [];
+      const seen = new Map<string, string>();
+      for (const v of data ?? []) {
+        const raw = String((v as any).type || "").trim();
+        if (!raw) continue;
+        const key = raw.toLowerCase().replace(/\s+/g, " ");
+        if (!seen.has(key)) seen.set(key, raw);
+      }
+      return [...seen.values()].slice(0, 20);
+    }
+    case "vehicle_number": {
+      const { data, error } = await supabase.from("vehicles").select("number").ilike("number", `%${needle}%`).limit(10);
+      if (error) return [];
+      return (data ?? []).map((v) => v.number as string);
+    }
+    case "salesman": {
+      const { data, error } = await supabase
+        .from("sap_invoice_facts")
+        .select("salesman")
+        .ilike("salesman", `%${needle}%`)
+        .limit(30);
+      if (error) return [];
+      return Array.from(new Set((data ?? []).map((r: any) => r.salesman).filter(Boolean))).slice(0, 10) as string[];
+    }
+    case "customer": {
+      const { data, error } = await supabase
+        .from("sap_invoice_facts")
+        .select("customer_name")
+        .ilike("customer_name", `%${needle}%`)
+        .limit(30);
+      if (error) return [];
+      return Array.from(new Set((data ?? []).map((r: any) => r.customer_name).filter(Boolean))).slice(0, 10) as string[];
+    }
+    default:
+      return [];
   }
 }
 
 export default function AutocompleteInput({
-  field, value, onChange, placeholder, disabled, onSelectRaw, showSelectedLabel = false,
+  field, value, onChange, placeholder, disabled, onSelectRaw,
 }: {
   field: string; value: string; onChange: (v: string) => void; placeholder?: string; disabled?: boolean;
   /** Optional: fires with the full raw suggestion (e.g. "D001 - John Doe")
@@ -111,9 +118,7 @@ export default function AutocompleteInput({
    * of. Lets a caller capture both halves of a driver/helper suggestion
    * at once instead of just the code. */
   onSelectRaw?: (raw: string) => void;
-  showSelectedLabel?: boolean;
 }) {
-  const [displayValue, setDisplayValue] = useState(value);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
@@ -126,11 +131,6 @@ export default function AutocompleteInput({
   // page. Joining the same coordinator, same pattern as those two files.
   const instanceId = useRef(`autocomplete-${Math.random().toString(36).slice(2)}`).current;
   const inputWrapRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!showSelectedLabel) setDisplayValue(value);
-    else if (!value) setDisplayValue("");
-  }, [value, showSelectedLabel]);
-
   const [dropdownPos, setDropdownPos] = useState<{ left: number; top: number; width: number } | null>(null);
 
   useEffect(() => {
@@ -150,18 +150,6 @@ export default function AutocompleteInput({
   }
 
   useEffect(() => {
-    if (!open) return;
-    const sync = () => {
-      const rect = inputWrapRef.current?.getBoundingClientRect();
-      if (rect) setDropdownPos({ left: rect.left, top: rect.bottom + 6, width: rect.width });
-    };
-    sync();
-    window.addEventListener("resize", sync);
-    window.addEventListener("scroll", sync, true);
-    return () => { window.removeEventListener("resize", sync); window.removeEventListener("scroll", sync, true); };
-  }, [open]);
-
-  useEffect(() => {
     if (!value.trim()) { setSuggestions([]); return; }
     const handle = setTimeout(() => {
       fetchAutocomplete(field, value).then((s) => { setSuggestions(s); setHighlighted(0); }).catch(() => {});
@@ -170,10 +158,8 @@ export default function AutocompleteInput({
   }, [value, field]);
 
   function pick(s: string) {
-    const code = s.includes(" - ") ? s.split(" - ")[0] : s;
-    onChange(code);
+    onChange(s.includes(" - ") ? s.split(" - ")[0] : s);
     onSelectRaw?.(s);
-    if (showSelectedLabel) setDisplayValue(s);
     setOpen(false);
   }
 
@@ -196,11 +182,11 @@ export default function AutocompleteInput({
   return (
     <div ref={inputWrapRef} className="relative">
       <GlassInput
-        value={showSelectedLabel ? displayValue : value}
+        value={value}
         placeholder={placeholder}
         disabled={disabled}
-        onChange={(e) => { setDisplayValue(e.target.value); onChange(e.target.value); setOpen(true); announceOpen(); }}
-        onFocus={() => { setOpen(true); announceOpen(); fetchAutocomplete(field, showSelectedLabel ? displayValue : value).then((s) => { setSuggestions(s); setHighlighted(0); }).catch(() => {}); }}
+        onChange={(e) => { onChange(e.target.value); setOpen(true); announceOpen(); }}
+        onFocus={() => { setOpen(true); announceOpen(); fetchAutocomplete(field, value).then((s) => { setSuggestions(s); setHighlighted(0); }).catch(() => {}); }}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         onKeyDown={onKeyDown}
       />
