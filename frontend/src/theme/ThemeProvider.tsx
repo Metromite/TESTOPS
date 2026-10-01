@@ -54,10 +54,15 @@ async function applyBackground(theme: ThemeName) {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [mode, setModeState] = useState<Mode>(() => (localStorage.getItem("theme-mode") as Mode) || "auto");
+  // Default to Light. Preserve an explicit saved Dark/High Contrast choice,
+  // but do not let the system color scheme silently make a new session dark.
+  const [mode, setModeState] = useState<Mode>(() => {
+    const saved = localStorage.getItem("theme-mode") as Mode | null;
+    return saved === "dark" || saved === "high_contrast" || saved === "light" ? saved : "light";
+  });
   const [resolvedTheme, setResolvedTheme] = useState<ThemeName>(() => {
-    const initialMode = (localStorage.getItem("theme-mode") as Mode) || "auto";
-    return initialMode === "auto" ? resolveAuto() : (initialMode as ThemeName);
+    const saved = localStorage.getItem("theme-mode") as Mode | null;
+    return saved === "dark" || saved === "high_contrast" || saved === "light" ? saved : "light";
   });
 
   // Cache both wallpapers once. Theme switching itself must never wait for

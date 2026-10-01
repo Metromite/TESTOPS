@@ -365,7 +365,7 @@ export default function Dashboard() {
       {tab === "area-analytics" && <AreaAnalyticsTab driver={driver} globalFilters={globalFilters} />}
       {tab === "not-supplied" && <NotSuppliedTab driver={driver} globalFilters={globalFilters} />}
 
-      {(!localDataset || !latestRangeReady) && (
+      {(!localDataset || !latestRangeReady || initialLoadingProgress < 100) && (
         <DashboardInitialLoadingOverlay progress={initialLoadingProgress} />
       )}
     </div>
