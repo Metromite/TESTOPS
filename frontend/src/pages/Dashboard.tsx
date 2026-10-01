@@ -244,6 +244,19 @@ export default function Dashboard() {
   }
 
 
+  // INITIAL DASHBOARD LOAD: the app can open in the current calendar month even
+  // when the newest imported SAP data is in an earlier month. Resolve the
+  // latest imported month immediately on mount; otherwise the Home tab can
+  // legitimately query an empty month and render all zeros. This was present
+  // in the stable Dashboard flow and must run independently of realtime.
+  useEffect(() => {
+    loadFilterMeta();
+    void syncDashboardToLatestImportedMonth(true);
+    // Run once on Dashboard mount. The date state update above will naturally
+    // trigger the dynamic-driver effect and HomeTab's exact-filter reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     void refreshDynamicDriverOptions().catch(() => {});
   }, [dateFrom, dateTo, selAreas, selDivisions, selFacilityTypes, selSalesmen, selVehicleTypes]);
