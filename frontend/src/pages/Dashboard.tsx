@@ -157,14 +157,21 @@ export default function Dashboard() {
   // CRUD) - reused as-is, no new endpoint.
   const [driverDirectory, setDriverDirectory] = useState<DriverDirectoryEntry[]>(() => getCachedDashboardDriverDirectory() as DriverDirectoryEntry[]);
 
-  // The local Dashboard dataset uses the exact driver identifiers exposed by
-  // its own slicer options. Do NOT rewrite a selected driver through the Fleet
-  // directory here: a Fleet display name can differ from the SAP driver_name
-  // stored in the local analytical rows, which makes one selected driver look
-  // like zero rows and can cause later selections to appear to combine. Keep
-  // the slicer value as the filter value; the directory remains display-only.
+  // Keep all analytics tabs on the same canonical driver identity. The slicer
+  // stores Fleet codes, while several legacy analytics RPCs match SAP driver
+  // names. Convert selected Fleet codes to names before they reach the shared
+  // GlobalFilters object; this preserves the slicer UI and prevents downstream
+  // tabs from becoming zero-result while Overview still works.
+  const canonicalSelectedDrivers = selDrivers.map((selected) => {
+    const match = driverDirectory.find((d) =>
+      String(d.code || "").trim().toLowerCase() === selected.trim().toLowerCase() ||
+      String(d.name || "").trim().toLowerCase() === selected.trim().toLowerCase()
+    );
+    return match?.name?.trim() || selected;
+  });
+
   const globalFilters = {
-    drivers: selDrivers.join(","), areas: selAreas.join(","), division: selDivisions.join(","),
+    drivers: canonicalSelectedDrivers.join(","), areas: selAreas.join(","), division: selDivisions.join(","),
     route_type: "", vehicle_type: selVehicleTypes.join(","),
     facility_type: selFacilityTypes.join(","), salesman: selSalesmen.join(","),
     start_date: dateFrom, end_date: dateTo,
@@ -288,6 +295,7 @@ export default function Dashboard() {
     const opts = getLocalFilterOptions(localDataset, globalFilters);
     setVehicleTypeOptions(opts.vehicle_types);
     setFilterOptions({ divisions: opts.divisions, facility_types: opts.facility_types, salesmen: opts.salesmen, areas: opts.areas, drivers: opts.drivers });
+    setSelDrivers((current) => current.filter((d) => opts.drivers.some((x) => x.toLowerCase() === d.toLowerCase())));
   }, [localDataset, dateFrom, dateTo, selDrivers, selAreas, selDivisions, selFacilityTypes, selSalesmen, selVehicleTypes]);
 
   useOperationalRealtime("dashboard-live-master-data", ["import_batches", "sap_invoice_facts", "vehicles", "drivers", "areas", "consumer_salesmen"], () => {

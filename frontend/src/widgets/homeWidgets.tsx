@@ -96,31 +96,19 @@ function pctTooltipFormatter(data: { name: string; value: number }[]) {
 const renderPctLabel = ({ percent }: { percent: number }) => (percent >= 0.04 ? `${Math.round(percent * 100)}%` : "");
 
 export function BoxesByDriverChart({ data, onBarClick }: { data: HomeDashboard; onBarClick?: (driverName: string) => void }) {
-  const [showAll, setShowAll] = useState(false);
-  const allRows = data.charts.driver_boxes.labels.map((l, i) => ({ name: l, boxes: data.charts.driver_boxes.values[i] }));
-  const visibleRows = showAll ? allRows : allRows.slice(0, 8);
+  const driverBoxesData = data.charts.driver_boxes.labels.map((l, i) => ({ name: l, boxes: data.charts.driver_boxes.values[i] }));
   return (
-    <ChartPanel
-      title="Boxes by Driver"
-      icon={Package}
-      actions={allRows.length > 8 ? (
-        <button type="button" className="dispatch-chart-action" onClick={() => setShowAll((v) => !v)}>
-          {showAll ? "Show top 8" : `View all ${allRows.length}`}
-        </button>
-      ) : undefined}
-    >
-      <div className={showAll ? "dispatch-chart-expanded" : "dispatch-chart-compact"}>
-        <ResponsiveContainer width="100%" height={showAll ? Math.max(300, visibleRows.length * 31) : 286}>
-          <BarChart data={visibleRows} layout="vertical" margin={{ left: 10, right: 20 }}>
-            <CartesianGrid {...chartGrid} />
-            <XAxis type="number" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} />
-            <YAxis type="category" dataKey="name" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} width={140} interval={0} />
-            <Tooltip content={<GlassTooltip />} cursor={{ fill: "var(--row-hover)" }} />
-            <Bar dataKey="boxes" fill={CHART_PALETTE[0]} {...chartBarProps} barSize={16} cursor={onBarClick ? "pointer" : undefined}
-              onClick={onBarClick ? (d: any) => onBarClick(d.name) : undefined} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+    <ChartPanel title="Boxes by Driver" icon={Package}>
+      <ResponsiveContainer width="100%" height={Math.max(280, driverBoxesData.length * 30)}>
+        <BarChart data={driverBoxesData} layout="vertical" margin={{ left: 10, right: 20 }}>
+          <CartesianGrid {...chartGrid} />
+          <XAxis type="number" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} />
+          <YAxis type="category" dataKey="name" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} width={140} interval={0} />
+          <Tooltip content={<GlassTooltip />} cursor={{ fill: "var(--row-hover)" }} />
+          <Bar dataKey="boxes" fill={CHART_PALETTE[0]} {...chartBarProps} barSize={16} cursor={onBarClick ? "pointer" : undefined}
+            onClick={onBarClick ? (d: any) => onBarClick(d.name) : undefined} />
+        </BarChart>
+      </ResponsiveContainer>
     </ChartPanel>
   );
 }

@@ -143,9 +143,6 @@ function list(v: string | undefined): string[] {
   return String(v || "").split(",").map((x) => x.trim()).filter(Boolean);
 }
 function selectedSet(v: string | undefined) { return new Set(list(v)); }
-function selectedDriverSet(v: string | undefined) {
-  return new Set(list(v).map(normalizeDriverIdentity));
-}
 function isUnknown(v: unknown) { return UNKNOWN.has(String(v ?? "").trim().toLowerCase()); }
 function classification(row: LocalSapRow): string {
   if (!isUnknown(row.facility_type)) return row.facility_type.trim();
@@ -300,7 +297,7 @@ export function useDashboardLocalSnapshot(start: string, end: string): Dashboard
 }
 
 function matches(row: LocalSapRow, gf: GlobalFilters): boolean {
-  const drivers = selectedDriverSet(gf.drivers), areas = selectedSet(gf.areas), divisions = selectedSet(gf.division);
+  const drivers = selectedSet(gf.drivers), areas = selectedSet(gf.areas), divisions = selectedSet(gf.division);
   const vehicleTypes = selectedSet(gf.vehicle_type), facilities = selectedSet(gf.facility_type), salesmen = selectedSet(gf.salesman);
   if (drivers.size && !drivers.has(row.driver_name)) return false;
   if (areas.size && !areas.has(row.area)) return false;
@@ -335,7 +332,7 @@ export function getLocalFilterOptions(dataset: DashboardLocalDataset, globalFilt
   // row. On a large historical dataset that made every slicer click feel heavy.
   // A row can contribute to a slicer when it passes every OTHER active slicer;
   // therefore we only need to identify which active dimensions (if any) reject it.
-  const drivers = selectedDriverSet(gf.drivers);
+  const drivers = selectedSet(gf.drivers);
   const areas = selectedSet(gf.areas);
   const divisions = selectedSet(gf.division);
   const vehicleTypes = selectedSet(gf.vehicle_type);
@@ -364,7 +361,7 @@ export function getLocalFilterOptions(dataset: DashboardLocalDataset, globalFilt
     const failFacility = facilities.size > 0 && !facilities.has(r.facility_type);
     const failSalesman = salesmen.size > 0 && !salesmen.has(r.salesman);
     const failArea = areas.size > 0 && !areas.has(r.area);
-    const failDriver = drivers.size > 0 && !drivers.has(normalizeDriverIdentity(r.driver_name));
+    const failDriver = drivers.size > 0 && !drivers.has(r.driver_name);
     const failVehicle = vehicleTypes.size > 0 && !vehicleTypes.has(r.vehicle_type);
     const failures = Number(failDivision) + Number(failFacility) + Number(failSalesman) + Number(failArea) + Number(failDriver) + Number(failVehicle);
 
@@ -520,138 +517,57 @@ export function buildLocalNotSupplied(rows: LocalSapRow[]): NotSuppliedData {
 }
 
 function normalizeDriverIdentity(value: unknown): string {
-  return String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .replace(/\s+/g, " ");
+  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function normalizeVehicleIdentity(value: unknown): string {
-  return String(value ?? "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
-}
-
-export function buildLocalDriverPerformance(rows: LocalSapRow[], routeCards: RouteCard[], ownershipRows: LocalSapRow[] = rows): PerfData {
-  // Driver Performance must remain driver-specific even when the same vehicle
-  // appears under different drivers across the loaded history. The selected
-  // SAP rows are already narrowed by the slicer, so build candidate driver
-  // identities from BOTH vehicle_key and normalized vehicle number. A GPS card
-  // is accepted only when its displayed driver matches a candidate, or when
-  // exactly one candidate driver owns that vehicle in the current filter scope.
-  const driversByVehicleKey = new Map<string, Set<string>>();
-  const driversByVehicleNumber = new Map<string, Set<string>>();
-  // A vehicle can legitimately be assigned to different drivers on different
-  // days. Keep the date in the ownership index so Driver Performance never
-  // expands one driver's selection into another driver's historical route.
-  const driversByVehicleDateKey = new Map<string, Set<string>>();
-  const driversByVehicleDateNumber = new Map<string, Set<string>>();
-  const displayNameByIdentity = new Map<string, string>();
-
-  const addDriver = (map: Map<string, Set<string>>, vehicle: string, driver: string) => {
-    if (!vehicle || !driver) return;
-    const set = map.get(vehicle) || new Set<string>();
-    set.add(driver);
-    map.set(vehicle, set);
-  };
-
-  for (const row of ownershipRows) {
+export function buildLocalDriverPerformance(rows: LocalSapRow[], routeCards: RouteCard[]): PerfData {
+  // GPS is vehicle-keyed, while SAP is driver + vehicle-keyed. The old local
+  // path filtered GPS cards by vehicle only, so a route belonging to another
+  // driver who used the same vehicle could leak into the selected driver.
+  const driversByVehicle = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const vehicle = String(row.vehicle_key || "").trim();
     const driver = normalizeDriverIdentity(row.driver_name);
-    if (!driver) continue;
-    displayNameByIdentity.set(driver, String(row.driver_name || "").trim() || driver);
-    const vehicleKey = String(row.vehicle_key || "").trim();
-    const vehicleNumber = normalizeVehicleIdentity(row.vehicle_num);
-    const dispatchDate = String(row.dispatch_date || "").slice(0, 10);
-    addDriver(driversByVehicleKey, vehicleKey, driver);
-    addDriver(driversByVehicleNumber, vehicleNumber, driver);
-    if (dispatchDate) {
-      addDriver(driversByVehicleDateKey, `${vehicleKey}|${dispatchDate}`, driver);
-      addDriver(driversByVehicleDateNumber, `${vehicleNumber}|${dispatchDate}`, driver);
-    }
+    if (!vehicle || !driver) continue;
+    const set = driversByVehicle.get(vehicle) || new Set<string>();
+    set.add(driver);
+    driversByVehicle.set(vehicle, set);
   }
 
   const rowDates = rows.map((r) => String(r.dispatch_date || "")).filter(Boolean).sort();
   const cards = routeCards
     .filter((card) => routeInDateRange(card, rowDates[0], rowDates[rowDates.length - 1]))
     .map((card) => {
-      const vehicleKey = String(card.vehicle_key || "").trim();
-      const vehicleNumber = normalizeVehicleIdentity(card.vehicle_num);
-      const routeDate = String(card.route_start || card.route_end || "").slice(0, 10);
-      const candidates = new Set<string>();
-
-      // Prefer ownership on the actual route date. The old implementation
-      // used the entire selected date range, so one vehicle shared by Driver A
-      // and Driver B could make A's slicer ambiguous (0) and then make B's
-      // selection pull A+B together. Fall back to the range-wide index only
-      // when the route itself has no usable date.
-      if (routeDate) {
-        for (const driver of driversByVehicleDateKey.get(`${vehicleKey}|${routeDate}`) || []) candidates.add(driver);
-        for (const driver of driversByVehicleDateNumber.get(`${vehicleNumber}|${routeDate}`) || []) candidates.add(driver);
-      }
-      if (!candidates.size) {
-        for (const driver of driversByVehicleKey.get(vehicleKey) || []) candidates.add(driver);
-        for (const driver of driversByVehicleNumber.get(vehicleNumber) || []) candidates.add(driver);
-      }
-      if (!candidates.size) return null;
+      const vehicle = String(card.vehicle_key || "").trim();
+      const allowedDrivers = driversByVehicle.get(vehicle);
+      if (!vehicle || !allowedDrivers?.size) return null;
 
       const gpsDriver = normalizeDriverIdentity(card.display_driver);
-      if (gpsDriver && candidates.has(gpsDriver)) return {
-        ...card,
-        display_driver: displayNameByIdentity.get(gpsDriver) || card.display_driver,
-      };
+      if (gpsDriver && allowedDrivers.has(gpsDriver)) return card;
 
-      // Only repair a driver-name mismatch when the current SAP scope proves
-      // that exactly one selected driver owns this vehicle. Never guess when
-      // two selected drivers share the same vehicle.
-      if (candidates.size !== 1) return null;
-      const [driver] = [...candidates];
-      return { ...card, display_driver: displayNameByIdentity.get(driver) || card.display_driver };
+      // Repair only an unambiguous GPS/SAP name mismatch. If more than one
+      // SAP driver is tied to the same vehicle in the current scope, do not
+      // guess and do not show an unrelated driver's GPS route.
+      if (allowedDrivers.size !== 1) return null;
+      const [driver] = [...allowedDrivers];
+      const sapDisplay = rows.find((r) =>
+        String(r.vehicle_key || "").trim() === vehicle && normalizeDriverIdentity(r.driver_name) === driver
+      )?.driver_name || card.display_driver;
+      return { ...card, display_driver: sapDisplay };
     })
     .filter((card): card is RouteCard => Boolean(card));
 
-  // Resolve route ownership against the full non-driver-filtered scope first,
-  // then apply the selected driver set. This prevents selecting Driver A from
-  // making a shared vehicle look ambiguous merely because Driver B was not
-  // selected, while still ensuring an A-only view never displays B's routes.
-  const allowedDrivers = new Set(rows.map((r) => normalizeDriverIdentity(r.driver_name)).filter(Boolean));
-  const selectedCards = allowedDrivers.size
-    ? cards.filter((card) => allowedDrivers.has(normalizeDriverIdentity(card.display_driver)))
-    : cards;
-
-  const stops = selectedCards.reduce((n, r) => n + Number(r.stops || 0), 0);
-  const hours = selectedCards.map((r) => {
-    const m = String(r.route_duration_hm || "").match(/(\d+)h\s+(\d+)m/);
-    return m ? Number(m[1]) + Number(m[2]) / 60 : 0;
-  }).filter((n) => n > 0);
-  const driverMap = new Map<string, { stops: number; hours: number }>();
-  for (const r of selectedCards) {
-    const d = String(r.display_driver || "Unknown").trim() || "Unknown";
-    const x = driverMap.get(d) || { stops: 0, hours: 0 };
-    x.stops += Number(r.stops || 0);
-    const m = String(r.route_duration_hm || "").match(/(\d+)h\s+(\d+)m/);
-    if (m) x.hours += Number(m[1]) + Number(m[2]) / 60;
-    driverMap.set(d, x);
-  }
-  const chart = [...driverMap.entries()].map(([driver, v]) => ({ driver, stops: v.stops, hours: round(v.hours) })).sort((a, b) => b.stops - a.stops);
-  return {
-    standalone_mode: false, validation_results: [],
-    kpis: {
-      gps_vehicles: selectedCards.length, total_gps_stops: stops, avg_stops_per_vehicle: selectedCards.length ? round(stops / selectedCards.length) : 0,
-      avg_route_duration_hrs: hours.length ? round(hours.reduce((a, b) => a + b, 0) / hours.length) : null,
-      avg_stop_duration: "", sap_orders: rows.length, sap_total_boxes: rows.reduce((n, r) => n + r.boxes, 0),
-    },
-    chart_stops: { labels: chart.map((x) => x.driver), values: chart.map((x) => x.stops) },
-    chart_route_hours: { labels: chart.map((x) => x.driver), values: chart.map((x) => x.hours) },
-    route_cards: selectedCards,
-  };
+  const stops=cards.reduce((n,r)=>n+Number(r.stops||0),0);
+  const hours=cards.map(r=>{const m=String(r.route_duration_hm||"").match(/(\d+)h\s+(\d+)m/);return m?Number(m[1])+Number(m[2])/60:0;}).filter(n=>n>0);
+  const driverMap=new Map<string,{stops:number;hours:number}>();
+  for(const r of cards){const d=String(r.display_driver||"Unknown").trim()||"Unknown";const x=driverMap.get(d)||{stops:0,hours:0};x.stops+=Number(r.stops||0);const m=String(r.route_duration_hm||"").match(/(\d+)h\s+(\d+)m/);if(m)x.hours+=Number(m[1])+Number(m[2])/60;driverMap.set(d,x);}
+  const chart=[...driverMap.entries()].map(([driver,v])=>({driver,stops:v.stops,hours:round(v.hours)})).sort((a,b)=>b.stops-a.stops);
+  return {standalone_mode:false,validation_results:[],kpis:{gps_vehicles:cards.length,total_gps_stops:stops,avg_stops_per_vehicle:cards.length?round(stops/cards.length):0,avg_route_duration_hrs:hours.length?round(hours.reduce((a,b)=>a+b,0)/hours.length):null,avg_stop_duration:"",sap_orders:rows.length,sap_total_boxes:rows.reduce((n,r)=>n+r.boxes,0)},chart_stops:{labels:chart.map(x=>x.driver),values:chart.map(x=>x.stops)},chart_route_hours:{labels:chart.map(x=>x.driver),values:chart.map(x=>x.hours)},route_cards:cards};
 }
 
 export function buildLocalForEndpoint(endpoint: string, dataset: DashboardLocalDataset, gf?: GlobalFilters): any {
   const rows=filterDashboardRows(dataset,gf); const e=endpoint.replace(/^\//,"");
-  if(e.includes("driver-performance")) {
-    const ownershipFilters = { ...(gf || EMPTY), drivers: "" };
-    const ownershipRows = filterDashboardRows(dataset, ownershipFilters);
-    return buildLocalDriverPerformance(rows, dataset.routeCards, ownershipRows);
-  }
+  if(e.includes("driver-performance")) return buildLocalDriverPerformance(rows,dataset.routeCards);
   if(e.includes("lead-time")) return buildLocalLeadTime(rows, gf);
   if(e.includes("order-summary")) return buildLocalOrderSummary(rows);
   if(e.includes("area-analytics")) return buildLocalArea(rows);

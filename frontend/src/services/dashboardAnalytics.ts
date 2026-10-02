@@ -296,8 +296,7 @@ function localExportData(params: URLSearchParams) {
   const orders = buildLocalOrderSummary(rows);
   const areas = buildLocalArea(rows);
   const notSupplied = buildLocalNotSupplied(rows);
-  const ownershipRows = filterDashboardRows(dataset, { ...gf, drivers: "" });
-  const perf = buildLocalDriverPerformance(rows, dataset.routeCards, ownershipRows);
+  const perf = buildLocalDriverPerformance(rows, dataset.routeCards);
   return { dataset, rows, home, lead, orders, areas, notSupplied, perf };
 }
 
