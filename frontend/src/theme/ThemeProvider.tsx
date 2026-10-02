@@ -72,17 +72,35 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const wallpaperLoaded = useRef(false);
 
   const setWallpaper = (url: string | null) => {
+    const img = document.querySelector<HTMLImageElement>(".dispatchops-initial-wallpaper");
     if (url) {
       document.body.style.setProperty("--dispatchops-wallpaper", `url("${url}")`);
-      document.body.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.15), rgba(0,0,0,0.15)), url("${url}")`;
-      document.body.style.backgroundSize = "cover";
-      document.body.style.backgroundPosition = "center";
-      document.body.style.backgroundAttachment = "fixed";
+      document.body.style.backgroundImage = "none";
+      document.body.style.backgroundSize = "auto";
+      document.body.style.backgroundPosition = "initial";
+      document.body.style.backgroundAttachment = "initial";
       document.body.classList.add("custom-bg");
+      if (img && img.src !== url) {
+        const swap = new Image();
+        swap.decoding = "async";
+        swap.fetchPriority = "high";
+        swap.onload = () => { img.src = url; };
+        swap.src = url;
+      } else if (!img) {
+        const early = document.createElement("img");
+        early.src = url;
+        early.alt = "";
+        early.setAttribute("aria-hidden", "true");
+        early.decoding = "async";
+        early.fetchPriority = "high";
+        early.className = "dispatchops-initial-wallpaper";
+        document.body.appendChild(early);
+      }
     } else {
       document.body.style.backgroundImage = "";
       document.body.style.removeProperty("--dispatchops-wallpaper");
       document.body.classList.remove("custom-bg");
+      if (img) img.remove();
     }
   };
 
@@ -138,6 +156,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     applyThemeToDocument(theme);
     setResolvedTheme(theme);
     const wallpaperTheme = theme === "high_contrast" ? "light" : theme;
+    document.body.style.setProperty("--dispatchops-wallpaper-overlay", theme === "dark" || theme === "high_contrast"
+      ? "linear-gradient(180deg, rgba(4,12,22,.22), rgba(4,12,22,.34))"
+      : "linear-gradient(180deg, rgba(255,255,255,.08), rgba(4,12,22,.16))");
     setWallpaperPair(wallpaperCache.current.dark, wallpaperCache.current.light);
     const cached = wallpaperCache.current[wallpaperTheme];
     if (cached !== null || wallpaperLoaded.current) setWallpaper(cached);

@@ -82,16 +82,19 @@
           root.style.setProperty("--dispatchops-wallpaper-dark", dark ? 'url("' + dark.replace(/"/g, '\\"') + '")' : "none");
           root.style.setProperty("--dispatchops-wallpaper-light", light ? 'url("' + light.replace(/"/g, '\\"') + '")' : "none");
           if (dark || light) document.body.classList.add("custom-bg");
+          document.body.style.setProperty("--dispatchops-wallpaper-overlay", theme === "dark" || theme === "high_contrast"
+            ? "linear-gradient(180deg, rgba(4,12,22,.22), rgba(4,12,22,.34))"
+            : "linear-gradient(180deg, rgba(255,255,255,.08), rgba(4,12,22,.16))");
           var current = theme === "dark" || theme === "high_contrast" ? dark : light;
           if (current) {
             var img = document.createElement("img");
             img.src = current;
             img.alt = "";
             img.setAttribute("aria-hidden", "true");
-            img.decoding = "sync";
+            img.decoding = "async";
             img.fetchPriority = "high";
             img.className = "dispatchops-initial-wallpaper";
-            document.body.insertBefore(img, document.getElementById("root"));
+            document.body.appendChild(img);
           }
         } catch (_) {}
       })();

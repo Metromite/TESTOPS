@@ -1263,10 +1263,10 @@ body.custom-bg{background-color:var(--navy)!important}
 .iso-vehicle{position:relative;width:135px;height:78px;margin:auto;transform-style:preserve-3d}.vehicle-box{position:absolute;left:11px;top:17px;width:83px;height:42px;background:linear-gradient(145deg,#6eb7ff,#28558c);border:1px solid rgba(255,255,255,.3);border-radius:7px;transform:skewY(-8deg);box-shadow:inset -8px -4px 0 rgba(0,0,0,.13)}.vehicle-box:after{content:"";position:absolute;right:-12px;top:4px;border-left:12px solid #234c7d;border-top:18px solid transparent;border-bottom:18px solid transparent}.vehicle-box span{position:absolute;inset:0;display:grid;place-items:center;color:white;font-weight:950;font-size:12px;text-shadow:0 1px 2px #000}.vehicle-cab{position:absolute;right:10px;top:27px;width:38px;height:33px;background:linear-gradient(145deg,#d7efff,#6388a8);border-radius:7px 12px 5px 4px;transform:skewY(-8deg);border:1px solid rgba(255,255,255,.3)}.vehicle-cab:after{content:"";position:absolute;left:6px;top:5px;width:22px;height:10px;border-radius:3px;background:rgba(38,83,112,.55);border:1px solid rgba(255,255,255,.25)}.vehicle-wheel{position:absolute;top:54px;width:20px;height:20px;border-radius:50%;background:#0d1420;border:4px solid #667487;box-shadow:inset 0 0 0 3px #1b2432;z-index:8}.vehicle-wheel.a{left:24px}.vehicle-wheel.b{right:21px}.vehicle-load{position:absolute;left:23px;top:2px;width:108px;height:8px;border-radius:99px;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.25);overflow:hidden}.vehicle-load>div{height:100%;background:linear-gradient(90deg,#f59e0b,#facc15);transition:width .25s ease}.vehicle-load>div.full{background:linear-gradient(90deg,#34d399,#16a34a)}.vehicle-label{margin-top:0;text-align:center;text-shadow:0 2px 4px #000}.vehicle-label b{display:block;color:#fff;font-size:10px}.vehicle-label span{display:block;color:rgba(255,255,255,.78);font-size:8px}.vehicle-label em{display:block;color:#8de6b0;font-size:8px;font-style:normal;margin-top:2px}.route-line-label{display:block;text-align:center;color:#9bd0ff;font-size:8px;margin-top:3px;text-shadow:0 2px 4px #000}.iso-vehicle-details{position:absolute;right:0;top:18px;border:0;width:23px;height:23px;border-radius:8px;background:rgba(0,0,0,.5);color:#fff;cursor:pointer}
 .bulk-world-orders{margin-top:14px;position:relative;z-index:4;padding:16px!important;border-radius:24px!important;background:rgba(7,17,28,.34)!important}.bulk-order-depot{display:flex;flex-wrap:wrap;gap:12px;min-height:110px;padding:12px;border-radius:18px;background:rgba(0,0,0,.16);border:1px dashed rgba(255,255,255,.14)}.bulk-order-token{display:flex;align-items:center;gap:10px;min-width:300px;max-width:420px;padding:9px;border-radius:15px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.13);cursor:grab;box-shadow:0 8px 20px rgba(0,0,0,.16);transition:transform .15s ease}.bulk-order-token:hover{transform:translateY(-3px)}.order-token-pallet{position:relative;width:70px;height:60px;flex:none;filter:drop-shadow(0 8px 5px rgba(0,0,0,.3))}.order-token-pallet .pallet-top{position:absolute;left:17px;top:8px;width:37px;height:25px;background:linear-gradient(135deg,#d9b27b,#956637);transform:skewY(-18deg) rotate(0deg);border-radius:3px}.order-token-pallet .pallet-left{position:absolute;left:17px;top:32px;width:37px;height:15px;background:#79502f;transform:skewY(18deg);border-radius:2px}.order-token-pallet .pallet-right{position:absolute;left:54px;top:19px;width:15px;height:28px;background:#a9753e;transform:skewY(-18deg);border-radius:2px}.order-token-pallet strong{position:absolute;left:0;right:0;top:17px;text-align:center;color:#fff;font-size:15px;text-shadow:0 2px 3px #000;z-index:3}.order-token-pallet span{position:absolute;left:0;right:0;bottom:0;text-align:center;color:#d8c09e;font-size:7px;font-weight:900}.order-token-info{min-width:0;flex:1}.order-token-info b,.order-token-info span,.order-token-info small,.order-token-info em{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.order-token-info b{font-size:11px}.order-token-info span{font-size:9px;color:rgba(255,255,255,.75);margin-top:2px}.order-token-info small{font-size:8px;color:var(--text-muted);margin-top:2px}.order-token-info em{font-size:8px;color:#7fe5a7;font-style:normal;margin-top:4px}.order-token-actions{display:flex;gap:4px}.order-token-actions .btn{min-width:27px!important;width:27px;height:27px;padding:0}
 .bulk-floating-panel{position:relative;z-index:60;margin-top:12px;padding:14px!important}.bulk-panel-title{display:flex;align-items:center;gap:7px;font-weight:900;font-size:12px;margin-bottom:10px}.bulk-panel-title button{margin-left:auto;border:0;background:transparent;color:var(--text);cursor:pointer}.bulk-fleet-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:7px}.bulk-fleet-mini-icon{width:32px;height:28px;display:grid;place-items:center;font-size:19px}.bulk-selected-vehicles{display:grid;gap:8px;margin-top:10px}.bulk-vehicle-editor{display:grid;grid-template-columns:100px repeat(3,1fr);gap:8px;align-items:center;padding:8px;border-radius:12px;background:var(--glass-bg-2);border:1px solid var(--glass-border);font-size:10px}.bulk-vehicle-editor label{font-size:8px;color:var(--text-muted);display:grid;gap:3px}.bulk-vehicle-editor input{min-height:31px!important;font-size:10px!important}.bulk-command-section{display:grid;gap:6px;margin-top:12px;padding-top:12px;border-top:1px solid var(--glass-border)}.bulk-command-title{font-size:9px;font-weight:950;letter-spacing:.13em;color:var(--text-muted);margin-bottom:2px}
-body.custom-bg{background-color:var(--navy)!important;background-repeat:no-repeat!important;background-size:cover!important;background-position:center!important;background-attachment:fixed!important}
-body.custom-bg::before{z-index:0!important;opacity:1!important;background-image:var(--dispatchops-wallpaper)!important;background-repeat:no-repeat!important;background-size:cover!important;background-position:center!important;background-attachment:fixed!important}
-body.custom-bg::after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background:linear-gradient(180deg,rgba(4,12,22,.05),rgba(4,12,22,.18))}
-body.custom-bg>*,body.custom-bg .page-fade-in{position:relative;z-index:1}
+body.custom-bg{background-color:var(--navy)!important;background-image:none!important;background-repeat:no-repeat!important;background-size:auto!important;background-position:initial!important;background-attachment:initial!important}
+body.custom-bg::before{content:none!important}
+body.custom-bg::after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background:var(--dispatchops-wallpaper-overlay,linear-gradient(180deg,rgba(4,12,22,.18),rgba(4,12,22,.30)))!important}
+body.custom-bg>#root,body.custom-bg .page-fade-in{position:relative;z-index:1}
 .bulk-world-page .glass-card{background:rgba(7,16,28,.30)}
 @media(max-width:800px){.bulk-world-viewport{height:520px}.bulk-world-toolbar{display:block}.bulk-world-legend{margin-top:8px}.bulk-world-building{width:130px}.bulk-world-vehicle{width:130px}.bulk-order-token{min-width:100%;max-width:none}.bulk-vehicle-editor{grid-template-columns:1fr 1fr}.bulk-isometric-game{min-height:585px}}
 
@@ -6379,29 +6379,13 @@ body.custom-bg { background-repeat: no-repeat !important; }
 }
 .theme-switch-track.is-dark .theme-switch-thumb { transform: translateX(40px); }
 
-/* Theme wallpaper cross-fade. Both theme images stay resident so switching
-   never waits for a network refresh and the visible background cross-fades. */
-body.custom-bg::before,
+/* Quiet premium wallpaper treatment: one fixed image + one stable readability veil.
+   ThemeProvider swaps the image only after the replacement has decoded, so the
+   application never exposes a blank background during refresh/theme changes. */
 body.custom-bg::after {
-  transition: opacity .38s cubic-bezier(.22,1,.36,1) !important;
+  transition: background .22s ease !important;
 }
-body.custom-bg::before {
-  background-image: var(--dispatchops-wallpaper-dark) !important;
-  opacity: 0;
-  z-index: 0 !important;
-}
-body.custom-bg::after {
-  background-image: var(--dispatchops-wallpaper-light), linear-gradient(180deg,rgba(4,12,22,.05),rgba(4,12,22,.18)) !important;
-  background-size: cover, auto !important;
-  background-position: center, center !important;
-  background-repeat: no-repeat, repeat !important;
-  opacity: 0;
-  z-index: 0 !important;
-}
-html[data-theme="dark"] body.custom-bg::before,
-html[data-theme="high_contrast"] body.custom-bg::before { opacity: 1 !important; }
-html[data-theme="light"] body.custom-bg::after { opacity: 1 !important; }
-body:not(.custom-bg) { transition: background-color .38s ease, background-image .38s ease !important; }
+body:not(.custom-bg) { transition: background-color .22s ease !important; }
 
 /* Keep the dashboard export menu in its own top stacking layer. */
 .dashboard-page .glass-header {
@@ -6652,27 +6636,26 @@ html[data-theme="dark"] .dashboard-page > .glass-header {
   pointer-events: none;
   user-select: none;
   -webkit-user-drag: none;
-  filter: saturate(1.03);
+  filter: saturate(.82) brightness(.88) contrast(.97);
   transform: translateZ(0);
   contain: strict;
+  z-index: 0 !important;
+  opacity: 1;
 }
-body.custom-bg > .dispatchops-initial-wallpaper + #root {
-  position: relative;
-  z-index: 1;
-}
-/* The early-paint wallpaper is a viewport layer, never a document-flow item.
-   `body.custom-bg > *` above intentionally lifts normal app children into
-   the foreground; without this explicit override it also matches the
-   pre-React wallpaper <img>, changing its position from fixed to relative
-   and creating an extra 100vh blank page above the real application. */
+/* The wallpaper is a viewport-only layer and is never part of document flow.
+   Keep the app root above it without touching the global scroll model. */
 body.custom-bg > .dispatchops-initial-wallpaper {
   position: fixed !important;
   inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
   z-index: 0 !important;
+  opacity: 1 !important;
 }
-/* Once the normal theme wallpaper pseudo-layers are active, the bridge image
-   stays underneath them so it cannot create a second visible copy. */
-body.custom-bg .dispatchops-initial-wallpaper { opacity: 0; }
+body.custom-bg > #root {
+  position: relative;
+  z-index: 1;
+}
 
 /* ------------------------------------------------------------------
    DASHBOARD V13.6.55 — PROFESSIONAL INITIAL LOADING EXPERIENCE
