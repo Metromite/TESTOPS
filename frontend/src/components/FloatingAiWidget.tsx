@@ -8,11 +8,12 @@ interface Msg { role: "user" | "assistant"; content: string; meta?: string; pend
 
 const LOGI_BOT_SCENE = "/scene-clean.splinecode";
 
-function SplineLogiBot({ size = 190 }: { size?: number }) {
+function SplineLogiBot({ size = 250 }: { size?: number }) {
   const rafRef = useRef<number | null>(null);
   const splineRef = useRef<any>(null);
   const robotRef = useRef<any>(null);
   const eyesRef = useRef<any>(null);
+  const bodyRef = useRef<any>(null);
   const baseRobotPosition = useRef<{ x: number; y: number; z: number } | null>(null);
   const baseRobotRotation = useRef<{ x: number; y: number; z: number } | null>(null);
   const baseRobotScale = useRef<{ x: number; y: number; z: number } | null>(null);
@@ -39,25 +40,29 @@ function SplineLogiBot({ size = 190 }: { size?: number }) {
       const baseRobotScl = baseRobotScale.current;
       const baseRotation = baseEyesRotation.current;
 
-      // The Robot body must never follow the cursor. The authored Follow event in
-      // the supplied scene is neutralized here by restoring its original position
-      // every frame. This leaves the mascot planted in one place.
+      // HARD BODY LOCK: the supplied scene's Follow/physics can rotate the Robot
+      // onto its back. Keep the mascot upright at all times and never let the
+      // cursor drive the body. The authored facing direction (Y/Z) is preserved;
+      // X is explicitly neutralized so head stays above feet.
       if (robot && base) {
         robot.position.x = base.x;
         robot.position.y = base.y;
         robot.position.z = base.z;
-        // The authored scene contains a Follow/physics setup on Robot. Lock the
-        // complete mascot transform so the body can never tip, fall, or follow.
-        if (baseRobotRot && robot.rotation) {
-          robot.rotation.x = baseRobotRot.x;
-          robot.rotation.y = baseRobotRot.y;
-          robot.rotation.z = baseRobotRot.z;
+        if (robot.rotation) {
+          robot.rotation.x = 0;
+          robot.rotation.y = baseRobotRot?.y ?? 0;
+          robot.rotation.z = baseRobotRot?.z ?? 0;
         }
         if (baseRobotScl && robot.scale) {
           robot.scale.x = baseRobotScl.x;
           robot.scale.y = baseRobotScl.y;
           robot.scale.z = baseRobotScl.z;
         }
+      }
+
+      const body = bodyRef.current;
+      if (body && body.rotation) {
+        body.rotation.x = 0;
       }
 
       if (eyes && baseRotation) {
@@ -86,8 +91,10 @@ function SplineLogiBot({ size = 190 }: { size?: number }) {
 
     const robot = spline.findObjectByName?.("Robot");
     const eyes = spline.findObjectByName?.("Eyes");
+    const body = spline.findObjectByName?.("Body");
     robotRef.current = robot || null;
     eyesRef.current = eyes || null;
+    bodyRef.current = body || null;
 
     if (robot?.position) {
       baseRobotPosition.current = {
@@ -122,7 +129,8 @@ function SplineLogiBot({ size = 190 }: { size?: number }) {
     [
       "Floor", "floor", "Message", "Message 2", "Message 3",
       "SplineWatermark", "SplineWatermarkD", "logo", "mouseEventTarget",
-      "MouseEventTarget", "mouse event target",
+      "MouseEventTarget", "mouse event target", "Cursor Target", "cursor",
+      "Target Head", "Target Movement", "Target Px", "target", "Follow", "LookAt",
     ].forEach((name) => {
       const object = spline.findObjectByName?.(name);
       if (object) object.visible = false;
@@ -131,7 +139,12 @@ function SplineLogiBot({ size = 190 }: { size?: number }) {
     // The exported scene may carry a physics body on Robot. Disable the common
     // runtime physics flags when the exporter exposes them; this prevents gravity
     // from taking over while leaving the authored visual animation intact.
-    [robot, spline.findObjectByName?.("Body")].forEach((object: any) => {
+    [
+      robot,
+      body,
+      spline.findObjectByName?.("rigidBody"),
+      spline.findObjectByName?.("fusedBody"),
+    ].forEach((object: any) => {
       if (!object) return;
       if ("usePhysics" in object) object.usePhysics = false;
       if ("physicsEnabled" in object) object.physicsEnabled = false;

@@ -7240,12 +7240,13 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
 .logi-bot-scene canvas { display: block; }
 .logi-bot-engraving { display: none !important; }
 .logi-launcher-orb {
-  width: 190px !important;
-  height: 190px !important;
+  width: 250px !important;
+  height: 250px !important;
   border-radius: 0 !important;
   overflow: visible !important;
   background: transparent !important;
   box-shadow: none !important;
+  transform: none !important;
 }
 .logi-launcher:hover .logi-launcher-orb {
   transform: none !important;
