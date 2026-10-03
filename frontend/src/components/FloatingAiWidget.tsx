@@ -9,6 +9,7 @@ interface Msg { role: "user" | "assistant"; content: string; meta?: string; pend
 const LOGI_BOT_SCENE = "/scene-clean.splinecode";
 
 function SplineLogiBot({ size = 250, headOnly = false }: { size?: number; headOnly?: boolean }) {
+  const [sceneReady, setSceneReady] = useState(false);
   const rafRef = useRef<number | null>(null);
   const splineRef = useRef<any>(null);
   const robotRef = useRef<any>(null);
@@ -165,12 +166,21 @@ function SplineLogiBot({ size = 250, headOnly = false }: { size?: number; headOn
     // Keep the authored idle/loop animation running; do not restart it from the
     // pointer loop, which can otherwise interrupt animation cycles.
     spline.play?.();
+
+    // Do not expose the raw first Spline frame. The exported scene can briefly
+    // render its authored floor/facing pose before our runtime locks are applied.
+    // Reveal only after the scene has had a couple of paint frames to settle.
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        window.setTimeout(() => setSceneReady(true), 90);
+      });
+    });
   };
 
   return (
     <div
-      className="logi-bot-scene"
-      style={{ width: size, height: size }}
+      className={`logi-bot-scene ${headOnly ? "logi-bot-head-scene" : ""}`}
+      style={{ width: size, height: size, visibility: sceneReady ? "visible" : "hidden", opacity: sceneReady ? 1 : 0 }}
       aria-hidden="true"
     >
       <Spline
@@ -270,8 +280,8 @@ export default function FloatingAiWidget() {
         <div
           className="glass-card modal-pop"
           style={{
-            position: "fixed", bottom: 238, right: 6, width: 380, height: 520,
-            display: "flex", flexDirection: "column", zIndex: 200, padding: 0, overflow: "hidden",
+            position: "fixed", bottom: 154, right: 6, width: 380, height: 520,
+            display: "flex", flexDirection: "column", zIndex: 1200, padding: 0, overflow: "hidden",
             boxShadow: "var(--elevation-2)",
           }}
         >
@@ -362,7 +372,7 @@ export default function FloatingAiWidget() {
       )}
 
       <div
-        style={{ position: "fixed", bottom: 20, right: 2, zIndex: 200, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10 }}
+        style={{ position: "fixed", bottom: 20, right: -18, zIndex: 1200, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}
       >
         {hovering && !open && (
           <div
@@ -370,6 +380,7 @@ export default function FloatingAiWidget() {
             style={{
               padding: "10px 14px", borderRadius: 12, fontSize: 13, fontWeight: 500,
               boxShadow: "var(--elevation-2)", whiteSpace: "nowrap", maxWidth: 260,
+              transform: "translateY(22px)",
             }}
           >
             Hi, I'm Logi. How can I help you?
@@ -384,6 +395,7 @@ export default function FloatingAiWidget() {
         >
           <span className="logi-launcher-glow" aria-hidden="true" />
           <span className="logi-launcher-orb" aria-hidden="true"><SplineLogiBot size={210} /></span>
+          <span className="logi-bot-engraving" aria-hidden="true"><img src="/logi-company-engraving.png" alt="" /></span>
         </button>
       </div>
     </div>

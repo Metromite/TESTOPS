@@ -7307,3 +7307,65 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
 .logi-chat-bubble + * {
   max-width: 100%;
 }
+
+/* LOGI 3.0 — precision geometry only. Keep the proven mascot untouched while
+   aligning the UI to the visible robot bounds instead of the transparent canvas. */
+.logi-chat-bubble {
+  position: relative;
+  z-index: 1;
+}
+.logi-bot-head-scene {
+  overflow: hidden !important;
+  flex: 0 0 auto;
+}
+.logi-bot-head-scene > div,
+.logi-bot-head-scene > canvas,
+.logi-bot-head-scene > div > div,
+.logi-bot-head-scene canvas {
+  width: 100% !important;
+  height: 100% !important;
+  transform: scale(1.45) !important;
+  transform-origin: 50% 50% !important;
+}
+.logi-bot-engraving {
+  position: absolute !important;
+  left: 50% !important;
+  top: 69% !important;
+  width: 27% !important;
+  height: 17% !important;
+  transform: translate(-50%, -50%) !important;
+  display: block !important;
+  pointer-events: none !important;
+  z-index: 8 !important;
+}
+.logi-bot-engraving::before,
+.logi-bot-engraving::after {
+  content: "" !important;
+  position: absolute !important;
+  inset: 0 !important;
+  background: url("/logi-company-engraving.png") center / contain no-repeat !important;
+  pointer-events: none !important;
+}
+.logi-bot-engraving::before {
+  opacity: .22 !important;
+  transform: translate(.55px, .7px) !important;
+  filter: grayscale(1) contrast(1.25) brightness(.52) !important;
+  mix-blend-mode: multiply !important;
+}
+.logi-bot-engraving::after {
+  opacity: .34 !important;
+  transform: translate(-.45px, -.45px) !important;
+  filter: grayscale(1) contrast(.8) brightness(2.25) !important;
+  mix-blend-mode: screen !important;
+}
+.logi-bot-engraving img {
+  position: relative !important;
+  z-index: 2 !important;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+  display: block !important;
+  opacity: .13 !important;
+  filter: grayscale(1) contrast(1.2) brightness(.66) !important;
+  mix-blend-mode: multiply !important;
+}
