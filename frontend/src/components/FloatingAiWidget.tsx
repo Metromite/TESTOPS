@@ -8,7 +8,7 @@ interface Msg { role: "user" | "assistant"; content: string; meta?: string; pend
 
 const LOGI_BOT_SCENE = "/scene-clean.splinecode";
 
-function SplineLogiBot({ size = 250 }: { size?: number }) {
+function SplineLogiBot({ size = 250, headOnly = false }: { size?: number; headOnly?: boolean }) {
   const rafRef = useRef<number | null>(null);
   const splineRef = useRef<any>(null);
   const robotRef = useRef<any>(null);
@@ -56,9 +56,10 @@ function SplineLogiBot({ size = 250 }: { size?: number }) {
           robot.rotation.z = (baseRobotRot?.z ?? 0) + Math.PI;
         }
         if (baseRobotScl && robot.scale) {
-          robot.scale.x = baseRobotScl.x * 1.55;
-          robot.scale.y = baseRobotScl.y * 1.55;
-          robot.scale.z = baseRobotScl.z * 1.55;
+          const scaleMultiplier = headOnly ? 2.15 : 1.55;
+          robot.scale.x = baseRobotScl.x * scaleMultiplier;
+          robot.scale.y = baseRobotScl.y * scaleMultiplier;
+          robot.scale.z = baseRobotScl.z * scaleMultiplier;
         }
       }
 
@@ -97,6 +98,9 @@ function SplineLogiBot({ size = 250 }: { size?: number }) {
     robotRef.current = robot || null;
     eyesRef.current = eyes || null;
     bodyRef.current = body || null;
+
+    // Chat avatars use only Logi's head. The main floating mascot keeps the full body.
+    if (headOnly && body) body.visible = false;
 
     if (robot?.position) {
       baseRobotPosition.current = {
@@ -266,14 +270,13 @@ export default function FloatingAiWidget() {
         <div
           className="glass-card modal-pop"
           style={{
-            position: "fixed", bottom: 128, right: 24, width: 380, height: 520,
+            position: "fixed", bottom: 238, right: 6, width: 380, height: 520,
             display: "flex", flexDirection: "column", zIndex: 200, padding: 0, overflow: "hidden",
             boxShadow: "var(--elevation-2)",
           }}
         >
           <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--glass-border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <strong style={{ fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
-              <SplineLogiBot size={26} />
               LOGI Assistant
             </strong>
             <button onClick={() => setOpen(false)} style={{ background: "none", border: "none", color: "var(--muted)", fontSize: 18, cursor: "pointer" }}>×</button>
@@ -282,7 +285,7 @@ export default function FloatingAiWidget() {
           <div style={{ flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
             {messages.length === 0 && (
               <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                <SplineLogiBot size={34} />
+                <SplineLogiBot size={58} headOnly />
                 <div style={{ background: "var(--navy3)", padding: "10px 12px", borderRadius: 10, fontSize: 13, maxWidth: "85%" }}>
                   👋 Hi, I'm LOGI. I can look things up for you, and actually do things. Just ask.
                 </div>
@@ -290,7 +293,7 @@ export default function FloatingAiWidget() {
             )}
             {messages.map((m, i) => (
               <div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "92%", display: "flex", gap: 7, alignItems: "flex-end" }}>
-                {m.role === "assistant" && <SplineLogiBot size={34} />}
+                {m.role === "assistant" && <SplineLogiBot size={58} headOnly />}
                 <div style={{ minWidth: 0 }}>
                   <div className={m.role === "assistant" ? "logi-chat-bubble" : undefined} style={{
                     background: m.role === "user" ? "var(--blue)" : "var(--navy3)",
@@ -332,7 +335,7 @@ export default function FloatingAiWidget() {
             ))}
             {loading && (
               <div style={{ alignSelf: "flex-start", display: "flex", gap: 7, alignItems: "flex-end" }}>
-                <SplineLogiBot size={34} />
+                <SplineLogiBot size={58} headOnly />
                 <div className="logi-chat-bubble" style={{ background: "var(--navy3)", padding: "9px 12px", borderRadius: 10, fontSize: 13 }}>
                   <span className="logi-typing-dots"><i></i><i></i><i></i></span>
                 </div>
@@ -359,7 +362,7 @@ export default function FloatingAiWidget() {
       )}
 
       <div
-        style={{ position: "fixed", bottom: 20, right: 20, zIndex: 200, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10 }}
+        style={{ position: "fixed", bottom: 20, right: 2, zIndex: 200, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10 }}
       >
         {hovering && !open && (
           <div

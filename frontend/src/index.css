@@ -7301,3 +7301,9 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
   transform: none !important;
   filter: none !important;
 }
+
+
+/* LOGI 2.9 — small placement/chat/avatar refinements only. */
+.logi-chat-bubble + * {
+  max-width: 100%;
+}
