@@ -9,7 +9,7 @@ interface Msg { role: "user" | "assistant"; content: string; meta?: string; pend
 const LOGI_BOT_SCENE = "https://prod.spline.design/ACGnkYrEMTuUnRlk/scene.splinecode";
 
 function SplineLogiBot({ size = 116 }: { size?: number }) {
-  const frameRef = useRef<HTMLDivElement>(null);
+  const sceneRef = useRef<any>(null);
   const robotRef = useRef<any>(null);
   const basePositionRef = useRef<{ x: number; y: number; z: number } | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -19,8 +19,47 @@ function SplineLogiBot({ size = 116 }: { size?: number }) {
   }, []);
 
   const handleLoad = (spline: any) => {
+    sceneRef.current = spline;
+    spline.setBackgroundColor?.("transparent");
+    // Zoom the camera into the mascot so LOGI reads as the robot itself,
+    // not as a small object sitting inside a separate Spline environment.
+    spline.setZoom?.(1.65);
+
     const robot = spline.findObjectByName?.("Robot");
     if (!robot) return;
+
+    // Strip the authored scene down to the mascot subtree. This keeps the
+    // robot's own materials/lights/animations while removing the separate
+    // room/environment objects that made it look like a window inside LOGI.
+    const robotObjects = new Set<any>();
+    const collectRobotTree = (node: any) => {
+      if (!node || robotObjects.has(node)) return;
+      robotObjects.add(node);
+      const children = Array.isArray(node.children) ? node.children : [];
+      children.forEach(collectRobotTree);
+    };
+    collectRobotTree(robot);
+
+    const isLightLike = (obj: any) => {
+      const type = String(obj?.type || obj?.constructor?.name || "").toLowerCase();
+      return type.includes("light") || type.includes("camera");
+    };
+
+    const belongsToRobot = (obj: any) => {
+      if (robotObjects.has(obj)) return true;
+      let parent = obj?.parent;
+      while (parent) {
+        if (parent === robot) return true;
+        parent = parent.parent;
+      }
+      return false;
+    };
+
+    for (const obj of spline.getAllObjects?.() || []) {
+      if (!belongsToRobot(obj) && !isLightLike(obj)) {
+        obj.visible = false;
+      }
+    }
 
     robotRef.current = robot;
     basePositionRef.current = {
@@ -29,43 +68,35 @@ function SplineLogiBot({ size = 116 }: { size?: number }) {
       z: Number(robot.position?.z || 0),
     };
 
-    const tick = () => {
-      const host = frameRef.current;
+    // The source scene contains a Follow action on Robot and a Look At action
+    // on Eyes. Keep the original Eyes interaction, but lock Robot itself to
+    // its authored position so the mascot never becomes a moving mini-scene.
+    const lockRobot = () => {
       const current = robotRef.current;
       const base = basePositionRef.current;
-
-      if (host && current && base) {
-        const dx = Number(current.position?.x || 0) - base.x;
-        const dz = Number(current.position?.z || 0) - base.z;
-
-        // Keep the complete Robot visually locked in place while the scene's
-        // existing Follow event is still allowed to run. The Eyes' existing
-        // Look At event remains untouched, so only the face tracks the mouse.
-        host.style.setProperty("--logi-bot-lock-x", `${-dx * 0.34}px`);
-        host.style.setProperty("--logi-bot-lock-y", `${dz * 0.34}px`);
+      if (current && base) {
+        current.position.x = base.x;
+        current.position.y = base.y;
+        current.position.z = base.z;
       }
-
-      rafRef.current = window.requestAnimationFrame(tick);
+      rafRef.current = window.requestAnimationFrame(lockRobot);
     };
 
     if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
-    rafRef.current = window.requestAnimationFrame(tick);
+    rafRef.current = window.requestAnimationFrame(lockRobot);
   };
 
   return (
     <div
-      ref={frameRef}
       className="logi-bot-scene"
       style={{ width: size, height: size }}
       aria-hidden="true"
     >
-      <div className="logi-bot-scene-canvas">
-        <Spline
-          scene={LOGI_BOT_SCENE}
-          onLoad={handleLoad}
-          style={{ width: "100%", height: "100%" }}
-        />
-      </div>
+      <Spline
+        scene={LOGI_BOT_SCENE}
+        onLoad={handleLoad}
+        style={{ width: "100%", height: "100%", background: "transparent" }}
+      />
       <span className="logi-bot-engraving" aria-hidden="true">
         <img src="/city-pharmacy-logi-mark.png" alt="" />
       </span>

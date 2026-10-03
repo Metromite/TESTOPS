@@ -7132,30 +7132,24 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
 
 
 
-/* LOGI 2.3 — exact Spline robot mascot. Isolated to FloatingAiWidget only. */
+/* LOGI 2.4 — extracted Spline robot mascot. Only FloatingAiWidget uses this. */
 .logi-bot-scene {
   position: relative;
-  overflow: hidden;
-  border-radius: 50%;
+  overflow: visible;
+  border-radius: 0;
   isolation: isolate;
-  background: transparent;
-  --logi-bot-lock-x: 0px;
-  --logi-bot-lock-y: 0px;
+  background: transparent !important;
+  flex: 0 0 auto;
 }
-.logi-bot-scene-canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  transform: translate3d(var(--logi-bot-lock-x), var(--logi-bot-lock-y), 0);
-  will-change: transform;
-}
-.logi-bot-scene-canvas > div,
-.logi-bot-scene-canvas canvas {
+.logi-bot-scene > div,
+.logi-bot-scene > canvas,
+.logi-bot-scene > div > div,
+.logi-bot-scene canvas {
   width: 100% !important;
   height: 100% !important;
+  background: transparent !important;
 }
-.logi-bot-scene-canvas canvas {
+.logi-bot-scene canvas {
   display: block;
 }
 .logi-bot-engraving {
@@ -7180,12 +7174,12 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
 }
 .logi-bot-engraving::before {
   opacity: .16;
-  transform: translate(0.7px, 0.8px);
+  transform: translate(.7px, .8px);
   filter: grayscale(1) contrast(.8) brightness(.55);
 }
 .logi-bot-engraving::after {
   opacity: .18;
-  transform: translate(-0.5px, -0.5px);
+  transform: translate(-.5px, -.5px);
   filter: grayscale(1) contrast(.7) brightness(1.75);
 }
 .logi-bot-engraving img {
@@ -7200,11 +7194,21 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
 .logi-launcher-orb .logi-bot-scene {
   width: 100%;
   height: 100%;
+  overflow: visible;
 }
 .logi-launcher-orb {
-  overflow: hidden;
-  border-radius: 50%;
+  overflow: visible;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+/* If the runtime/export exposes its branding as an HTML layer, keep it out of the mascot UI. */
+.logi-bot-scene [aria-label*="Spline" i],
+.logi-bot-scene [title*="Spline" i],
+.logi-bot-scene [class*="spline-logo" i],
+.logi-bot-scene [class*="spline-watermark" i] {
+  display: none !important;
 }
 @media (prefers-reduced-motion: reduce) {
-  .logi-bot-scene-canvas { will-change: auto; }
+  .logi-bot-scene { will-change: auto; }
 }
