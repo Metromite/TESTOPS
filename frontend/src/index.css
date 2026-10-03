@@ -7284,3 +7284,20 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
 .logi-bot-scene [class*="spline-hint" i] {
   display: none !important;
 }
+
+
+/* LOGI 2.8 — upright mascot orientation + actual robot scale + tight hover target. */
+.logi-launcher {
+  width: 210px !important;
+  height: 210px !important;
+}
+.logi-launcher-orb {
+  width: 210px !important;
+  height: 210px !important;
+  transform: none !important;
+}
+.logi-launcher:hover .logi-launcher-orb,
+.logi-launcher.is-active .logi-launcher-orb {
+  transform: none !important;
+  filter: none !important;
+}

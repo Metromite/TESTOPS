@@ -51,12 +51,14 @@ function SplineLogiBot({ size = 250 }: { size?: number }) {
         if (robot.rotation) {
           robot.rotation.x = 0;
           robot.rotation.y = baseRobotRot?.y ?? 0;
-          robot.rotation.z = baseRobotRot?.z ?? 0;
+          // The supplied scene is authored upside-down in the viewer coordinate frame.
+          // A 180° roll around Z puts the head above the feet while preserving the face toward the screen.
+          robot.rotation.z = (baseRobotRot?.z ?? 0) + Math.PI;
         }
         if (baseRobotScl && robot.scale) {
-          robot.scale.x = baseRobotScl.x;
-          robot.scale.y = baseRobotScl.y;
-          robot.scale.z = baseRobotScl.z;
+          robot.scale.x = baseRobotScl.x * 1.55;
+          robot.scale.y = baseRobotScl.y * 1.55;
+          robot.scale.z = baseRobotScl.z * 1.55;
         }
       }
 
@@ -196,6 +198,22 @@ export default function FloatingAiWidget() {
   const [actionPassword, setActionPassword] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+  const launcherHitRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const updateHoverFromPage = (event: PointerEvent) => {
+      const el = launcherHitRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const distance = Math.hypot(event.clientX - cx, event.clientY - cy);
+      // The tooltip/click target follows the mascot itself, not the old transparent canvas.
+      setHovering(distance <= Math.min(rect.width, rect.height) * 0.46);
+    };
+    window.addEventListener("pointermove", updateHoverFromPage, { passive: true });
+    return () => window.removeEventListener("pointermove", updateHoverFromPage);
+  }, []);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, open]);
 
@@ -342,8 +360,6 @@ export default function FloatingAiWidget() {
 
       <div
         style={{ position: "fixed", bottom: 20, right: 20, zIndex: 200, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10 }}
-        onMouseEnter={() => setHovering(true)}
-        onMouseLeave={() => setHovering(false)}
       >
         {hovering && !open && (
           <div
@@ -357,26 +373,14 @@ export default function FloatingAiWidget() {
           </div>
         )}
         <button
+          ref={launcherHitRef}
           className={`logi-launcher ${hovering || open ? "is-active" : ""}`}
           onClick={() => setOpen((o) => !o)}
           title=""
           aria-label="LOGI Assistant"
-          onMouseMove={(e) => {
-            const el = e.currentTarget.querySelector<HTMLDivElement>(".logi-launcher-orb");
-            if (!el) return;
-            const rect = el.getBoundingClientRect();
-            const x = ((e.clientX - (rect.left + rect.width / 2)) / (rect.width / 2)) * 5;
-            const y = ((e.clientY - (rect.top + rect.height / 2)) / (rect.height / 2)) * 5;
-            el.style.setProperty("--gaze-x", `${Math.max(-5, Math.min(5, x))}px`);
-            el.style.setProperty("--gaze-y", `${Math.max(-5, Math.min(5, y))}px`);
-          }}
-          onMouseLeave={(e) => {
-            const el = e.currentTarget.querySelector<HTMLDivElement>(".logi-launcher-orb");
-            if (el) { el.style.setProperty("--gaze-x", "0px"); el.style.setProperty("--gaze-y", "0px"); }
-          }}
         >
           <span className="logi-launcher-glow" aria-hidden="true" />
-          <span className="logi-launcher-orb" aria-hidden="true"><SplineLogiBot size={190} /></span>
+          <span className="logi-launcher-orb" aria-hidden="true"><SplineLogiBot size={210} /></span>
         </button>
       </div>
     </div>
