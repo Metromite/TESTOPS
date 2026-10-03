@@ -7130,3 +7130,96 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
   .logi-launcher-orb, .logi-orb-galaxy, .logi-orb-galaxy-core, .logi-orb-ring, .logi-orb-energy-a, .logi-orb-energy-b, .logi-orb-stars, .logi-orb-shimmer, .logi-orb-logo, .logi-orb-eye { animation: none !important; }
 }
 
+
+
+/* LOGI 2.2 — exact Spline orb embed. The Spline scene owns its hover/motion;
+   the transparent overlay carries the LOGI identity without changing the scene. */
+.logi-spline-orb {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  overflow: hidden;
+  isolation: isolate;
+  background: transparent;
+}
+.logi-spline-orb-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 50%;
+  display: block;
+  background: transparent;
+}
+.logi-spline-overlay {
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+  border-radius: 50%;
+}
+.logi-spline-eyes {
+  position: absolute;
+  left: 50%;
+  top: 47%;
+  width: 56%;
+  height: 18%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 14%;
+  opacity: .96;
+  filter: drop-shadow(0 1px 5px rgba(0,0,0,.24));
+}
+.logi-spline-eye {
+  width: 30%;
+  height: 100%;
+  border-radius: 999px;
+  background: rgba(255,255,255,.97);
+  transform: scaleY(.92);
+  animation: logi-spline-blink 11.8s ease-in-out infinite;
+}
+.logi-spline-eye:nth-child(2) { animation-delay: -5.2s; }
+.logi-spline-logo {
+  position: absolute;
+  left: 50%;
+  top: 67%;
+  width: 38%;
+  height: 25%;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+}
+.logi-spline-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  filter: drop-shadow(0 0 7px rgba(72,190,255,.42));
+  animation: logi-spline-logo-pulse 6.8s ease-in-out infinite;
+}
+.logi-launcher-orb .logi-spline-orb {
+  width: 100%;
+  height: 100%;
+}
+.logi-launcher-orb .logi-spline-orb-frame {
+  pointer-events: auto;
+}
+.logi-launcher-orb {
+  overflow: hidden;
+  border-radius: 50%;
+}
+@keyframes logi-spline-blink {
+  0%, 43%, 48%, 100% { transform: scaleY(.92); }
+  45%, 47% { transform: scaleY(.08); }
+}
+@keyframes logi-spline-logo-pulse {
+  0%, 100% { opacity: .84; transform: scale(.98); }
+  50% { opacity: 1; transform: scale(1.035); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .logi-spline-eye, .logi-spline-logo img { animation: none !important; }
+}

@@ -5,6 +5,31 @@ import { chatWithData, executeDataAction } from "../services/operational";
 interface PendingAction { tool: string; params: Record<string, any>; }
 interface Msg { role: "user" | "assistant"; content: string; meta?: string; pendingAction?: PendingAction; actionResult?: string; navigate_to?: string; }
 
+const LOGI_SPLINE_SCENE = "https://my.spline.design/orb-lNduwKDzzF6f119CJ7JWh1NK/";
+
+function SplineLogiOrb({ size = 116 }: { size?: number }) {
+  return (
+    <div className="logi-spline-orb" style={{ width: size, height: size }} aria-hidden="true">
+      <iframe
+        className="logi-spline-orb-frame"
+        src={LOGI_SPLINE_SCENE}
+        title="LOGI Orb"
+        loading="eager"
+        allow="autoplay; fullscreen"
+      />
+      <span className="logi-spline-overlay">
+        <span className="logi-spline-eyes">
+          <span className="logi-spline-eye" />
+          <span className="logi-spline-eye" />
+        </span>
+        <span className="logi-spline-logo">
+          <img src="/city-pharmacy-logi-mark.png" alt="" />
+        </span>
+      </span>
+    </div>
+  );
+}
+
 function LogiOrb({ size = 34, talking = false, interactive = false }: { size?: number; talking?: boolean; interactive?: boolean }) {
   const [gaze, setGaze] = useState({ x: 0, y: 0 });
   const [active, setActive] = useState(false);
@@ -258,25 +283,7 @@ export default function FloatingAiWidget() {
           }}
         >
           <span className="logi-launcher-glow" aria-hidden="true" />
-          <span className="logi-launcher-orb" aria-hidden="true">
-            <span className="logi-orb-glass" />
-            <span className="logi-orb-galaxy" />
-            <span className="logi-orb-galaxy-core" />
-            <span className="logi-orb-ring logi-orb-ring-a" />
-            <span className="logi-orb-ring logi-orb-ring-b" />
-            <span className="logi-orb-energy logi-orb-energy-a" />
-            <span className="logi-orb-energy logi-orb-energy-b" />
-            <span className="logi-orb-shimmer" />
-            <span className="logi-orb-stars logi-orb-stars-a" />
-            <span className="logi-orb-stars logi-orb-stars-b" />
-            <span className="logi-orb-eyes">
-              <span className="logi-orb-eye logi-orb-eye-left" />
-              <span className="logi-orb-eye logi-orb-eye-right" />
-            </span>
-            <span className="logi-orb-logo-wrap">
-              <img className="logi-orb-logo" src="/city-pharmacy-logi-mark.png" alt="" />
-            </span>
-          </span>
+          <span className="logi-launcher-orb" aria-hidden="true"><SplineLogiOrb size={116} /></span>
         </button>
       </div>
     </div>
