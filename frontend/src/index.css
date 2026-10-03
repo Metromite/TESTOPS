@@ -6917,13 +6917,13 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
   }
 }
 
-/* LOGI 2.0 — isolated living glass orb. Only used by FloatingAiWidget. */
+/* LOGI 2.1 — living glass/galaxy orb. Isolated to FloatingAiWidget only. */
 .logi-launcher {
   --gaze-x: 0px;
   --gaze-y: 0px;
   position: relative;
-  width: 128px;
-  height: 128px;
+  width: 132px;
+  height: 132px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -6935,131 +6935,198 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
 }
 .logi-launcher-glow {
   position: absolute;
-  inset: 5px;
+  inset: 0;
   border-radius: 50%;
-  background: radial-gradient(circle, color-mix(in srgb, var(--blue) 58%, transparent) 0%, transparent 68%);
-  filter: blur(16px);
-  opacity: .28;
-  transform: scale(.9);
-  transition: opacity .28s ease, transform .28s ease;
+  background:
+    radial-gradient(circle at 50% 48%, color-mix(in srgb, var(--blue) 42%, transparent), transparent 48%),
+    radial-gradient(circle, color-mix(in srgb, var(--cyan) 32%, transparent), transparent 70%);
+  filter: blur(18px);
+  opacity: .24;
+  transform: scale(.88);
+  transition: opacity .3s ease, transform .3s ease;
   pointer-events: none;
 }
-.logi-launcher.is-active .logi-launcher-glow { opacity: .68; transform: scale(1.08); }
-.logi-launcher-orb {
-  --orb-size: 112px;
+.logi-launcher.is-active .logi-launcher-glow { opacity: .62; transform: scale(1.08); }
+.logi-launcher-orb,
+.logi-orb {
+  --orb-size: 116px;
   position: relative;
   width: var(--orb-size);
   height: var(--orb-size);
   border-radius: 50%;
   overflow: hidden;
-  transform: translateY(0) scale(1);
-  transition: transform .24s cubic-bezier(.16,1,.3,1), filter .24s ease;
-  filter: drop-shadow(0 12px 20px color-mix(in srgb, var(--blue) 30%, transparent));
-  animation: logi-orb-breathe 4.4s ease-in-out infinite;
-}
-.logi-launcher:hover .logi-launcher-orb { transform: translateY(-2px) scale(1.055); filter: drop-shadow(0 15px 28px color-mix(in srgb, var(--blue) 48%, transparent)); }
-.logi-orb {
-  position: relative;
-  border-radius: 50%;
-  overflow: hidden;
   flex: 0 0 auto;
-  background: radial-gradient(circle at 35% 25%, color-mix(in srgb, var(--cyan) 26%, transparent), transparent 28%), radial-gradient(circle at 60% 65%, color-mix(in srgb, var(--blue) 48%, transparent), transparent 60%), color-mix(in srgb, var(--navy2) 76%, var(--blue));
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,.26), inset 0 -8px 18px rgba(0,0,0,.14), 0 6px 18px color-mix(in srgb, var(--blue) 24%, transparent);
+  background:
+    radial-gradient(circle at 35% 24%, color-mix(in srgb, var(--cyan) 28%, transparent), transparent 22%),
+    radial-gradient(circle at 62% 66%, color-mix(in srgb, var(--blue) 64%, transparent), transparent 58%),
+    radial-gradient(circle at 50% 48%, color-mix(in srgb, var(--blue) 76%, var(--navy2)), var(--navy2) 74%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255,255,255,.30),
+    inset 12px 10px 24px rgba(255,255,255,.07),
+    inset -18px -18px 34px rgba(0,0,0,.20),
+    0 12px 28px color-mix(in srgb, var(--blue) 38%, transparent);
+  animation: logi-orb-breathe 5.6s ease-in-out infinite, logi-orb-drift 8.5s ease-in-out infinite;
+}
+.logi-launcher-orb { --orb-size: 116px; transition: transform .28s cubic-bezier(.16,1,.3,1), filter .28s ease; }
+.logi-launcher:hover .logi-launcher-orb {
+  transform: translateY(-3px) scale(1.06) rotate(.35deg);
+  filter: drop-shadow(0 16px 30px color-mix(in srgb, var(--blue) 52%, transparent));
 }
 .logi-orb-glass {
   position: absolute;
   inset: 0;
+  z-index: 8;
   border-radius: inherit;
-  background: linear-gradient(135deg, rgba(255,255,255,.30), transparent 24%, transparent 62%, rgba(255,255,255,.07));
-  border: 1px solid rgba(255,255,255,.36);
+  background:
+    radial-gradient(ellipse at 28% 17%, rgba(255,255,255,.23), transparent 24%),
+    linear-gradient(135deg, rgba(255,255,255,.16), transparent 30%, transparent 68%, rgba(255,255,255,.06));
+  border: 1px solid rgba(255,255,255,.34);
   pointer-events: none;
 }
 .logi-orb-glass::after {
   content: "";
   position: absolute;
-  left: 12%; top: 7%;
-  width: 38%; height: 22%;
+  left: 9%; top: 5%;
+  width: 45%; height: 25%;
   border-radius: 50%;
-  background: rgba(255,255,255,.18);
-  filter: blur(7px);
-  transform: rotate(-22deg);
+  background: rgba(255,255,255,.16);
+  filter: blur(9px);
+  transform: rotate(-24deg);
 }
+.logi-orb-galaxy {
+  position: absolute;
+  z-index: 1;
+  inset: -18%;
+  border-radius: 50%;
+  background:
+    radial-gradient(ellipse at 30% 38%, color-mix(in srgb, var(--cyan) 76%, transparent) 0 4%, transparent 20%),
+    radial-gradient(ellipse at 72% 60%, color-mix(in srgb, var(--blue2) 76%, transparent) 0 5%, transparent 23%),
+    radial-gradient(ellipse at 48% 72%, color-mix(in srgb, var(--blue) 72%, transparent) 0 7%, transparent 28%),
+    conic-gradient(from 20deg, transparent 0 13%, color-mix(in srgb, var(--cyan) 35%, transparent) 20%, transparent 31%, color-mix(in srgb, var(--blue2) 32%, transparent) 48%, transparent 63%, color-mix(in srgb, var(--cyan) 28%, transparent) 77%, transparent 90%);
+  filter: blur(5px) saturate(1.18);
+  opacity: .78;
+  transform: rotate(-14deg) scale(1.06);
+  animation: logi-galaxy-spin 13s linear infinite, logi-galaxy-breathe 7s ease-in-out infinite;
+}
+.logi-orb-galaxy-core {
+  position: absolute;
+  z-index: 2;
+  inset: 17%;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 45% 42%, rgba(255,255,255,.12), transparent 10%),
+    radial-gradient(circle, color-mix(in srgb, var(--blue) 42%, transparent), transparent 62%);
+  filter: blur(4px);
+  opacity: .7;
+  animation: logi-core-pulse 5.8s ease-in-out infinite;
+}
+.logi-orb-ring {
+  position: absolute;
+  z-index: 3;
+  left: -8%; top: 32%;
+  width: 116%; height: 36%;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--cyan) 52%, transparent);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--cyan) 28%, transparent);
+  pointer-events: none;
+}
+.logi-orb-ring-a { transform: rotate(-21deg); opacity: .58; animation: logi-ring-a 7.5s ease-in-out infinite; }
+.logi-orb-ring-b { transform: rotate(24deg) scaleY(.72); border-color: color-mix(in srgb, var(--blue2) 58%, transparent); opacity: .38; animation: logi-ring-b 9.4s ease-in-out infinite; }
 .logi-orb-energy {
   position: absolute;
-  width: 125%;
-  height: 31%;
-  left: -12%;
+  z-index: 4;
+  width: 130%; height: 30%; left: -15%;
   border-radius: 50%;
-  border: 1px solid color-mix(in srgb, var(--cyan) 70%, white);
-  opacity: .42;
-  filter: blur(.3px);
+  border: 1px solid color-mix(in srgb, var(--cyan) 48%, transparent);
+  filter: blur(.45px);
+  opacity: .28;
   pointer-events: none;
 }
-.logi-orb-energy-a { top: 43%; transform: rotate(-18deg); animation: logi-orb-energy-a 5.8s ease-in-out infinite; }
-.logi-orb-energy-b { top: 48%; transform: rotate(19deg); opacity: .22; border-color: var(--blue); animation: logi-orb-energy-b 7.4s ease-in-out infinite; }
+.logi-orb-energy-a { top: 43%; transform: rotate(-18deg); animation: logi-orb-energy-a 6.8s ease-in-out infinite; }
+.logi-orb-energy-b { top: 48%; transform: rotate(20deg); border-color: color-mix(in srgb, var(--blue2) 58%, transparent); opacity: .24; animation: logi-orb-energy-b 8.2s ease-in-out infinite; }
+.logi-orb-stars {
+  position: absolute;
+  z-index: 5;
+  width: 3px; height: 3px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.72);
+  box-shadow:
+    18px 11px 0 rgba(255,255,255,.32),
+    -22px 26px 0 rgba(255,255,255,.38),
+    28px 37px 0 rgba(102,231,255,.54),
+    -30px 48px 0 rgba(255,255,255,.24),
+    9px 59px 0 rgba(108,160,255,.52);
+  opacity: .55;
+  filter: blur(.2px);
+  animation: logi-stars-drift 8s ease-in-out infinite;
+}
+.logi-orb-stars-a { left: 22%; top: 18%; }
+.logi-orb-stars-b { left: 62%; top: 48%; transform: scale(.72); opacity: .36; animation-delay: -3.2s; }
 .logi-orb-shimmer {
   position: absolute;
-  width: 30%;
-  height: 140%;
-  top: -20%;
-  left: -48%;
-  transform: rotate(24deg);
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,.42), transparent);
-  filter: blur(3px);
-  opacity: .55;
+  z-index: 7;
+  width: 24%; height: 150%; top: -25%; left: -45%;
+  transform: rotate(26deg);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.55), color-mix(in srgb, var(--cyan) 32%, transparent), transparent);
+  filter: blur(4px);
+  opacity: 0;
   pointer-events: none;
-  animation: logi-orb-shimmer 6.2s ease-in-out infinite;
+  animation: logi-orb-shimmer 7.8s ease-in-out infinite;
 }
 .logi-orb-eyes {
   position: absolute;
-  left: 0; right: 0;
-  top: 28%;
+  z-index: 10;
+  left: 0; right: 0; top: 24%;
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 17%;
-  z-index: 3;
-}
-.logi-orb-eye {
-  width: 13%;
-  height: 27%;
-  min-width: 5px;
-  min-height: 9px;
-  border-radius: 999px;
-  background: #fff;
-  box-shadow: 0 0 8px rgba(255,255,255,.78), 0 0 16px color-mix(in srgb, var(--cyan) 65%, transparent);
-  transition: transform .16s cubic-bezier(.16,1,.3,1);
-  animation: logi-eye-blink 6.8s ease-in-out infinite;
-}
-.logi-orb-eye:nth-child(2) { animation-delay: .08s; }
-.logi-orb-logo-wrap {
-  position: absolute;
-  z-index: 2;
-  left: 20%; right: 20%;
-  bottom: 12%;
-  height: 28%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  gap: 19%;
   pointer-events: none;
 }
+.logi-orb-eye {
+  width: 14.5%; height: 32%;
+  min-width: 7px; min-height: 13px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 0 9px rgba(255,255,255,.82), 0 0 20px color-mix(in srgb, var(--cyan) 60%, transparent);
+  transition: transform .18s cubic-bezier(.16,1,.3,1), height .16s ease;
+  transform-origin: center;
+}
+.logi-orb-eye-left { animation: logi-eye-life-left 10.8s ease-in-out infinite; }
+.logi-orb-eye-right { animation: logi-eye-life-right 13.6s ease-in-out infinite; animation-delay: -4.1s; }
+.logi-orb-logo-wrap {
+  position: absolute;
+  z-index: 9;
+  left: 10%; right: 10%; bottom: 5%; height: 43%;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+  overflow: hidden;
+}
 .logi-orb-logo {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  opacity: .82;
-  filter: drop-shadow(0 0 5px rgba(255,255,255,.45)) drop-shadow(0 0 9px color-mix(in srgb, var(--cyan) 55%, transparent));
-  animation: logi-logo-shimmer 4.8s ease-in-out infinite;
+  width: 100%; height: 100%; object-fit: contain;
+  opacity: .9;
+  filter: brightness(1.35) saturate(1.18) drop-shadow(0 0 4px rgba(255,255,255,.25)) drop-shadow(0 0 10px color-mix(in srgb, var(--blue2) 46%, transparent));
+  transform: translateY(1px) scale(1.03);
+  animation: logi-logo-life 6.4s ease-in-out infinite;
 }
 .logi-launcher-orb .logi-orb-eye { transform: translate(var(--gaze-x), var(--gaze-y)); }
-.logi-launcher-orb .logi-orb-logo { animation-duration: 4.2s; }
+.logi-launcher-orb .logi-orb-logo { animation-duration: 5.6s; }
 
-@keyframes logi-orb-breathe { 0%,100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-3px) scale(1.012); } }
-@keyframes logi-orb-energy-a { 0%,100% { transform: translateX(-9%) rotate(-18deg) scaleX(.94); } 50% { transform: translateX(10%) rotate(-13deg) scaleX(1.04); } }
-@keyframes logi-orb-energy-b { 0%,100% { transform: translateX(8%) rotate(19deg) scaleX(1.02); } 50% { transform: translateX(-10%) rotate(25deg) scaleX(.92); } }
-@keyframes logi-orb-shimmer { 0%,58% { left: -48%; opacity: 0; } 68% { opacity: .55; } 82%,100% { left: 118%; opacity: 0; } }
-@keyframes logi-logo-shimmer { 0%,65% { opacity: .68; } 76% { opacity: 1; } 86%,100% { opacity: .78; } }
-@keyframes logi-eye-blink { 0%,45%,49%,100% { transform: scaleY(1); } 47% { transform: scaleY(.16); } }
+@keyframes logi-orb-breathe { 0%,100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-2px) scale(1.014); } }
+@keyframes logi-orb-drift { 0%,100% { margin-left: 0; } 32% { margin-left: 1px; } 68% { margin-left: -1px; } }
+@keyframes logi-galaxy-spin { from { transform: rotate(-14deg) scale(1.06); } to { transform: rotate(346deg) scale(1.06); } }
+@keyframes logi-galaxy-breathe { 0%,100% { opacity: .64; } 50% { opacity: .9; } }
+@keyframes logi-core-pulse { 0%,100% { transform: scale(.94); opacity: .54; } 50% { transform: scale(1.05); opacity: .78; } }
+@keyframes logi-ring-a { 0%,100% { transform: translateX(-4%) rotate(-21deg) scaleX(.94); } 50% { transform: translateX(5%) rotate(-13deg) scaleX(1.06); } }
+@keyframes logi-ring-b { 0%,100% { transform: translateX(5%) rotate(24deg) scale(.72); } 50% { transform: translateX(-5%) rotate(31deg) scale(.78); } }
+@keyframes logi-orb-energy-a { 0%,100% { transform: translateX(-8%) rotate(-18deg) scaleX(.92); } 50% { transform: translateX(9%) rotate(-12deg) scaleX(1.06); } }
+@keyframes logi-orb-energy-b { 0%,100% { transform: translateX(8%) rotate(20deg) scaleX(1.02); } 50% { transform: translateX(-9%) rotate(27deg) scaleX(.92); } }
+@keyframes logi-stars-drift { 0%,100% { transform: translate3d(0,0,0) scale(.9); opacity: .3; } 50% { transform: translate3d(4px,-5px,0) scale(1.15); opacity: .72; } }
+@keyframes logi-orb-shimmer { 0%,58% { left: -45%; opacity: 0; } 66% { opacity: .48; } 82%,100% { left: 122%; opacity: 0; } }
+@keyframes logi-logo-life { 0%,62%,100% { opacity: .78; transform: translateY(1px) scale(1.02); } 69% { opacity: 1; transform: translateY(-1px) scale(1.05); } 77% { opacity: .86; transform: translateY(1px) scale(1.025); } }
+@keyframes logi-eye-life-left { 0%,34%,38%,100% { transform: translate(var(--gaze-x), var(--gaze-y)) scaleY(1); } 36% { transform: translate(var(--gaze-x), var(--gaze-y)) scaleY(.16); } 73%,78% { transform: translate(var(--gaze-x), var(--gaze-y)) scaleY(1); } }
+@keyframes logi-eye-life-right { 0%,48%,52%,100% { transform: translate(var(--gaze-x), var(--gaze-y)) scaleY(1); } 50% { transform: translate(var(--gaze-x), var(--gaze-y)) scaleY(.16); } }
 @media (prefers-reduced-motion: reduce) {
-  .logi-launcher-orb, .logi-orb-energy-a, .logi-orb-energy-b, .logi-orb-shimmer, .logi-orb-logo, .logi-orb-eye { animation: none !important; }
+  .logi-launcher-orb, .logi-orb-galaxy, .logi-orb-galaxy-core, .logi-orb-ring, .logi-orb-energy-a, .logi-orb-energy-b, .logi-orb-stars, .logi-orb-shimmer, .logi-orb-logo, .logi-orb-eye { animation: none !important; }
 }
+

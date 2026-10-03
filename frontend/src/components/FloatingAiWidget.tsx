@@ -38,12 +38,18 @@ function LogiOrb({ size = 34, talking = false, interactive = false }: { size?: n
       aria-hidden="true"
     >
       <span className="logi-orb-glass" />
+      <span className="logi-orb-galaxy" />
+      <span className="logi-orb-galaxy-core" />
+      <span className="logi-orb-ring logi-orb-ring-a" />
+      <span className="logi-orb-ring logi-orb-ring-b" />
       <span className="logi-orb-energy logi-orb-energy-a" />
       <span className="logi-orb-energy logi-orb-energy-b" />
       <span className="logi-orb-shimmer" />
+      <span className="logi-orb-stars logi-orb-stars-a" />
+      <span className="logi-orb-stars logi-orb-stars-b" />
       <span className="logi-orb-eyes">
-        <span className="logi-orb-eye" style={eyeStyle("left")} />
-        <span className="logi-orb-eye" style={eyeStyle("right")} />
+        <span className="logi-orb-eye logi-orb-eye-left" style={eyeStyle("left")} />
+        <span className="logi-orb-eye logi-orb-eye-right" style={eyeStyle("right")} />
       </span>
       <span className="logi-orb-logo-wrap">
         <img className="logi-orb-logo" src="/city-pharmacy-logi-mark.png" alt="" />
@@ -254,12 +260,18 @@ export default function FloatingAiWidget() {
           <span className="logi-launcher-glow" aria-hidden="true" />
           <span className="logi-launcher-orb" aria-hidden="true">
             <span className="logi-orb-glass" />
+            <span className="logi-orb-galaxy" />
+            <span className="logi-orb-galaxy-core" />
+            <span className="logi-orb-ring logi-orb-ring-a" />
+            <span className="logi-orb-ring logi-orb-ring-b" />
             <span className="logi-orb-energy logi-orb-energy-a" />
             <span className="logi-orb-energy logi-orb-energy-b" />
             <span className="logi-orb-shimmer" />
+            <span className="logi-orb-stars logi-orb-stars-a" />
+            <span className="logi-orb-stars logi-orb-stars-b" />
             <span className="logi-orb-eyes">
-              <span className="logi-orb-eye" />
-              <span className="logi-orb-eye" />
+              <span className="logi-orb-eye logi-orb-eye-left" />
+              <span className="logi-orb-eye logi-orb-eye-right" />
             </span>
             <span className="logi-orb-logo-wrap">
               <img className="logi-orb-logo" src="/city-pharmacy-logi-mark.png" alt="" />
