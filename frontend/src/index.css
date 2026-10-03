@@ -7223,3 +7223,32 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
 @media (prefers-reduced-motion: reduce) {
   .logi-bot-scene { will-change: auto; }
 }
+
+/* LOGI 2.6 — floating mascot only: no company logo, no floor/messages, body locked. */
+.logi-bot-scene {
+  overflow: visible !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  pointer-events: none !important;
+}
+.logi-bot-scene canvas,
+.logi-bot-scene > div,
+.logi-bot-scene > div > div {
+  background: transparent !important;
+  pointer-events: none !important;
+}
+.logi-bot-scene canvas { display: block; }
+.logi-bot-engraving { display: none !important; }
+.logi-launcher-orb {
+  width: 190px !important;
+  height: 190px !important;
+  border-radius: 0 !important;
+  overflow: visible !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.logi-launcher:hover .logi-launcher-orb {
+  transform: none !important;
+  filter: none !important;
+}
+.logi-launcher-glow { display: none !important; }

@@ -8,12 +8,99 @@ interface Msg { role: "user" | "assistant"; content: string; meta?: string; pend
 
 const LOGI_BOT_SCENE = "/scene-clean.splinecode";
 
-function SplineLogiBot({ size = 116 }: { size?: number }) {
+function SplineLogiBot({ size = 190 }: { size?: number }) {
+  const rafRef = useRef<number | null>(null);
+  const splineRef = useRef<any>(null);
+  const robotRef = useRef<any>(null);
+  const eyesRef = useRef<any>(null);
+  const baseRobotPosition = useRef<{ x: number; y: number; z: number } | null>(null);
+  const baseEyesRotation = useRef<{ x: number; y: number; z: number } | null>(null);
+  const targetGaze = useRef({ x: 0, y: 0 });
+  const currentGaze = useRef({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const onPointerMove = (event: PointerEvent) => {
+      // LOGI follows the pointer across the whole website, not just inside its canvas.
+      const nx = (event.clientX / Math.max(1, window.innerWidth)) * 2 - 1;
+      const ny = (event.clientY / Math.max(1, window.innerHeight)) * 2 - 1;
+      targetGaze.current.x = Math.max(-1, Math.min(1, nx));
+      targetGaze.current.y = Math.max(-1, Math.min(1, ny));
+    };
+
+    window.addEventListener("pointermove", onPointerMove, { passive: true });
+
+    const tick = () => {
+      const robot = robotRef.current;
+      const eyes = eyesRef.current;
+      const base = baseRobotPosition.current;
+      const baseRotation = baseEyesRotation.current;
+
+      // The Robot body must never follow the cursor. The authored Follow event in
+      // the supplied scene is neutralized here by restoring its original position
+      // every frame. This leaves the mascot planted in one place.
+      if (robot && base) {
+        robot.position.x = base.x;
+        robot.position.y = base.y;
+        robot.position.z = base.z;
+      }
+
+      if (eyes && baseRotation) {
+        currentGaze.current.x += (targetGaze.current.x - currentGaze.current.x) * 0.075;
+        currentGaze.current.y += (targetGaze.current.y - currentGaze.current.y) * 0.075;
+
+        // Only the face/eyes group rotates. The body remains untouched.
+        eyes.rotation.y = baseRotation.y + currentGaze.current.x * 0.30;
+        eyes.rotation.x = baseRotation.x - currentGaze.current.y * 0.16;
+        eyes.rotation.z = baseRotation.z - currentGaze.current.x * 0.035;
+      }
+
+      // Keep the Spline render loop alive so authored idle animation does not
+      // appear to freeze after reaching a render-on-demand frame.
+      splineRef.current?.play?.();
+      rafRef.current = window.requestAnimationFrame(tick);
+    };
+
+    rafRef.current = window.requestAnimationFrame(tick);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
+
   const handleLoad = (spline: any) => {
-    // The supplied scene-clean.splinecode is the authored LOGI mascot export.
-    // Keep its own camera, materials, animations and mouse interaction intact.
-    // Only force the host background transparent so the robot sits directly in DispatchOPS.
+    splineRef.current = spline;
     spline.setBackgroundColor?.("transparent");
+
+    const robot = spline.findObjectByName?.("Robot");
+    const eyes = spline.findObjectByName?.("Eyes");
+    robotRef.current = robot || null;
+    eyesRef.current = eyes || null;
+
+    if (robot?.position) {
+      baseRobotPosition.current = {
+        x: Number(robot.position.x || 0),
+        y: Number(robot.position.y || 0),
+        z: Number(robot.position.z || 0),
+      };
+    }
+    if (eyes?.rotation) {
+      baseEyesRotation.current = {
+        x: Number(eyes.rotation.x || 0),
+        y: Number(eyes.rotation.y || 0),
+        z: Number(eyes.rotation.z || 0),
+      };
+    }
+
+    // Remove everything that is not part of the floating mascot.
+    [
+      "Floor", "floor", "Message", "Message 2", "Message 3",
+      "SplineWatermark", "SplineWatermarkD", "logo",
+    ].forEach((name) => {
+      const object = spline.findObjectByName?.(name);
+      if (object) object.visible = false;
+    });
+
+    spline.play?.();
   };
 
   return (
@@ -27,9 +114,6 @@ function SplineLogiBot({ size = 116 }: { size?: number }) {
         onLoad={handleLoad}
         style={{ width: "100%", height: "100%", background: "transparent" }}
       />
-      <span className="logi-bot-engraving" aria-hidden="true">
-        <img src="/city-pharmacy-logi-mark.png" alt="" />
-      </span>
     </div>
   );
 }
@@ -234,7 +318,7 @@ export default function FloatingAiWidget() {
           }}
         >
           <span className="logi-launcher-glow" aria-hidden="true" />
-          <span className="logi-launcher-orb" aria-hidden="true"><SplineLogiBot size={116} /></span>
+          <span className="logi-launcher-orb" aria-hidden="true"><SplineLogiBot size={190} /></span>
         </button>
       </div>
     </div>
