@@ -1,20 +1,53 @@
-import { useState, useRef, useEffect, FormEvent } from "react";
+import { useState, useRef, useEffect, FormEvent, CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { chatWithData, executeDataAction } from "../services/operational";
 
 interface PendingAction { tool: string; params: Record<string, any>; }
 interface Msg { role: "user" | "assistant"; content: string; meta?: string; pendingAction?: PendingAction; actionResult?: string; navigate_to?: string; }
 
-function TalkingLogiAvatar({ size = 34, talking = true }: { size?: number; talking?: boolean }) {
+function LogiOrb({ size = 34, talking = false, interactive = false }: { size?: number; talking?: boolean; interactive?: boolean }) {
+  const [gaze, setGaze] = useState({ x: 0, y: 0 });
   const [active, setActive] = useState(false);
+
   useEffect(() => {
     if (!talking) { setActive(false); return; }
-    const timer = window.setInterval(() => setActive((v) => !v), 220);
+    const timer = window.setInterval(() => setActive((v) => !v), 280);
     return () => window.clearInterval(timer);
   }, [talking]);
+
+  function handleMove(e: React.MouseEvent<HTMLDivElement>) {
+    if (!interactive) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - (rect.left + rect.width / 2)) / (rect.width / 2)) * 5;
+    const y = ((e.clientY - (rect.top + rect.height / 2)) / (rect.height / 2)) * 5;
+    setGaze({ x: Math.max(-5, Math.min(5, x)), y: Math.max(-5, Math.min(5, y)) });
+  }
+
+  function resetGaze() { setGaze({ x: 0, y: 0 }); }
+
+  const eyeStyle = (side: "left" | "right"): CSSProperties => ({
+    transform: `translate(${gaze.x * (side === "left" ? 0.72 : 0.86)}px, ${gaze.y}px) scaleY(${talking && active ? 0.86 : 1})`,
+  });
+
   return (
-    <div className={talking ? "logi-chat-avatar logi-react-talking" : "logi-chat-avatar"} style={{ width: size, height: size, flexBasis: size }} aria-hidden="true">
-      <img src={active ? "/logi-active.png" : "/logi-idle.png"} alt="" width={size} height={size} />
+    <div
+      className={`logi-orb ${talking ? "is-talking" : ""}`}
+      style={{ width: size, height: size, flexBasis: size }}
+      onMouseMove={handleMove}
+      onMouseLeave={resetGaze}
+      aria-hidden="true"
+    >
+      <span className="logi-orb-glass" />
+      <span className="logi-orb-energy logi-orb-energy-a" />
+      <span className="logi-orb-energy logi-orb-energy-b" />
+      <span className="logi-orb-shimmer" />
+      <span className="logi-orb-eyes">
+        <span className="logi-orb-eye" style={eyeStyle("left")} />
+        <span className="logi-orb-eye" style={eyeStyle("right")} />
+      </span>
+      <span className="logi-orb-logo-wrap">
+        <img className="logi-orb-logo" src="/city-pharmacy-logi-mark.png" alt="" />
+      </span>
     </div>
   );
 }
@@ -98,6 +131,7 @@ export default function FloatingAiWidget() {
         >
           <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--glass-border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <strong style={{ fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
+              <LogiOrb size={26} talking={false} />
               LOGI Assistant
             </strong>
             <button onClick={() => setOpen(false)} style={{ background: "none", border: "none", color: "var(--muted)", fontSize: 18, cursor: "pointer" }}>×</button>
@@ -106,7 +140,7 @@ export default function FloatingAiWidget() {
           <div style={{ flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
             {messages.length === 0 && (
               <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                <TalkingLogiAvatar size={32} talking />
+                <LogiOrb size={34} talking interactive />
                 <div style={{ background: "var(--navy3)", padding: "10px 12px", borderRadius: 10, fontSize: 13, maxWidth: "85%" }}>
                   👋 Hi, I'm LOGI. I can look things up for you, and actually do things. Just ask.
                 </div>
@@ -114,51 +148,49 @@ export default function FloatingAiWidget() {
             )}
             {messages.map((m, i) => (
               <div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "92%", display: "flex", gap: 7, alignItems: "flex-end" }}>
-                {m.role === "assistant" && (
-                  <TalkingLogiAvatar talking />
-                )}
+                {m.role === "assistant" && <LogiOrb size={34} talking interactive />}
                 <div style={{ minWidth: 0 }}>
-                <div className={m.role === "assistant" ? "logi-chat-bubble" : undefined} style={{
-                  background: m.role === "user" ? "var(--blue)" : "var(--navy3)",
-                  color: m.role === "user" ? "#fff" : "var(--text)",
-                  padding: "8px 12px", borderRadius: 10, fontSize: 13, whiteSpace: "pre-wrap",
-                }}>
-                  {m.content}
-                </div>
-                {i === messages.length - 1 && m.role === "assistant" && m.navigate_to && (
-                  <button className="btn" style={{ marginTop: 6, fontSize: 11, padding: "5px 10px" }} onClick={() => { if (m.navigate_to) navigate(m.navigate_to); }}>Open screen</button>
-                )}
-
-                {m.pendingAction && (
-                  <div className="modal-pop" style={{ marginTop: 6, background: "var(--navy4)", border: "1px solid var(--amber)", borderRadius: 10, padding: 10 }}>
-                    <div style={{ fontSize: 11, color: "var(--amber)", fontWeight: 700, marginBottom: 4 }}>⚠ CONFIRM ACTION</div>
-                    <div style={{ fontSize: 12, color: "var(--text)", marginBottom: 8 }}>
-                      {(() => { const p = m.pendingAction.params || {}; const rows = Array.isArray(p.rows) ? p.rows : (p.row ? [p.row] : []); return `${String(p.reason || `LOGI wants to ${p.operation || "change data"}.`)}${rows.length ? ` (${rows.length} record${rows.length === 1 ? "" : "s"})` : ""}`; })()}
-                    </div>
-                    <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 8, fontFamily: "monospace", overflowWrap: "anywhere" }}>
-                      {m.pendingAction.params.table} · {m.pendingAction.params.operation}
-                    </div>
-                    <label style={{ display:"block", marginBottom:8 }}>
-                      <span style={{ display:"block", fontSize:10, color:"var(--amber)", marginBottom:4 }}>Admin password required</span>
-                      <input type="password" value={actionPassword} onChange={e=>setActionPassword(e.target.value)} placeholder="Enter admin password" style={{ width:"100%", fontSize:12 }} disabled={loading} />
-                    </label>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button className="btn" style={{ fontSize: 12, padding: "5px 12px" }} disabled={loading || !actionPassword} onClick={() => confirmAction(i, m.pendingAction!)}>
-                        ✓ Confirm change
-                      </button>
-                      <button className="btn" style={{ fontSize: 12, padding: "5px 12px", background: "var(--navy3)", color: "var(--muted)" }} onClick={() => cancelAction(i)}>
-                        Cancel
-                      </button>
-                    </div>
+                  <div className={m.role === "assistant" ? "logi-chat-bubble" : undefined} style={{
+                    background: m.role === "user" ? "var(--blue)" : "var(--navy3)",
+                    color: m.role === "user" ? "#fff" : "var(--text)",
+                    padding: "8px 12px", borderRadius: 10, fontSize: 13, whiteSpace: "pre-wrap",
+                  }}>
+                    {m.content}
                   </div>
-                )}
-                {m.actionResult && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>{m.actionResult}</div>}
+                  {i === messages.length - 1 && m.role === "assistant" && m.navigate_to && (
+                    <button className="btn" style={{ marginTop: 6, fontSize: 11, padding: "5px 10px" }} onClick={() => { if (m.navigate_to) navigate(m.navigate_to); }}>Open screen</button>
+                  )}
+
+                  {m.pendingAction && (
+                    <div className="modal-pop" style={{ marginTop: 6, background: "var(--navy4)", border: "1px solid var(--amber)", borderRadius: 10, padding: 10 }}>
+                      <div style={{ fontSize: 11, color: "var(--amber)", fontWeight: 700, marginBottom: 4 }}>⚠ CONFIRM ACTION</div>
+                      <div style={{ fontSize: 12, color: "var(--text)", marginBottom: 8 }}>
+                        {(() => { const p = m.pendingAction.params || {}; const rows = Array.isArray(p.rows) ? p.rows : (p.row ? [p.row] : []); return `${String(p.reason || `LOGI wants to ${p.operation || "change data"}.`)}${rows.length ? ` (${rows.length} record${rows.length === 1 ? "" : "s"})` : ""}`; })()}
+                      </div>
+                      <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 8, fontFamily: "monospace", overflowWrap: "anywhere" }}>
+                        {m.pendingAction.params.table} · {m.pendingAction.params.operation}
+                      </div>
+                      <label style={{ display:"block", marginBottom:8 }}>
+                        <span style={{ display:"block", fontSize:10, color:"var(--amber)", marginBottom:4 }}>Admin password required</span>
+                        <input type="password" value={actionPassword} onChange={e=>setActionPassword(e.target.value)} placeholder="Enter admin password" style={{ width:"100%", fontSize:12 }} disabled={loading} />
+                      </label>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button className="btn" style={{ fontSize: 12, padding: "5px 12px" }} disabled={loading || !actionPassword} onClick={() => confirmAction(i, m.pendingAction!)}>
+                          ✓ Confirm change
+                        </button>
+                        <button className="btn" style={{ fontSize: 12, padding: "5px 12px", background: "var(--navy3)", color: "var(--muted)" }} onClick={() => cancelAction(i)}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {m.actionResult && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>{m.actionResult}</div>}
                 </div>
               </div>
             ))}
             {loading && (
               <div style={{ alignSelf: "flex-start", display: "flex", gap: 7, alignItems: "flex-end" }}>
-                <TalkingLogiAvatar talking />
+                <LogiOrb size={34} talking interactive />
                 <div className="logi-chat-bubble" style={{ background: "var(--navy3)", padding: "9px 12px", borderRadius: 10, fontSize: 13 }}>
                   <span className="logi-typing-dots"><i></i><i></i><i></i></span>
                 </div>
@@ -200,85 +232,38 @@ export default function FloatingAiWidget() {
             Hi, I'm Logi. How can I help you?
           </div>
         )}
-        {/*
-          ITEM 7 (LOGI mascot):
-          - REVERSED states: hover/open now shows logi-idle.png and the
-            resting state now shows logi-active.png (previously the exact
-            opposite) - same two asset files, swapped which state uses
-            which, per "reverse mascot states".
-          - Floating animation added for the resting state via the
-            .logi-float keyframe below (transform-only, so it composes
-            fine with the existing hover scale transform).
-          - A "glass glow" ring was tried here and removed per explicit
-            feedback - it rendered as a plain white/frosted circle behind
-            the mascot rather than reading as a glow, which looked wrong.
-            Reverted to just the original radial color glow below - that
-            alone is enough.
-          - Click still just toggles `open`, which now also drives the
-            same hover-state art swap (open counts as the "active" pose),
-            with a slower, smoother 0.35s crossfade instead of the
-            previous instant src swap / 0.15s scale-only transition.
-          - No circular avatar clipping on the mascot art itself (still
-            true, as before this change).
-          - Sized up (92px -> 128px outer, 84px -> 112px art) for a
-            larger, more premium presence.
-        */}
         <button
+          className={`logi-launcher ${hovering || open ? "is-active" : ""}`}
           onClick={() => setOpen((o) => !o)}
-          style={{
-            position: "relative", width: 128, height: 128, borderRadius: "50%",
-            background: "transparent", border: "none", cursor: "pointer", padding: 0,
-            display: "flex", alignItems: "center", justifyContent: "center",
-          }}
           title=""
           aria-label="LOGI Assistant"
+          onMouseMove={(e) => {
+            const el = e.currentTarget.querySelector<HTMLDivElement>(".logi-launcher-orb");
+            if (!el) return;
+            const rect = el.getBoundingClientRect();
+            const x = ((e.clientX - (rect.left + rect.width / 2)) / (rect.width / 2)) * 5;
+            const y = ((e.clientY - (rect.top + rect.height / 2)) / (rect.height / 2)) * 5;
+            el.style.setProperty("--gaze-x", `${Math.max(-5, Math.min(5, x))}px`);
+            el.style.setProperty("--gaze-y", `${Math.max(-5, Math.min(5, y))}px`);
+          }}
+          onMouseLeave={(e) => {
+            const el = e.currentTarget.querySelector<HTMLDivElement>(".logi-launcher-orb");
+            if (el) { el.style.setProperty("--gaze-x", "0px"); el.style.setProperty("--gaze-y", "0px"); }
+          }}
         >
-          {/* Color glow: sits behind the mascot art, brightens on hover/open. */}
-          <span
-            aria-hidden="true"
-            style={{
-              position: "absolute", inset: -6, borderRadius: "50%",
-              background: "radial-gradient(circle, var(--blue) 0%, transparent 70%)",
-              opacity: hovering || open ? 0.55 : 0,
-              filter: "blur(14px)",
-              transition: "opacity 0.25s ease",
-              pointerEvents: "none",
-            }}
-          />
-          <span
-            className={hovering || open ? undefined : "logi-float"}
-            style={{
-              position: "relative", width: 112, height: 112,
-              transform: hovering ? "scale(1.06)" : "scale(1)",
-              transition: "transform 0.2s ease",
-            }}
-          >
-            {/* Crossfade between the two art states instead of an instant
-                src swap - smoother than a single <img> whose src flips. */}
-            <img
-              src="/logi-active.png"
-              alt="LOGI"
-              width={112}
-              height={112}
-              style={{
-                position: "absolute", inset: 0,
-                filter: "drop-shadow(0 4px 14px rgba(0,0,0,0.35))",
-                opacity: hovering || open ? 0 : 1,
-                transition: "opacity 0.35s ease",
-              }}
-            />
-            <img
-              src="/logi-idle.png"
-              alt="LOGI"
-              width={112}
-              height={112}
-              style={{
-                position: "absolute", inset: 0,
-                filter: "drop-shadow(0 4px 14px rgba(0,0,0,0.35))",
-                opacity: hovering || open ? 1 : 0,
-                transition: "opacity 0.35s ease",
-              }}
-            />
+          <span className="logi-launcher-glow" aria-hidden="true" />
+          <span className="logi-launcher-orb" aria-hidden="true">
+            <span className="logi-orb-glass" />
+            <span className="logi-orb-energy logi-orb-energy-a" />
+            <span className="logi-orb-energy logi-orb-energy-b" />
+            <span className="logi-orb-shimmer" />
+            <span className="logi-orb-eyes">
+              <span className="logi-orb-eye" />
+              <span className="logi-orb-eye" />
+            </span>
+            <span className="logi-orb-logo-wrap">
+              <img className="logi-orb-logo" src="/city-pharmacy-logi-mark.png" alt="" />
+            </span>
           </span>
         </button>
       </div>
