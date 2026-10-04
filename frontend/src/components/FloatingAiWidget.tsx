@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, FormEvent } from "react";
-import Spline from "@splinetool/react-spline";
+import { useState, useRef, useEffect, FormEvent, type CSSProperties } from "react";
+import { Application } from "@splinetool/runtime";
 import { useNavigate } from "react-router-dom";
 import { chatWithData, executeDataAction } from "../services/operational";
 
@@ -9,14 +9,79 @@ interface Msg { role: "user" | "assistant"; content: string; meta?: string; pend
 const LOGI_BOT_SCENE = "/scene-clean.splinecode";
 const LOGI_CHAT_SCENE = "/scene-clean-6.splinecode";
 
-// Start fetching the local mascot scene and engraving immediately. This moves
-// network/decode work ahead of the first visual reveal.
+// One shared binary preload per scene. React-Spline previously performed its own
+// fetch/decode after the component mounted; keeping the scene bytes in a shared
+// promise lets the mascot and chat icon start from an already-fetched buffer.
+const splineBufferPromises = new Map<string, Promise<ArrayBuffer>>();
+function getSplineBuffer(scene: string) {
+  let promise = splineBufferPromises.get(scene);
+  if (!promise) {
+    promise = fetch(scene, { cache: "force-cache" }).then((response) => {
+      if (!response.ok) throw new Error(`Unable to load ${scene}`);
+      return response.arrayBuffer();
+    });
+    splineBufferPromises.set(scene, promise);
+  }
+  return promise;
+}
+
 if (typeof window !== "undefined") {
-  void fetch(LOGI_BOT_SCENE, { cache: "force-cache" }).catch(() => undefined);
-  void fetch(LOGI_CHAT_SCENE, { cache: "force-cache" }).catch(() => undefined);
+  void getSplineBuffer(LOGI_BOT_SCENE).catch(() => undefined);
+  void getSplineBuffer(LOGI_CHAT_SCENE).catch(() => undefined);
   const logoPreload = new Image();
   logoPreload.decoding = "async";
+  logoPreload.fetchPriority = "high";
   logoPreload.src = "/logi-company-engraving.png";
+}
+
+function FastSplineScene({
+  scene,
+  className,
+  style,
+  onLoad,
+  zoom,
+  interactive = false,
+}: {
+  scene: string;
+  className?: string;
+  style?: CSSProperties;
+  onLoad?: (spline: any) => void;
+  zoom?: number;
+  interactive?: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const appRef = useRef<any>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let app: any = null;
+    getSplineBuffer(scene)
+      .then((buffer) => {
+        if (cancelled || !canvasRef.current) return;
+        app = new Application(canvasRef.current, { renderMode: "continuous" });
+        appRef.current = app;
+        app.start(buffer, { interactive });
+        if (typeof zoom === "number") app.setZoom?.(zoom);
+        onLoad?.(app);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      try { app?.stop?.(); } catch {}
+      try { app?.dispose?.(); } catch {}
+      appRef.current = null;
+    };
+  }, [scene]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className={className}
+      style={{ width: "100%", height: "100%", display: "block", background: "transparent", ...style }}
+      aria-hidden="true"
+    />
+  );
 }
 
 function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: number; headOnly?: boolean; onReady?: () => void }) {
@@ -210,10 +275,10 @@ function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: numbe
       style={{ width: size, height: size, visibility: sceneReady ? "visible" : "hidden", opacity: sceneReady ? 1 : 0 }}
       aria-hidden="true"
     >
-      <Spline
+      <FastSplineScene
         scene={LOGI_BOT_SCENE}
         onLoad={handleLoad}
-        style={{ width: "100%", height: "100%", background: "transparent" }}
+        interactive={false}
       />
     </div>
   );
@@ -259,10 +324,11 @@ function SplineLogiChatIcon({ size = 72 }: { size?: number }) {
       style={{ width: size, height: size, visibility: sceneReady ? "visible" : "hidden", opacity: sceneReady ? 1 : 0 }}
       aria-hidden="true"
     >
-      <Spline
+      <FastSplineScene
         scene={LOGI_CHAT_SCENE}
         onLoad={handleLoad}
-        style={{ width: "100%", height: "100%", background: "transparent" }}
+        zoom={0.32}
+        interactive={false}
       />
     </div>
   );
@@ -365,7 +431,7 @@ export default function FloatingAiWidget() {
         <div
           className="glass-card modal-pop"
           style={{
-            position: "fixed", bottom: 154, right: 6, width: 380, height: 520,
+            position: "fixed", bottom: 164, right: 6, width: 380, height: 520,
             display: "flex", flexDirection: "column", zIndex: 1500, padding: 0, overflow: "hidden",
             boxShadow: "var(--elevation-2)",
           }}
@@ -482,7 +548,11 @@ export default function FloatingAiWidget() {
           onClick={() => setOpen((o) => !o)}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((o) => !o); } }}
         />
-        <span className={`logi-bot-engraving ${visualReady ? "is-ready" : ""}`} aria-hidden="true"><img src="/logi-company-engraving.png" alt="" /></span>
+        {visualReady && (
+          <span className="logi-bot-engraving is-ready" aria-hidden="true">
+            <img src="/logi-company-engraving.png" alt="" />
+          </span>
+        )}
       </div>
     </div>
   );
