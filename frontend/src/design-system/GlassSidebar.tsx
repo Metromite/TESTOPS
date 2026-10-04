@@ -112,11 +112,11 @@ export function GlassNavGroup({
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
     }
-    document.addEventListener("mousedown", onClickOutside);
+    document.addEventListener("pointerdown", onClickOutside);
     document.addEventListener("nav-dropdown-open", onOtherGroupOpened);
     document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.removeEventListener("mousedown", onClickOutside);
+      document.removeEventListener("pointerdown", onClickOutside);
       document.removeEventListener("nav-dropdown-open", onOtherGroupOpened);
       document.removeEventListener("keydown", onKeyDown);
     };
@@ -155,6 +155,7 @@ export function GlassNavGroup({
   return (
     <div ref={ref} className="relative" onPointerEnter={warmOnOpen}>
       <button
+        onPointerDown={(e) => { e.stopPropagation(); }}
         onClick={toggleOpen}
         aria-expanded={open}
         aria-haspopup="menu"
