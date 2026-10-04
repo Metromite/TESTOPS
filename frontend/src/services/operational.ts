@@ -255,26 +255,6 @@ export async function getExperienceSuggestions<T>(q:string):Promise<T[]>{
   return out.slice(0,30) as unknown as T[];
 }
 
-export async function getExperienceDetailPage<T>(code:string,type:string,division:"Pharma"|"Consumer",offset=0,limit=100):Promise<{rows:T[];hasMore:boolean}> {
-  const clients=getFederatedSupabaseClients();
-  const results=await Promise.all(clients.map(async c=>{
-    let q=c.from("experience_history").select(EXPERIENCE_SELECT).eq("person_code",code).eq("person_type",type);
-    q=experienceDivisionFilter(q,division).order("date",{ascending:false}).range(0,offset+limit-1);
-    const {data,error}=await q;if(error)throw error;return data||[];
-  }));
-  const seen=new Map<string,any>();
-  for(const rows of results) for(const r of rows){
-    const key=`${String(r.person_code||"").toUpperCase()}|${String(r.person_type||"")}|${String(r.date||"").slice(0,10)}|${String(r.area_code||r.area||"").toUpperCase()}|${String(r.vehicle_number||"").toUpperCase().replace(/[^A-Z0-9]/g,"")}|${String(r.experience_division||r.experience_type||r.sector||"").toUpperCase()}`;
-    if(!seen.has(key)) seen.set(key,r);
-  }
-  const rows=[...seen.values()].sort((a,b)=>String(b.date||"").localeCompare(String(a.date||"")));
-  return {rows:rows.slice(offset,offset+limit) as unknown as T[],hasMore:rows.length>offset+limit};
-}
-
-export async function getExperienceDetail<T>(code:string,type:string,division:"Pharma"|"Consumer"="Pharma"):Promise<T[]>{
-  const first=await getExperienceDetailPage<T>(code,type,division,0,100); return first.rows;
-}
-
 export async function getControlCenterConfig<T>():Promise<T>{const{data,error}=await supabase.from("control_center_config").select("config,version,updated_at").eq("id",SINGLETON).maybeSingle();if(error)throw new Error(error.message);return{config:data?.config||null,version:Number(data?.version||0)} as unknown as unknown as T;}
 export async function saveControlCenterConfig<T>(config:unknown):Promise<T>{const version=Date.now();const{error}=await supabase.from("control_center_config").upsert({id:SINGLETON,config,version,updated_at:new Date().toISOString()});if(error)throw new Error(error.message);return{config,version} as unknown as unknown as T;}
 
