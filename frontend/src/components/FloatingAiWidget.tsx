@@ -7,13 +7,10 @@ interface PendingAction { tool: string; params: Record<string, any>; }
 interface Msg { role: "user" | "assistant"; content: string; meta?: string; pendingAction?: PendingAction; actionResult?: string; navigate_to?: string; }
 
 const LOGI_BOT_SCENE = "/scene-clean.splinecode";
-const LOGI_CHAT_SCENE = "/scene-clean-6.splinecode";
-
-// Start fetching the local mascot scene and engraving immediately. This moves
-// network/decode work ahead of the first visual reveal.
+// Start fetching only the critical local mascot scene immediately. The chat orb is
+// CSS-only now, so it does not compete with Logi for network/GPU startup.
 if (typeof window !== "undefined") {
   void fetch(LOGI_BOT_SCENE, { cache: "force-cache" }).catch(() => undefined);
-  void fetch(LOGI_CHAT_SCENE, { cache: "force-cache" }).catch(() => undefined);
 }
 
 function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: number; headOnly?: boolean; onReady?: () => void }) {
@@ -214,7 +211,7 @@ function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: numbe
       />
       {!headOnly && sceneReady && (
         <span className="logi-bot-engraving is-ready">
-          <img src="/logi-company-engraving.png" alt="" />
+          <img src="/logi-company-engraving.webp" alt="" />
         </span>
       )}
     </div>
@@ -230,43 +227,21 @@ function LogiAiOrb({ size = 72, thinking = false, active = false }: { size?: num
       style={{ width: size, height: size }}
       aria-hidden="true"
     >
-      <svg className="logi-ai-orb-svg" viewBox="0 0 100 100" role="presentation">
-        <defs>
-          <radialGradient id="logiOrbCore" cx="34%" cy="28%" r="72%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity=".98" />
-            <stop offset="20%" stopColor="#9df7ff" stopOpacity=".96" />
-            <stop offset="48%" stopColor="#36bfff" stopOpacity=".82" />
-            <stop offset="76%" stopColor="#7c4dff" stopOpacity=".78" />
-            <stop offset="100%" stopColor="#17245e" stopOpacity=".96" />
-          </radialGradient>
-          <linearGradient id="logiOrbWave" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#8ffcff" />
-            <stop offset="48%" stopColor="#6a7dff" />
-            <stop offset="100%" stopColor="#ff75d8" />
-          </linearGradient>
-          <filter id="logiOrbGlow" x="-60%" y="-60%" width="220%" height="220%">
-            <feGaussianBlur stdDeviation="2.4" result="blur" />
-            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-          </filter>
-          <clipPath id="logiOrbClip"><circle cx="50" cy="50" r="29" /></clipPath>
-        </defs>
-
-        <ellipse className="logi-ai-orb-halo" cx="50" cy="50" rx="35" ry="35" />
-        <ellipse className="logi-ai-orb-ring logi-ai-orb-ring-a" cx="50" cy="50" rx="37" ry="20" />
-        <ellipse className="logi-ai-orb-ring logi-ai-orb-ring-b" cx="50" cy="50" rx="37" ry="20" />
-        <ellipse className="logi-ai-orb-ring logi-ai-orb-ring-c" cx="50" cy="50" rx="34" ry="15" />
-        <circle className="logi-ai-orb-glass" cx="50" cy="50" r="29" />
-        <circle className="logi-ai-orb-core" cx="50" cy="50" r="26" fill="url(#logiOrbCore)" filter="url(#logiOrbGlow)" />
-
-        <g className="logi-ai-orb-waves" clipPath="url(#logiOrbClip)" fill="none" stroke="url(#logiOrbWave)" strokeLinecap="round">
-          <path className="wave wave-a" d="M18 48 C30 35 38 62 50 49 S70 35 84 49" strokeWidth="2.5" opacity=".78" />
-          <path className="wave wave-b" d="M14 55 C28 42 39 68 51 55 S72 42 88 55" strokeWidth="1.9" opacity=".66" />
-          <path className="wave wave-c" d="M16 42 C29 55 40 29 52 43 S73 55 86 42" strokeWidth="1.4" opacity=".58" />
-          <path className="wave wave-d" d="M19 61 C31 51 42 69 53 60 S72 49 82 59" strokeWidth="1.1" opacity=".45" />
-        </g>
-        <circle className="logi-ai-orb-specular" cx="39" cy="35" r="7" />
-        <circle className="logi-ai-orb-pulse" cx="50" cy="50" r="31" />
-      </svg>
+      <span className="logi-ai-orb-aura" />
+      <span className="logi-ai-orb-ring ring-one" />
+      <span className="logi-ai-orb-ring ring-two" />
+      <span className="logi-ai-orb-ring ring-three" />
+      <span className="logi-ai-orb-glass">
+        <span className="logi-ai-orb-liquid liquid-one" />
+        <span className="logi-ai-orb-liquid liquid-two" />
+        <span className="logi-ai-orb-liquid liquid-three" />
+        <span className="logi-ai-orb-wave wave-one" />
+        <span className="logi-ai-orb-wave wave-two" />
+        <span className="logi-ai-orb-wave wave-three" />
+        <span className="logi-ai-orb-shine" />
+        <span className="logi-ai-orb-core" />
+      </span>
+      <span className="logi-ai-orb-pulse" />
     </div>
   );
 }
