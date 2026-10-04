@@ -50,7 +50,7 @@ lm as materialized (
     l.minutes,
     l.is_passthrough,
     l.is_depot,
-    coalesce(l.departed_at,public.dispatchops_landmark_timestamp(l.departure)) dep_ts
+    l.departed_at dep_ts
   from public.landmark_visit_facts l
   join scope x on x.vehicle_key=l.vehicle_key
   where (p_start is null or l.visit_date>=p_start)
