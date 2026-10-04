@@ -95,8 +95,7 @@ export default function MultiSelectSlicer({
     <div ref={ref} className="relative">
       <button
         type="button"
-        onPointerDown={(e) => { e.stopPropagation(); }}
-        onClick={toggleOpen}
+        onPointerDown={(e) => { e.stopPropagation(); toggleOpen(); }}
         title={`Slicer: filter by ${label}`}
         className={cn(
           "glass-slicer-trigger flex items-center gap-1.5 rounded-[12px] px-3.5 py-2 text-[13px] font-semibold transition-colors duration-150",

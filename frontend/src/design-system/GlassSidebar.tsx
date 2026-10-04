@@ -155,8 +155,7 @@ export function GlassNavGroup({
   return (
     <div ref={ref} className="relative" onPointerEnter={warmOnOpen}>
       <button
-        onPointerDown={(e) => { e.stopPropagation(); }}
-        onClick={toggleOpen}
+        onPointerDown={(e) => { e.stopPropagation(); toggleOpen(); }}
         aria-expanded={open}
         aria-haspopup="menu"
         data-active={isActiveGroup ? "true" : "false"}
