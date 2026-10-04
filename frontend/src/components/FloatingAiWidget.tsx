@@ -8,7 +8,7 @@ interface Msg { role: "user" | "assistant"; content: string; meta?: string; pend
 
 const LOGI_BOT_SCENE = "/scene-clean.splinecode";
 
-function SplineLogiBot({ size = 250, headOnly = false }: { size?: number; headOnly?: boolean }) {
+function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: number; headOnly?: boolean; onReady?: () => void }) {
   const [sceneReady, setSceneReady] = useState(false);
   const rafRef = useRef<number | null>(null);
   const splineRef = useRef<any>(null);
@@ -21,6 +21,7 @@ function SplineLogiBot({ size = 250, headOnly = false }: { size?: number; headOn
   const baseEyesRotation = useRef<{ x: number; y: number; z: number } | null>(null);
   const targetGaze = useRef({ x: 0, y: 0 });
   const currentGaze = useRef({ x: 0, y: 0 });
+  const animationLoopRef = useRef<number | null>(null);
 
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {
@@ -47,7 +48,7 @@ function SplineLogiBot({ size = 250, headOnly = false }: { size?: number; headOn
       // X is explicitly neutralized so head stays above feet.
       if (robot && base) {
         robot.position.x = base.x;
-        robot.position.y = base.y;
+        robot.position.y = base.y + (headOnly ? -18 : 0);
         robot.position.z = base.z;
         if (robot.rotation) {
           robot.rotation.x = 0;
@@ -86,6 +87,7 @@ function SplineLogiBot({ size = 250, headOnly = false }: { size?: number; headOn
     return () => {
       window.removeEventListener("pointermove", onPointerMove);
       if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
+      if (animationLoopRef.current !== null) window.clearInterval(animationLoopRef.current);
     };
   }, []);
 
@@ -100,8 +102,22 @@ function SplineLogiBot({ size = 250, headOnly = false }: { size?: number; headOn
     eyesRef.current = eyes || null;
     bodyRef.current = body || null;
 
-    // Chat avatars use only Logi's head. The main floating mascot keeps the full body.
-    if (headOnly && body) body.visible = false;
+    // Chat avatars use only Logi's head. Hide the authored Body plus any
+    // remaining meshes that still use the body material; this removes the one
+    // white body fragment that can otherwise survive beside the head.
+    if (headOnly) {
+      if (body) body.visible = false;
+      const root = (spline as any).scene || (spline as any)._scene;
+      const hideBodyMaterials = (node: any) => {
+        if (!node) return;
+        const materialName = String(node.material?.name || node.materialName || "").toLowerCase();
+        const objectName = String(node.name || "").toLowerCase();
+        if (objectName === "body" || materialName.includes("body material")) node.visible = false;
+        const children = Array.isArray(node.children) ? node.children : [];
+        children.forEach(hideBodyMaterials);
+      };
+      hideBodyMaterials(root);
+    }
 
     if (robot?.position) {
       baseRobotPosition.current = {
@@ -163,16 +179,21 @@ function SplineLogiBot({ size = 250, headOnly = false }: { size?: number; headOn
       }
     });
 
-    // Keep the authored idle/loop animation running; do not restart it from the
-    // pointer loop, which can otherwise interrupt animation cycles.
+    // Start the authored animation immediately, then replay it periodically so
+    // the mascot's color/idle motion never freezes on its final state.
     spline.play?.();
+    if (animationLoopRef.current !== null) window.clearInterval(animationLoopRef.current);
+    animationLoopRef.current = window.setInterval(() => spline.play?.(), 4200);
 
-    // Do not expose the raw first Spline frame. The exported scene can briefly
-    // render its authored floor/facing pose before our runtime locks are applied.
-    // Reveal only after the scene has had a couple of paint frames to settle.
+    // Never expose the raw first Spline frame. Wait only for two paint frames
+    // plus a short settling window; this is faster than before but still keeps
+    // the authored floor/face-down frame completely hidden.
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
-        window.setTimeout(() => setSceneReady(true), 90);
+        window.setTimeout(() => {
+          setSceneReady(true);
+          onReady?.();
+        }, 24);
       });
     });
   };
@@ -213,21 +234,12 @@ export default function FloatingAiWidget() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const launcherHitRef = useRef<HTMLButtonElement>(null);
+  const [launcherReady, setLauncherReady] = useState(false);
 
-  useEffect(() => {
-    const updateHoverFromPage = (event: PointerEvent) => {
-      const el = launcherHitRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      const distance = Math.hypot(event.clientX - cx, event.clientY - cy);
-      // The tooltip/click target follows the mascot itself, not the old transparent canvas.
-      setHovering(distance <= Math.min(rect.width, rect.height) * 0.46);
-    };
-    window.addEventListener("pointermove", updateHoverFromPage, { passive: true });
-    return () => window.removeEventListener("pointermove", updateHoverFromPage);
-  }, []);
+  // Hover is driven by the clipped hit target itself, not the transparent
+  // 210px Spline canvas. This keeps the chat button and other UI clickable.
+  const handleLauncherEnter = () => setHovering(true);
+  const handleLauncherLeave = () => setHovering(false);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, open]);
 
@@ -281,7 +293,7 @@ export default function FloatingAiWidget() {
           className="glass-card modal-pop"
           style={{
             position: "fixed", bottom: 154, right: 6, width: 380, height: 520,
-            display: "flex", flexDirection: "column", zIndex: 1200, padding: 0, overflow: "hidden",
+            display: "flex", flexDirection: "column", zIndex: 1500, padding: 0, overflow: "hidden",
             boxShadow: "var(--elevation-2)",
           }}
         >
@@ -295,7 +307,7 @@ export default function FloatingAiWidget() {
           <div style={{ flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
             {messages.length === 0 && (
               <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                <SplineLogiBot size={58} headOnly />
+                <SplineLogiBot size={62} headOnly />
                 <div style={{ background: "var(--navy3)", padding: "10px 12px", borderRadius: 10, fontSize: 13, maxWidth: "85%" }}>
                   👋 Hi, I'm LOGI. I can look things up for you, and actually do things. Just ask.
                 </div>
@@ -303,7 +315,7 @@ export default function FloatingAiWidget() {
             )}
             {messages.map((m, i) => (
               <div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "92%", display: "flex", gap: 7, alignItems: "flex-end" }}>
-                {m.role === "assistant" && <SplineLogiBot size={58} headOnly />}
+                {m.role === "assistant" && <SplineLogiBot size={62} headOnly />}
                 <div style={{ minWidth: 0 }}>
                   <div className={m.role === "assistant" ? "logi-chat-bubble" : undefined} style={{
                     background: m.role === "user" ? "var(--blue)" : "var(--navy3)",
@@ -345,7 +357,7 @@ export default function FloatingAiWidget() {
             ))}
             {loading && (
               <div style={{ alignSelf: "flex-start", display: "flex", gap: 7, alignItems: "flex-end" }}>
-                <SplineLogiBot size={58} headOnly />
+                <SplineLogiBot size={62} headOnly />
                 <div className="logi-chat-bubble" style={{ background: "var(--navy3)", padding: "9px 12px", borderRadius: 10, fontSize: 13 }}>
                   <span className="logi-typing-dots"><i></i><i></i><i></i></span>
                 </div>
@@ -372,31 +384,32 @@ export default function FloatingAiWidget() {
       )}
 
       <div
-        style={{ position: "fixed", bottom: 20, right: -18, zIndex: 1200, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}
+        className={`logi-launcher ${hovering || open ? "is-active" : ""}`}
+        style={{ position: "fixed", bottom: 20, right: -18, zIndex: 1400 }}
       >
         {hovering && !open && (
           <div
-            className="glass-card modal-pop"
-            style={{
-              padding: "10px 14px", borderRadius: 12, fontSize: 13, fontWeight: 500,
-              boxShadow: "var(--elevation-2)", whiteSpace: "nowrap", maxWidth: 260,
-              transform: "translateY(22px)",
-            }}
+            className="glass-card modal-pop logi-hover-tip"
           >
             Hi, I'm Logi. How can I help you?
           </div>
         )}
-        <button
+        <span className="logi-launcher-glow" aria-hidden="true" />
+        <span className="logi-launcher-orb" aria-hidden="true">
+          <SplineLogiBot size={210} onReady={() => setLauncherReady(true)} />
+        </span>
+        <span
           ref={launcherHitRef}
-          className={`logi-launcher ${hovering || open ? "is-active" : ""}`}
-          onClick={() => setOpen((o) => !o)}
-          title=""
+          className="logi-click-target"
+          role="button"
+          tabIndex={0}
           aria-label="LOGI Assistant"
-        >
-          <span className="logi-launcher-glow" aria-hidden="true" />
-          <span className="logi-launcher-orb" aria-hidden="true"><SplineLogiBot size={210} /></span>
-          <span className="logi-bot-engraving" aria-hidden="true"><img src="/logi-company-engraving.png" alt="" /></span>
-        </button>
+          onPointerEnter={handleLauncherEnter}
+          onPointerLeave={handleLauncherLeave}
+          onClick={() => setOpen((o) => !o)}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((o) => !o); } }}
+        />
+        <span className={`logi-bot-engraving ${launcherReady ? "is-ready" : ""}`} aria-hidden="true"><img src="/logi-company-engraving.png" alt="" /></span>
       </div>
     </div>
   );

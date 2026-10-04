@@ -7369,3 +7369,72 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
   filter: grayscale(1) contrast(1.2) brightness(.66) !important;
   mix-blend-mode: multiply !important;
 }
+
+
+/* LOGI 3.1 — precise interaction/loading polish. The visual mascot stays unchanged. */
+.logi-launcher {
+  pointer-events: none !important;
+  cursor: default !important;
+  overflow: visible !important;
+}
+.logi-launcher-orb,
+.logi-launcher-glow,
+.logi-bot-engraving {
+  pointer-events: none !important;
+}
+.logi-click-target {
+  position: absolute !important;
+  left: 14% !important;
+  top: 9% !important;
+  width: 72% !important;
+  height: 87% !important;
+  z-index: 20 !important;
+  display: block !important;
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  background: transparent !important;
+  border: 0 !important;
+  outline: none !important;
+  clip-path: polygon(
+    31% 0%, 69% 0%, 82% 8%, 88% 22%, 86% 42%,
+    93% 61%, 88% 80%, 80% 94%, 20% 94%, 12% 80%,
+    7% 61%, 14% 42%, 12% 22%, 18% 8%
+  ) !important;
+}
+.logi-click-target:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--cyan) 70%, transparent) !important;
+  outline-offset: 3px !important;
+}
+.logi-hover-tip {
+  position: absolute !important;
+  right: 4px !important;
+  bottom: 188px !important;
+  z-index: 1305 !important;
+  padding: 9px 13px !important;
+  border-radius: 12px !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  box-shadow: var(--elevation-2) !important;
+  white-space: nowrap !important;
+  max-width: min(260px, calc(100vw - 24px)) !important;
+  pointer-events: none !important;
+  transform: none !important;
+}
+.logi-bot-engraving {
+  opacity: 0 !important;
+  transition: opacity .01s linear !important;
+}
+.logi-bot-engraving.is-ready {
+  opacity: 1 !important;
+}
+.logi-bot-head-scene {
+  overflow: hidden !important;
+  clip-path: inset(0) !important;
+}
+.logi-bot-head-scene > div,
+.logi-bot-head-scene > canvas,
+.logi-bot-head-scene > div > div,
+.logi-bot-head-scene canvas {
+  transform: scale(1.50) !important;
+  transform-origin: 50% 50% !important;
+}
