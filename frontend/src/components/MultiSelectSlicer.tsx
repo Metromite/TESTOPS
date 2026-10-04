@@ -39,6 +39,7 @@ export default function MultiSelectSlicer({
   const [open, setOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const instanceId = useRef(`slicer-${++slicerInstanceCounter}`).current;
 
   function toggle(opt: string) {
@@ -47,7 +48,9 @@ export default function MultiSelectSlicer({
 
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (ref.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     }
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
@@ -119,6 +122,7 @@ export default function MultiSelectSlicer({
               // as GlassModal, so every "floats above everything else"
               // surface in the app shares one consistent visual language
               // instead of each dropdown/modal picking its own opacity.
+              ref={menuRef}
               className="liquid-glass-dropdown glass-slicer-menu max-h-[280px] overflow-y-auto rounded-[14px] border border-[var(--glass-border)] bg-[var(--glass-bg-3)] p-2 shadow-elevation2 backdrop-blur-[var(--glass-blur-3)] backdrop-saturate-[200%]"
             >
               <div className="mb-1.5 flex items-center justify-between">

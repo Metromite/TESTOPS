@@ -113,6 +113,7 @@ export default function TopNav() {
 
       <GlassNavGroup
         layoutId="nav-pill"
+        onOpen={() => { void import("../pages/Experience"); }}
         label="Fleet Data"
         icon={
           <Database className="h-4 w-4" />

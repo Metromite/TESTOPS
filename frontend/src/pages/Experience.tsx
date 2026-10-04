@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { getRole } from "../api/client";
-import { getExperienceDetailPage, getExperienceSuggestions, getExperienceSummary, getCachedExperienceSummary, primeExperienceSummaryCache, refreshExperienceSummary, prefetchExperienceDetail } from "../services/operational";
+import { getExperienceDetailPage, getExperienceSuggestions, getExperienceSummary, getCachedExperienceSummary, refreshExperienceSummary, prefetchExperienceDetail } from "../services/operational";
 import { processExperienceExport, importExperienceDataExport, exportExperienceData, resetExperiencePeriod, resetAllExperienceData, type ImportProgress } from "../services/importEngine";
 import DetailWindow from "../components/DetailWindow";
 
@@ -11,11 +11,6 @@ type DetailRow = Record<string, any>;
 
 const DETAIL_PAGE_SIZE = 100;
 
-// Start warming both Experience divisions as soon as this page module is loaded.
-// Control Center imports this page before the user opens the tab, so the data can
-// arrive in the background instead of blocking the tab transition.
-if (typeof window !== "undefined") primeExperienceSummaryCache();
-
 export default function Experience() {
   const [division,setDivision]=useState<Division>("Pharma");
   const [summary,setSummary]=useState<Summary[]>(()=>getCachedExperienceSummary<Summary>("Pharma")); const [summaryLoading,setSummaryLoading]=useState(()=>getCachedExperienceSummary<Summary>("Pharma").length===0);
@@ -24,6 +19,7 @@ export default function Experience() {
   const [selected,setSelected]=useState<{code:string;type:string;name:string}|null>(null); const [detailLoading,setDetailLoading]=useState(false);
   const [typeFilter,setTypeFilter]=useState(""); const [search,setSearch]=useState(""); const [suggestions,setSuggestions]=useState<Suggestion[]>([]); const [showSuggestions,setShowSuggestions]=useState(false);
   const [error,setError]=useState(""); const [uploadProgress,setUploadProgress]=useState<ImportProgress|null>(null); const [exporting,setExporting]=useState(false);
+  const [experienceLoadProgress,setExperienceLoadProgress]=useState(0);
   const isAdmin = getRole() === "admin"; const [uploading,setUploading]=useState(false); const [uploadMode,setUploadMode]=useState<"sap"|"backup">("sap");
 
   async function loadSummary(nextDivision:Division=division, forceRefresh=false){
@@ -32,13 +28,21 @@ export default function Experience() {
     if(!forceRefresh && cached.length){
       setSummary(cached);
       setSummaryLoading(false);
+      setExperienceLoadProgress(100);
+      // Refresh silently; the visible table stays fully interactive.
       void refreshExperienceSummary(nextDivision).then(rows=>{setSummary(rows as Summary[]);}).catch(()=>{});
       return;
     }
     setSummaryLoading(true);
-    try { setSummary(await getExperienceSummary<Summary>(nextDivision,{forceRefresh})); }
+    setExperienceLoadProgress(8);
+    const timer=window.setInterval(()=>setExperienceLoadProgress(p=>p<88?p+Math.max(2,Math.round((88-p)*0.12)):p),220);
+    try {
+      const rows=await getExperienceSummary<Summary>(nextDivision,{forceRefresh});
+      setSummary(rows);
+      setExperienceLoadProgress(100);
+    }
     catch(e:any) { setError(e?.message||String(e)); }
-    finally { setSummaryLoading(false); }
+    finally { window.clearInterval(timer); setSummaryLoading(false); }
   }
 
   useEffect(()=>{void loadSummary("Pharma")},[]);
@@ -92,6 +96,7 @@ export default function Experience() {
     <h2>Experience</h2><p style={{color:"var(--muted)",fontSize:13,marginTop:-8}}>Exact daily experience for Drivers and Helpers. Consumer/Pharma is decided per person per day from the existing Dashboard Configuration. Vehicle type comes from the Vehicles master with smart number normalization.</p>
     <div className="glass-card" style={{marginBottom:20}}><div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}><div style={{flex:1,minWidth:300}}><strong>Experience Data</strong><div style={{color:"var(--muted)",fontSize:12,marginTop:4}}>{isAdmin?"Admin can upload/import and reset Experience; users can only view and download the current Excel data.":"Users can view the dashboard experience and download the current Excel data; Excel upload/import is disabled."}</div></div><button className="btn" disabled={exporting||uploading} onClick={()=>void handleDownload()}>{exporting?"Exporting…":"Download Experience Data"}</button>{isAdmin&&<button className="btn" style={{background:"var(--red)"}} disabled={exporting||uploading} onClick={()=>void handleReset()}>Reset Experience</button>}</div>{isAdmin&&<div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginTop:12}}><select value={uploadMode} disabled={uploading} onChange={e=>setUploadMode(e.target.value as "sap"|"backup")}><option value="sap">Upload SAP Experience Source</option><option value="backup">Import Downloaded Experience Data</option></select><input type="file" accept=".xlsx,.xls,.csv" disabled={uploading||exporting} onChange={e=>{const f=e.target.files?.[0];void handleUpload(f);e.currentTarget.value=""}}/>{uploading&&<span className="badge ok">{uploadProgress?.progress_pct??0}%</span>}</div>}</div>
     {uploadProgress&&(exporting||uploadProgress.status!=="processing")&&<div className="glass-card" style={{marginBottom:20}}><strong>{uploadProgress.current_step}</strong><div style={{background:"var(--navy3)",borderRadius:999,height:7,marginTop:8,overflow:"hidden"}}><div style={{width:`${uploadProgress.progress_pct}%`,background:"var(--teal)",height:"100%"}}/></div><div style={{fontSize:11,color:"var(--muted)",marginTop:6}}>{uploadProgress.log||`${uploadProgress.processed_units}/${uploadProgress.total_units}`}</div></div>}
+    {summaryLoading&&<div className="glass-card" style={{marginBottom:10,padding:"10px 14px"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,fontSize:12}}><strong>Loading Experience…</strong><span style={{color:"var(--muted)"}}>{experienceLoadProgress}%</span></div><div className="dashboard-loading-progress-track" style={{marginTop:8}}><div className="dashboard-loading-progress-fill" style={{width:`${Math.max(8,experienceLoadProgress)}%`}}><span className="dashboard-loading-progress-glow" /></div></div></div>}
     <div className="glass-card" style={{marginBottom:20,display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",position:"relative"}}>
       <select value={typeFilter} onChange={e=>setTypeFilter(e.target.value)}><option value="">All (Drivers &amp; Helpers)</option><option value="Driver">Drivers only</option><option value="Helper">Helpers only</option></select>
       <div style={{position:"relative",flex:1,minWidth:260}}><input placeholder="Search Driver/Helper, Area, Area Code, Vehicle, Vehicle Type, Consumer or Pharma…" value={search} onChange={e=>{setSearch(e.target.value);setShowSuggestions(true)}} onFocus={()=>setShowSuggestions(true)} onBlur={()=>setTimeout(()=>setShowSuggestions(false),150)} style={{width:"100%"}}/>{showSuggestions&&suggestions.length>0&&<div className="glass-card" style={{position:"absolute",zIndex:9999,marginTop:4,padding:4,width:"100%",maxHeight:260,overflowY:"auto"}}>{suggestions.map((s,i)=><div key={`${s.kind}-${s.value}-${i}`} onMouseDown={()=>{setSearch(s.value);setShowSuggestions(false)}} style={{padding:"6px 8px",cursor:"pointer",fontSize:13}}>{s.label}</div>)}</div>}</div>

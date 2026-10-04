@@ -80,22 +80,28 @@ export function GlassNavGroup({
   icon,
   items,
   layoutId,
+  onOpen,
 }: {
   label: string;
   icon?: ReactNode;
   items: NavItemDef[];
   layoutId: string;
+  onOpen?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const prefetchStarted = useRef(false);
   const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
   const isActiveGroup = items.some((i) => (i.end ? location.pathname === i.to : location.pathname.startsWith(i.to)));
   const groupId = layoutId + label;
 
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (ref.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     }
     // BUGFIX (only one dropdown open at a time, robustly): close this
     // dropdown whenever ANY other nav dropdown reports it just opened,
@@ -131,16 +137,23 @@ export function GlassNavGroup({
     };
   }, [open]);
 
+  function warmOnOpen() {
+    if (prefetchStarted.current) return;
+    prefetchStarted.current = true;
+    onOpen?.();
+  }
+
   function toggleOpen() {
-    setOpen((o) => {
-      const next = !o;
-      if (next) document.dispatchEvent(new CustomEvent("nav-dropdown-open", { detail: groupId }));
-      return next;
-    });
+    const next = !open;
+    if (next) {
+      warmOnOpen();
+      document.dispatchEvent(new CustomEvent("nav-dropdown-open", { detail: groupId }));
+    }
+    setOpen(next);
   }
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative" onPointerEnter={warmOnOpen}>
       <button
         onClick={toggleOpen}
         aria-expanded={open}
@@ -182,6 +195,7 @@ export function GlassNavGroup({
               style={{ position: "fixed", left: menuPos.left, top: menuPos.top, zIndex: 9999 }}
               // ITEM PASS 6: same fix as MultiSelectSlicer's dropdown -
               // shared Level 3 tokens instead of an ad hoc navy2/95 value.
+              ref={menuRef}
               className="liquid-glass-dropdown min-w-[220px] rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg-3)] p-1.5 shadow-elevation2 backdrop-blur-[var(--glass-blur-3)] backdrop-saturate-[200%]"
             >
               {items.map((item) => (
