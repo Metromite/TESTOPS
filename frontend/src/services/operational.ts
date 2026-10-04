@@ -97,6 +97,9 @@ type ExperienceDivision = "Pharma" | "Consumer";
 const EXPERIENCE_CACHE_KEY = "dispatchops.experience.summary.v3";
 const experienceSummaryMemory = new Map<ExperienceDivision, any[]>();
 const experienceSummaryRefresh = new Map<ExperienceDivision, Promise<any[]> | null>();
+// One federated read warms both divisions together. Once this bundle is ready,
+// switching Pharma/Consumer is a pure in-memory operation with no network wait.
+let experienceSummaryBundleRefresh: Promise<{Pharma:any[];Consumer:any[]}> | null = null;
 const experienceDetailMemory = new Map<string, { rows: any[]; hasMore: boolean }>();
 const experienceDetailRefresh = new Map<string, Promise<any> | null>();
 
@@ -167,16 +170,25 @@ function buildExperienceSummary(data:any[], division:ExperienceDivision):any[] {
   return [...map.values()].map(x=>({person_code:x.person_code,person_name:x.person_name,person_type:x.person_type,distinct_areas:x.areas.size,total_days:x.dates.size,consumer_orders:x.consumer_orders,pharma_orders:x.pharma_orders,most_recent_area:x.last_area,most_recent_end:x.last_date,vehicle_types:[...x.vehicles].join(" / ")||"UNKNOWN",experience:division}));
 }
 
+async function refreshExperienceSummaryBundle():Promise<{Pharma:any[];Consumer:any[]}> {
+  if(experienceSummaryBundleRefresh) return experienceSummaryBundleRefresh;
+  experienceSummaryBundleRefresh=(async()=>{
+    const data=await getFederatedExperienceRows();
+    const Pharma=buildExperienceSummary(data,"Pharma");
+    const Consumer=buildExperienceSummary(data,"Consumer");
+    experienceSummaryMemory.set("Pharma",Pharma);
+    experienceSummaryMemory.set("Consumer",Consumer);
+    writeExperienceCache("Pharma",Pharma);
+    writeExperienceCache("Consumer",Consumer);
+    return {Pharma,Consumer};
+  })().finally(()=>{experienceSummaryBundleRefresh=null;});
+  return experienceSummaryBundleRefresh;
+}
+
 export async function refreshExperienceSummary(division:ExperienceDivision):Promise<any[]> {
   const existing=experienceSummaryRefresh.get(division);
   if(existing) return existing;
-  const promise=(async()=>{
-    const data=await getFederatedExperienceRows(division);
-    const rows=buildExperienceSummary(data,division);
-    experienceSummaryMemory.set(division,rows);
-    writeExperienceCache(division,rows);
-    return rows;
-  })().finally(()=>experienceSummaryRefresh.set(division,null));
+  const promise=refreshExperienceSummaryBundle().then(bundle=>bundle[division]).finally(()=>experienceSummaryRefresh.set(division,null));
   experienceSummaryRefresh.set(division,promise);
   return promise;
 }
@@ -254,7 +266,6 @@ export async function getExperienceSuggestions<T>(q:string):Promise<T[]>{
   const out:any[]=[...(d.data||[]).map(x=>({label:`${x.name} (${x.code})`,value:x.code,kind:"Driver"})),...(h.data||[]).map(x=>({label:`${x.name} (${x.code})`,value:x.code,kind:"Helper"}))];
   return out.slice(0,30) as unknown as T[];
 }
-
 
 export async function getControlCenterConfig<T>():Promise<T>{const{data,error}=await supabase.from("control_center_config").select("config,version,updated_at").eq("id",SINGLETON).maybeSingle();if(error)throw new Error(error.message);return{config:data?.config||null,version:Number(data?.version||0)} as unknown as unknown as T;}
 export async function saveControlCenterConfig<T>(config:unknown):Promise<T>{const version=Date.now();const{error}=await supabase.from("control_center_config").upsert({id:SINGLETON,config,version,updated_at:new Date().toISOString()});if(error)throw new Error(error.message);return{config,version} as unknown as unknown as T;}

@@ -183,25 +183,17 @@ export default function Dashboard() {
   async function syncDashboardToLatestImportedMonth(force = false) {
     try {
       const clients = getFederatedSupabaseClients();
-      const latestForClient = async (client: any, ms = 4000): Promise<string | null> => {
-        const request = client
+      const results = await Promise.all(clients.map(async (client) => {
+        const { data, error } = await client
           .from("sap_invoice_facts")
           .select("dispatch_date")
           .not("dispatch_date", "is", null)
           .order("dispatch_date", { ascending: false })
-          .limit(1)
-          .then(({ data, error }: any) => error ? null : (data?.[0]?.dispatch_date ? String(data[0].dispatch_date).slice(0, 10) : null))
-          .catch(() => null);
-        return await Promise.race([
-          request,
-          new Promise<string | null>((resolve) => window.setTimeout(() => resolve(null), ms)),
-        ]);
-      };
-      // Query all configured sources together, matching the original
-      // federated startup behavior. Each request has its own timeout so one
-      // unavailable source cannot leave the whole latest-date check pending.
-      const latestResults = await Promise.all(clients.map((client) => latestForClient(client)));
-      const latest = latestResults.filter(Boolean).sort().pop() || null;
+          .limit(1);
+        if (error) return null;
+        return data?.[0]?.dispatch_date ? String(data[0].dispatch_date).slice(0, 10) : null;
+      }));
+      const latest = results.filter(Boolean).sort().pop();
       if (!latest) return;
       const [year, month] = latest.split("-").map(Number);
       if (!year || !month) return;

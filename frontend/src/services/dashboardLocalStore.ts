@@ -187,13 +187,6 @@ function normalizeRow(r: any): LocalSapRow {
   };
 }
 
-async function withTimeout<T>(promise: PromiseLike<T>, ms: number, fallback: T): Promise<T> {
-  return await Promise.race([
-    Promise.resolve(promise),
-    new Promise<T>((resolve) => window.setTimeout(() => resolve(fallback), ms)),
-  ]);
-}
-
 async function fetchRowsForClient(client: any, start = "", end = "", onPage?: (rows: number) => void): Promise<LocalSapRow[]> {
   const PAGE = 1000;
   const out: LocalSapRow[] = [];
@@ -247,12 +240,6 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     const secondary = clients[1];
     let primaryRowsLoaded = 0;
     let secondaryRowsLoaded = 0;
-
-    // All dashboard sources start together, as in the original working flow.
-    // The important fix is that a stalled federated request can no longer leave
-    // the whole Promise.all pending forever. Each source has a bounded wait and
-    // a safe fallback, while successful sources still finish and are combined
-    // in the same initial dataset.
     const primaryPromise = fetchRowsForClient(primary, "", "", (n) => {
       primaryRowsLoaded += n;
       setLoadingProgress(Math.min(55, 5 + Math.round(Math.log10(primaryRowsLoaded + 1) * 22)));
@@ -261,36 +248,34 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
       ? fetchRowsForClient(secondary, "", "", (n) => {
           secondaryRowsLoaded += n;
           setLoadingProgress(Math.min(65, 28 + Math.round(Math.log10(primaryRowsLoaded + secondaryRowsLoaded + 1) * 22)));
-        }).catch(() => [] as LocalSapRow[])
+        })
       : Promise.resolve([] as LocalSapRow[]);
-    const emptyPerfData: PerfData = {
-      standalone_mode: false,
-      validation_results: [],
-      kpis: { gps_vehicles: 0, total_gps_stops: 0, avg_stops_per_vehicle: 0, avg_route_duration_hrs: null, avg_stop_duration: "0m", sap_orders: 0, sap_total_boxes: 0 },
-      chart_stops: { labels: [], values: [] },
-      chart_route_hours: { labels: [], values: [] },
-      route_cards: [],
-    };
-    const routePromise = fetchDashboardEndpoint<PerfData>(`/dashboard/driver-performance`)
-      .catch(() => emptyPerfData);
-    const fleetPromise = primary.from("vehicles").select("number,type,status").then(({ data, error }) => ({
-      data: data || [],
-      error,
-    }));
-
-    const [primaryResult, secondaryRows, routeResult, fleetVehicles] = await Promise.all([
-      withTimeout(primaryPromise, 30000, [] as LocalSapRow[]),
-      withTimeout(secondaryPromise, 20000, [] as LocalSapRow[]),
-      withTimeout(routePromise, 15000, emptyPerfData),
-      withTimeout(fleetPromise, 5000, { data: [], error: { message: "Fleet lookup timed out" } }),
+    const routePromise = fetchDashboardEndpoint<PerfData>(`/dashboard/driver-performance`);
+    const fleetPromise = primary.from("vehicles").select("number,type,status");
+    const [primaryRows, secondaryRows, routeResult, fleetVehicles] = await Promise.all([
+      primaryPromise, secondaryPromise, routePromise, fleetPromise,
     ]);
-
-    const typedPrimaryRows = primaryResult as LocalSapRow[];
+    setLoadingProgress(82);
+    // Fleet vehicle metadata is used only to canonicalize Pickup/Van. If the
+    // master table is temporarily unavailable, keep the analytical dataset
+    // usable and fall back to the SAP vehicle type already present on each row.
     const fleetVehicleRows = fleetVehicles.error ? [] : (fleetVehicles.data || []);
+
+    // Fallback semantics: when Primary owns a dispatch date, do not double-count
+    // Secondary rows from that same date. Secondary contributes dates Primary
+    // does not contain. This preserves the app's Primary -> Secondary model.
+    const typedPrimaryRows = primaryRows as LocalSapRow[];
+    const typedSecondaryRows = secondaryRows as LocalSapRow[];
     const primaryDates = new Set(typedPrimaryRows.map((r: LocalSapRow) => String(r.dispatch_date || "")).filter(Boolean));
-    const extraRows = (secondaryRows as LocalSapRow[]).filter((r) => !primaryDates.has(String(r.dispatch_date || "")));
-    const combinedRows = typedPrimaryRows.concat(extraRows);
-    const rows = applyFleetVehicleTypes(combinedRows.filter((r: LocalSapRow) =>
+    const rowsRaw: LocalSapRow[] = typedPrimaryRows.concat(typedSecondaryRows.filter((r: LocalSapRow) => !primaryDates.has(String(r.dispatch_date || ""))));
+
+    // Keep every real SAP driver/area represented in the analytical dataset.
+    // The master tables are still loaded for the existing app architecture, but
+    // exact-name matching here was dropping valid SAP drivers when Fleet
+    // Database and SAP used slightly different spellings. That made the
+    // Dashboard Driver slicer show only a small subset (sometimes one driver)
+    // even though the selected month contained many drivers.
+    const rows = applyFleetVehicleTypes(rowsRaw.filter((r: LocalSapRow) =>
       !isUnknown(r.division_desc) && !isUnknown(classification(r))
     ), fleetVehicleRows);
 
@@ -300,13 +285,10 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     loading = null;
     emit();
     void writePersistentDataset(current);
-
     return current;
   })().catch((e) => { loading = null; resetLoadingProgress(0); throw e; });
   return loading;
 }
-
-
 
 export function useDashboardLocalSnapshot(start: string, end: string): DashboardLocalDataset | null {
   // This function intentionally has no React dependency. Consumers subscribe
