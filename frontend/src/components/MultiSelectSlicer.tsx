@@ -58,11 +58,11 @@ export default function MultiSelectSlicer({
     function onOtherOpened(e: Event) {
       if ((e as CustomEvent).detail !== instanceId) setOpen(false);
     }
-    document.addEventListener("pointerdown", onClickOutside);
+    document.addEventListener("mousedown", onClickOutside);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("nav-dropdown-open", onOtherOpened);
     return () => {
-      document.removeEventListener("pointerdown", onClickOutside);
+      document.removeEventListener("mousedown", onClickOutside);
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("nav-dropdown-open", onOtherOpened);
     };
@@ -95,7 +95,7 @@ export default function MultiSelectSlicer({
     <div ref={ref} className="relative">
       <button
         type="button"
-        onPointerDown={(e) => { e.stopPropagation(); toggleOpen(); }}
+        onClick={toggleOpen}
         title={`Slicer: filter by ${label}`}
         className={cn(
           "glass-slicer-trigger flex items-center gap-1.5 rounded-[12px] px-3.5 py-2 text-[13px] font-semibold transition-colors duration-150",
