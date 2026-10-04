@@ -262,7 +262,7 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     // Only Primary + the small Fleet lookup are required for first paint.
     // This is intentionally awaited so the app remains data-backed, but it is
     // no longer coupled to the health/speed of Secondary or GPS RPCs.
-    const [primaryRows, fleetVehicles] = await Promise.all([primaryPromise, fleetPromise]);
+    const [primaryRows, fleetVehicles, routeResult] = await Promise.all([primaryPromise, fleetPromise, routePromise]);
     setLoadingProgress(82);
 
     const fleetVehicleRows = fleetVehicles.error ? [] : (fleetVehicles.data || []);
@@ -272,14 +272,14 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     ), fleetVehicleRows);
 
     setLoadingProgress(94);
-    current = { key, rows, routeCards: [], loadedAt: Date.now(), datasetVersion: LOCAL_DATASET_VERSION };
+    current = { key, rows, routeCards: routeResult?.route_cards || [], loadedAt: Date.now(), datasetVersion: LOCAL_DATASET_VERSION };
     setLoadingProgress(100);
     loading = null;
     emit();
 
     // Enrichment continues after the Dashboard is already usable. Preserve the
     // existing Primary -> Secondary date ownership rule when Secondary returns.
-    void Promise.allSettled([secondaryPromise, routePromise]).then(([secondaryResult, routeResult]) => {
+    void Promise.allSettled([secondaryPromise]).then(([secondaryResult]) => {
       let next = current;
       if (!next || next.key !== key) return;
 
@@ -295,9 +295,6 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
         next = { ...next, rows: mergedRows, loadedAt: Date.now() };
       }
 
-      if (routeResult.status === "fulfilled" && routeResult.value?.route_cards) {
-        next = { ...next, routeCards: routeResult.value.route_cards, loadedAt: Date.now() };
-      }
 
       if (next !== current) {
         current = next;
