@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, X } from "lucide-react";
-import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { getOptionIcon } from "@/lib/domainIcons";
 import type { LucideIcon } from "lucide-react";
+import { claimDropdown, releaseDropdown } from "./dropdownCoordinator";
 
 /**
  * V2 milestone: Dashboard Filter Improvements - Excel/Power BI-style
@@ -47,7 +47,14 @@ export default function MultiSelectSlicer({
   }
 
   useEffect(() => {
-    function onClickOutside(e: MouseEvent) {
+    if (!open) {
+      releaseDropdown(instanceId);
+      return;
+    }
+
+    claimDropdown(instanceId, () => setOpen(false));
+
+    function onPointerDownOutside(e: PointerEvent) {
       const target = e.target as Node;
       if (ref.current?.contains(target) || menuRef.current?.contains(target)) return;
       setOpen(false);
@@ -55,18 +62,14 @@ export default function MultiSelectSlicer({
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
     }
-    function onOtherOpened(e: Event) {
-      if ((e as CustomEvent).detail !== instanceId) setOpen(false);
-    }
-    document.addEventListener("mousedown", onClickOutside);
+    document.addEventListener("pointerdown", onPointerDownOutside, true);
     document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("nav-dropdown-open", onOtherOpened);
     return () => {
-      document.removeEventListener("mousedown", onClickOutside);
+      document.removeEventListener("pointerdown", onPointerDownOutside, true);
       document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("nav-dropdown-open", onOtherOpened);
+      releaseDropdown(instanceId);
     };
-  }, [instanceId]);
+  }, [open, instanceId]);
 
   useEffect(() => {
     if (!open) return;
@@ -84,18 +87,24 @@ export default function MultiSelectSlicer({
   }, [open]);
 
   function toggleOpen() {
-    setOpen((o) => {
-      const next = !o;
-      if (next) document.dispatchEvent(new CustomEvent("nav-dropdown-open", { detail: instanceId }));
-      return next;
-    });
+    setOpen((current) => !current);
   }
 
   return (
     <div ref={ref} className="relative">
       <button
         type="button"
-        onClick={toggleOpen}
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          toggleOpen();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggleOpen();
+          }
+        }}
         title={`Slicer: filter by ${label}`}
         className={cn(
           "glass-slicer-trigger flex items-center gap-1.5 rounded-[12px] px-3.5 py-2 text-[13px] font-semibold transition-colors duration-150",
@@ -107,10 +116,7 @@ export default function MultiSelectSlicer({
         <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} />
       </button>
       {menuPos && open && createPortal(
-            <motion.div
-              initial={{ opacity: 0, y: -4, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              transition={{ duration: 0.14 }}
+            <div
               style={{ position: "fixed", left: menuPos.left, top: menuPos.top, zIndex: 9999, minWidth: Math.max(200, menuPos.width), maxHeight: "min(70vh, 520px)", overflowY: "auto" }}
               // ITEM PASS 6 (Part 5/6, glass surface hierarchy): was
               // `bg-[var(--navy2)]/95` - an ad hoc opacity value specific to
@@ -148,7 +154,7 @@ export default function MultiSelectSlicer({
                   </label>
                 );
               })}
-            </motion.div>,
+            </div>,
         document.body
       )}
     </div>

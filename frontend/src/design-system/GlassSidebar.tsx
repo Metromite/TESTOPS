@@ -2,6 +2,7 @@ import { ReactNode, useRef, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
+import { claimDropdown, releaseDropdown } from "../components/dropdownCoordinator";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -98,29 +99,31 @@ export function GlassNavGroup({
   const groupId = layoutId + label;
 
   useEffect(() => {
-    function onClickOutside(e: MouseEvent) {
+    if (!open) {
+      releaseDropdown(groupId);
+      return;
+    }
+
+    const close = () => setOpen(false);
+    claimDropdown(groupId, close);
+
+    function onPointerDownOutside(e: PointerEvent) {
       const target = e.target as Node;
       if (ref.current?.contains(target) || menuRef.current?.contains(target)) return;
       setOpen(false);
     }
-    // BUGFIX (only one dropdown open at a time, robustly): close this
-    // dropdown whenever ANY other nav dropdown reports it just opened,
-    // not just on outside clicks - so two menus can never both show.
-    function onOtherGroupOpened(e: Event) {
-      if ((e as CustomEvent).detail !== groupId) setOpen(false);
-    }
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
     }
-    document.addEventListener("mousedown", onClickOutside);
-    document.addEventListener("nav-dropdown-open", onOtherGroupOpened);
+
+    document.addEventListener("pointerdown", onPointerDownOutside, true);
     document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.removeEventListener("mousedown", onClickOutside);
-      document.removeEventListener("nav-dropdown-open", onOtherGroupOpened);
+      document.removeEventListener("pointerdown", onPointerDownOutside, true);
       document.removeEventListener("keydown", onKeyDown);
+      releaseDropdown(groupId);
     };
-  }, [groupId]);
+  }, [open, groupId]);
 
   useEffect(() => {
     if (!open) return;
@@ -144,18 +147,24 @@ export function GlassNavGroup({
   }
 
   function toggleOpen() {
-    const next = !open;
-    if (next) {
-      warmOnOpen();
-      document.dispatchEvent(new CustomEvent("nav-dropdown-open", { detail: groupId }));
-    }
-    setOpen(next);
+    if (!open) warmOnOpen();
+    setOpen((current) => !current);
   }
 
   return (
     <div ref={ref} className="relative" onPointerEnter={warmOnOpen}>
       <button
-        onClick={toggleOpen}
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          toggleOpen();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggleOpen();
+          }
+        }}
         aria-expanded={open}
         aria-haspopup="menu"
         data-active={isActiveGroup ? "true" : "false"}
@@ -185,10 +194,7 @@ export function GlassNavGroup({
         guarantees it always paints above all page content.
       */}
       {menuPos && open && createPortal(
-            <motion.div
-              initial={{ opacity: 0, y: -4, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              transition={{ duration: 0.15 }}
+            <div
               style={{ position: "fixed", left: menuPos.left, top: menuPos.top, zIndex: 9999 }}
               // ITEM PASS 6: same fix as MultiSelectSlicer's dropdown -
               // shared Level 3 tokens instead of an ad hoc navy2/95 value.
@@ -212,7 +218,7 @@ export function GlassNavGroup({
                   {item.label}
                 </NavLink>
               ))}
-            </motion.div>,
+            </div>,
         document.body
       )}
     </div>
