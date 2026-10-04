@@ -240,50 +240,71 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     const secondary = clients[1];
     let primaryRowsLoaded = 0;
     let secondaryRowsLoaded = 0;
+
+    // The Primary dataset is the authoritative fast path. Secondary and GPS
+    // aggregation are fallbacks/enrichment and must never block a brand-new
+    // browser from opening the Dashboard. Older browsers appeared healthy only
+    // because IndexedDB returned the already-built dataset before this network
+    // pipeline ran.
     const primaryPromise = fetchRowsForClient(primary, "", "", (n) => {
       primaryRowsLoaded += n;
-      setLoadingProgress(Math.min(55, 5 + Math.round(Math.log10(primaryRowsLoaded + 1) * 22)));
+      setLoadingProgress(Math.min(72, 5 + Math.round(Math.log10(primaryRowsLoaded + 1) * 24)));
     });
     const secondaryPromise = secondary
       ? fetchRowsForClient(secondary, "", "", (n) => {
           secondaryRowsLoaded += n;
-          setLoadingProgress(Math.min(65, 28 + Math.round(Math.log10(primaryRowsLoaded + secondaryRowsLoaded + 1) * 22)));
+          setLoadingProgress(Math.min(78, 35 + Math.round(Math.log10(primaryRowsLoaded + secondaryRowsLoaded + 1) * 18)));
         })
       : Promise.resolve([] as LocalSapRow[]);
     const routePromise = fetchDashboardEndpoint<PerfData>(`/dashboard/driver-performance`);
     const fleetPromise = primary.from("vehicles").select("number,type,status");
-    const [primaryRows, secondaryRows, routeResult, fleetVehicles] = await Promise.all([
-      primaryPromise, secondaryPromise, routePromise, fleetPromise,
-    ]);
+
+    // Only Primary + the small Fleet lookup are required for first paint.
+    // This is intentionally awaited so the app remains data-backed, but it is
+    // no longer coupled to the health/speed of Secondary or GPS RPCs.
+    const [primaryRows, fleetVehicles] = await Promise.all([primaryPromise, fleetPromise]);
     setLoadingProgress(82);
-    // Fleet vehicle metadata is used only to canonicalize Pickup/Van. If the
-    // master table is temporarily unavailable, keep the analytical dataset
-    // usable and fall back to the SAP vehicle type already present on each row.
+
     const fleetVehicleRows = fleetVehicles.error ? [] : (fleetVehicles.data || []);
-
-    // Fallback semantics: when Primary owns a dispatch date, do not double-count
-    // Secondary rows from that same date. Secondary contributes dates Primary
-    // does not contain. This preserves the app's Primary -> Secondary model.
     const typedPrimaryRows = primaryRows as LocalSapRow[];
-    const typedSecondaryRows = secondaryRows as LocalSapRow[];
-    const primaryDates = new Set(typedPrimaryRows.map((r: LocalSapRow) => String(r.dispatch_date || "")).filter(Boolean));
-    const rowsRaw: LocalSapRow[] = typedPrimaryRows.concat(typedSecondaryRows.filter((r: LocalSapRow) => !primaryDates.has(String(r.dispatch_date || ""))));
-
-    // Keep every real SAP driver/area represented in the analytical dataset.
-    // The master tables are still loaded for the existing app architecture, but
-    // exact-name matching here was dropping valid SAP drivers when Fleet
-    // Database and SAP used slightly different spellings. That made the
-    // Dashboard Driver slicer show only a small subset (sometimes one driver)
-    // even though the selected month contained many drivers.
-    const rows = applyFleetVehicleTypes(rowsRaw.filter((r: LocalSapRow) =>
+    const rows = applyFleetVehicleTypes(typedPrimaryRows.filter((r: LocalSapRow) =>
       !isUnknown(r.division_desc) && !isUnknown(classification(r))
     ), fleetVehicleRows);
 
     setLoadingProgress(94);
-    current = { key, rows, routeCards: routeResult.route_cards || [], loadedAt: Date.now(), datasetVersion: LOCAL_DATASET_VERSION };
+    current = { key, rows, routeCards: [], loadedAt: Date.now(), datasetVersion: LOCAL_DATASET_VERSION };
     setLoadingProgress(100);
     loading = null;
     emit();
+
+    // Enrichment continues after the Dashboard is already usable. Preserve the
+    // existing Primary -> Secondary date ownership rule when Secondary returns.
+    void Promise.allSettled([secondaryPromise, routePromise]).then(([secondaryResult, routeResult]) => {
+      let next = current;
+      if (!next || next.key !== key) return;
+
+      if (secondaryResult.status === "fulfilled") {
+        const typedSecondaryRows = secondaryResult.value as LocalSapRow[];
+        const primaryDates = new Set(typedPrimaryRows.map((r: LocalSapRow) => String(r.dispatch_date || "")).filter(Boolean));
+        const mergedRaw = typedPrimaryRows.concat(
+          typedSecondaryRows.filter((r: LocalSapRow) => !primaryDates.has(String(r.dispatch_date || "")))
+        );
+        const mergedRows = applyFleetVehicleTypes(mergedRaw.filter((r: LocalSapRow) =>
+          !isUnknown(r.division_desc) && !isUnknown(classification(r))
+        ), fleetVehicleRows);
+        next = { ...next, rows: mergedRows, loadedAt: Date.now() };
+      }
+
+      if (routeResult.status === "fulfilled" && routeResult.value?.route_cards) {
+        next = { ...next, routeCards: routeResult.value.route_cards, loadedAt: Date.now() };
+      }
+
+      if (next !== current) {
+        current = next;
+        void writePersistentDataset(next);
+        emit();
+      }
+    });
     void writePersistentDataset(current);
     return current;
   })().catch((e) => { loading = null; resetLoadingProgress(0); throw e; });

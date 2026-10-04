@@ -184,14 +184,20 @@ export default function Dashboard() {
     try {
       const clients = getFederatedSupabaseClients();
       const results = await Promise.all(clients.map(async (client) => {
-        const { data, error } = await client
-          .from("sap_invoice_facts")
-          .select("dispatch_date")
-          .not("dispatch_date", "is", null)
-          .order("dispatch_date", { ascending: false })
-          .limit(1);
-        if (error) return null;
-        return data?.[0]?.dispatch_date ? String(data[0].dispatch_date).slice(0, 10) : null;
+        try {
+          const query = client
+            .from("sap_invoice_facts")
+            .select("dispatch_date")
+            .not("dispatch_date", "is", null)
+            .order("dispatch_date", { ascending: false })
+            .limit(1);
+          const timeout = new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 5000));
+          const result = await Promise.race([query, timeout]) as any;
+          if (!result || result.error) return null;
+          return result.data?.[0]?.dispatch_date ? String(result.data[0].dispatch_date).slice(0, 10) : null;
+        } catch {
+          return null;
+        }
       }));
       const latest = results.filter(Boolean).sort().pop();
       if (!latest) return;
