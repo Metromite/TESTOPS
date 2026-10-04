@@ -187,9 +187,9 @@ function normalizeRow(r: any): LocalSapRow {
   };
 }
 
-async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+async function withTimeout<T>(promise: PromiseLike<T>, ms: number, fallback: T): Promise<T> {
   return await Promise.race([
-    promise,
+    Promise.resolve(promise),
     new Promise<T>((resolve) => window.setTimeout(() => resolve(fallback), ms)),
   ]);
 }
