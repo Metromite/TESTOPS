@@ -9,6 +9,16 @@ interface Msg { role: "user" | "assistant"; content: string; meta?: string; pend
 const LOGI_BOT_SCENE = "/scene-clean.splinecode";
 const LOGI_CHAT_SCENE = "/scene-clean-6.splinecode";
 
+// Start fetching the local mascot scene and engraving immediately. This moves
+// network/decode work ahead of the first visual reveal.
+if (typeof window !== "undefined") {
+  void fetch(LOGI_BOT_SCENE, { cache: "force-cache" }).catch(() => undefined);
+  void fetch(LOGI_CHAT_SCENE, { cache: "force-cache" }).catch(() => undefined);
+  const logoPreload = new Image();
+  logoPreload.decoding = "async";
+  logoPreload.src = "/logi-company-engraving.png";
+}
+
 function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: number; headOnly?: boolean; onReady?: () => void }) {
   const [sceneReady, setSceneReady] = useState(false);
   const rafRef = useRef<number | null>(null);
@@ -186,16 +196,11 @@ function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: numbe
     if (animationLoopRef.current !== null) window.clearInterval(animationLoopRef.current);
     animationLoopRef.current = window.setInterval(() => spline.play?.(), 4200);
 
-    // Never expose the raw first Spline frame. Wait only for two paint frames
-    // plus a short settling window; this is faster than before but still keeps
-    // the authored floor/face-down frame completely hidden.
+    // onLoad is the Spline scene-ready boundary. Reveal after one paint frame;
+    // the old two-frame + timeout gate added startup latency without benefit.
     window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        window.setTimeout(() => {
-          setSceneReady(true);
-          onReady?.();
-        }, 24);
-      });
+      setSceneReady(true);
+      onReady?.();
     });
   };
 
@@ -215,7 +220,7 @@ function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: numbe
 }
 
 
-function SplineLogiChatIcon({ size = 62 }: { size?: number }) {
+function SplineLogiChatIcon({ size = 72 }: { size?: number }) {
   const [sceneReady, setSceneReady] = useState(false);
   const animationLoopRef = useRef<number | null>(null);
 
@@ -239,13 +244,9 @@ function SplineLogiChatIcon({ size = 62 }: { size?: number }) {
     if (animationLoopRef.current !== null) window.clearInterval(animationLoopRef.current);
     animationLoopRef.current = window.setInterval(() => spline.play?.(), 4200);
 
-    // Reveal only after the same two paint frames used for the outer mascot,
-    // so the chat icon never exposes the raw first Spline frame.
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        window.setTimeout(() => setSceneReady(true), 24);
-      });
-    });
+    // The imported scene is local and cleaned. One paint frame avoids a raw canvas
+    // flash while keeping the icon responsive.
+    window.requestAnimationFrame(() => setSceneReady(true));
   };
 
   useEffect(() => () => {
@@ -289,6 +290,24 @@ export default function FloatingAiWidget() {
   const navigate = useNavigate();
   const launcherHitRef = useRef<HTMLSpanElement>(null);
   const [launcherReady, setLauncherReady] = useState(false);
+  const [engravingReady, setEngravingReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const img = new Image();
+    img.decoding = "async";
+    img.src = "/logi-company-engraving.png";
+    const finish = () => { if (!cancelled) setEngravingReady(true); };
+    if (img.complete) {
+      void img.decode?.().catch(() => undefined).finally(finish);
+    } else {
+      img.onload = finish;
+      img.onerror = finish;
+    }
+    return () => { cancelled = true; };
+  }, []);
+
+  const visualReady = launcherReady && engravingReady;
 
   // Hover is driven by the clipped hit target itself, not the transparent
   // 210px Spline canvas. This keeps the chat button and other UI clickable.
@@ -361,7 +380,7 @@ export default function FloatingAiWidget() {
           <div style={{ flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
             {messages.length === 0 && (
               <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                <SplineLogiChatIcon size={62} />
+                <SplineLogiChatIcon size={72} />
                 <div style={{ background: "var(--navy3)", padding: "10px 12px", borderRadius: 10, fontSize: 13, maxWidth: "85%" }}>
                   👋 Hi, I'm LOGI. I can look things up for you, and actually do things. Just ask.
                 </div>
@@ -369,7 +388,7 @@ export default function FloatingAiWidget() {
             )}
             {messages.map((m, i) => (
               <div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "92%", display: "flex", gap: 7, alignItems: "flex-end" }}>
-                {m.role === "assistant" && <SplineLogiChatIcon size={62} />}
+                {m.role === "assistant" && <SplineLogiChatIcon size={72} />}
                 <div style={{ minWidth: 0 }}>
                   <div className={m.role === "assistant" ? "logi-chat-bubble" : undefined} style={{
                     background: m.role === "user" ? "var(--blue)" : "var(--navy3)",
@@ -411,7 +430,7 @@ export default function FloatingAiWidget() {
             ))}
             {loading && (
               <div style={{ alignSelf: "flex-start", display: "flex", gap: 7, alignItems: "flex-end" }}>
-                <SplineLogiChatIcon size={62} />
+                <SplineLogiChatIcon size={72} />
                 <div className="logi-chat-bubble" style={{ background: "var(--navy3)", padding: "9px 12px", borderRadius: 10, fontSize: 13 }}>
                   <span className="logi-typing-dots"><i></i><i></i><i></i></span>
                 </div>
@@ -438,7 +457,7 @@ export default function FloatingAiWidget() {
       )}
 
       <div
-        className={`logi-launcher ${launcherReady ? "is-ready" : ""} ${hovering || open ? "is-active" : ""}`}
+        className={`logi-launcher ${visualReady ? "is-ready" : ""} ${hovering || open ? "is-active" : ""}`}
         style={{ position: "fixed", bottom: 20, right: -18, zIndex: 1400 }}
       >
         {hovering && !open && (
@@ -463,7 +482,7 @@ export default function FloatingAiWidget() {
           onClick={() => setOpen((o) => !o)}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((o) => !o); } }}
         />
-        <span className={`logi-bot-engraving ${launcherReady ? "is-ready" : ""}`} aria-hidden="true"><img src="/logi-company-engraving.png" alt="" /></span>
+        <span className={`logi-bot-engraving ${visualReady ? "is-ready" : ""}`} aria-hidden="true"><img src="/logi-company-engraving.png" alt="" /></span>
       </div>
     </div>
   );

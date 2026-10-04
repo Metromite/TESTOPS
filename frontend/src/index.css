@@ -7504,3 +7504,57 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
   transform: scale(1.08) !important;
   transform-origin: 50% 50% !important;
 }
+
+/* LOGI 3.3 — measured startup/reveal + head-anchored greeting + full-size chat icon. */
+.logi-launcher:not(.is-ready) {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+.logi-launcher.is-ready {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+.logi-launcher.is-ready .logi-launcher-orb,
+.logi-launcher.is-ready .logi-bot-engraving {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+/* The mascot canvas is 210px, but the visible head sits slightly below its
+   upper edge. This anchor places the bubble just above that real head line,
+   rather than at the top of the transparent canvas. */
+.logi-hover-tip {
+  right: 16px !important;
+  bottom: 190px !important;
+  transform-origin: 92% 100% !important;
+}
+.logi-hover-tip::after {
+  right: 20px !important;
+  bottom: -6px !important;
+}
+
+/* Use the attached Spline scene as a genuine floating 3D icon, but do not let
+   its authored camera framing zoom the robot into the message bubble. */
+.logi-chat-3d-icon {
+  width: 72px !important;
+  height: 72px !important;
+  min-width: 72px !important;
+  min-height: 72px !important;
+  display: block !important;
+  flex: 0 0 72px !important;
+  overflow: visible !important;
+}
+.logi-chat-3d-icon canvas {
+  width: 100% !important;
+  height: 100% !important;
+  transform: scale(.52) !important;
+  transform-origin: 50% 50% !important;
+  overflow: visible !important;
+}
+.logi-chat-3d-icon > div,
+.logi-chat-3d-icon > div > div {
+  width: 100% !important;
+  height: 100% !important;
+  transform: none !important;
+}
