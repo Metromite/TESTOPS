@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { getRole } from "../api/client";
-import { getExperienceDetailPage, getExperienceSuggestions, getExperienceSummary } from "../services/operational";
+import { getExperienceDetailPage, getExperienceSuggestions, getExperienceSummary, getCachedExperienceSummary, primeExperienceSummaryCache, refreshExperienceSummary, prefetchExperienceDetail } from "../services/operational";
 import { processExperienceExport, importExperienceDataExport, exportExperienceData, resetExperiencePeriod, resetAllExperienceData, type ImportProgress } from "../services/importEngine";
 import DetailWindow from "../components/DetailWindow";
 
@@ -11,9 +11,14 @@ type DetailRow = Record<string, any>;
 
 const DETAIL_PAGE_SIZE = 100;
 
+// Start warming both Experience divisions as soon as this page module is loaded.
+// Control Center imports this page before the user opens the tab, so the data can
+// arrive in the background instead of blocking the tab transition.
+if (typeof window !== "undefined") primeExperienceSummaryCache();
+
 export default function Experience() {
   const [division,setDivision]=useState<Division>("Pharma");
-  const [summary,setSummary]=useState<Summary[]>([]); const [summaryLoading,setSummaryLoading]=useState(false);
+  const [summary,setSummary]=useState<Summary[]>(()=>getCachedExperienceSummary<Summary>("Pharma")); const [summaryLoading,setSummaryLoading]=useState(()=>getCachedExperienceSummary<Summary>("Pharma").length===0);
   const [detail,setDetail]=useState<DetailRow[]>([]); const [detailRaw,setDetailRaw]=useState<DetailRow[]>([]);
   const [detailOffset,setDetailOffset]=useState(0); const [detailHasMore,setDetailHasMore]=useState(false); const [detailLoadingMore,setDetailLoadingMore]=useState(false);
   const [selected,setSelected]=useState<{code:string;type:string;name:string}|null>(null); const [detailLoading,setDetailLoading]=useState(false);
@@ -21,9 +26,17 @@ export default function Experience() {
   const [error,setError]=useState(""); const [uploadProgress,setUploadProgress]=useState<ImportProgress|null>(null); const [exporting,setExporting]=useState(false);
   const isAdmin = getRole() === "admin"; const [uploading,setUploading]=useState(false); const [uploadMode,setUploadMode]=useState<"sap"|"backup">("sap");
 
-  async function loadSummary(nextDivision:Division=division){
-    setSummaryLoading(true); setError("");
-    try { setSummary(await getExperienceSummary<Summary>(nextDivision)); }
+  async function loadSummary(nextDivision:Division=division, forceRefresh=false){
+    setError("");
+    const cached=getCachedExperienceSummary<Summary>(nextDivision);
+    if(!forceRefresh && cached.length){
+      setSummary(cached);
+      setSummaryLoading(false);
+      void refreshExperienceSummary(nextDivision).then(rows=>{setSummary(rows as Summary[]);}).catch(()=>{});
+      return;
+    }
+    setSummaryLoading(true);
+    try { setSummary(await getExperienceSummary<Summary>(nextDivision,{forceRefresh})); }
     catch(e:any) { setError(e?.message||String(e)); }
     finally { setSummaryLoading(false); }
   }
@@ -38,8 +51,8 @@ export default function Experience() {
   }
 
   async function handleDownload(){setExporting(true);setError("");setUploadProgress(null);try{await exportExperienceData(p=>setUploadProgress(p))}catch(e:any){setError(e?.message||String(e))}finally{setExporting(false)}}
-  async function handleUpload(file:File|undefined){if(!isAdmin||!file)return;setUploading(true);setError("");setUploadProgress(null);try{if(uploadMode==="sap") await processExperienceExport(file,p=>setUploadProgress(p)); else await importExperienceDataExport(file,p=>setUploadProgress(p)); await loadSummary()}catch(e:any){setError(e?.message||String(e))}finally{setUploading(false)}}
-  async function handleReset(){if(!isAdmin)return;const key=window.prompt("Enter month YYYY-MM, or ALL to erase all experience:","ALL");if(key===null)return;try{setUploading(true);if(key.trim().toUpperCase()==="ALL") await resetAllExperienceData(); else { const m=/^(\d{4})-(\d{2})$/.exec(key.trim()); if(!m) throw new Error("Enter month as YYYY-MM or ALL."); await resetExperiencePeriod(Number(m[1]), Number(m[2])); } await loadSummary()}catch(e:any){setError(e?.message||String(e))}finally{setUploading(false)}}
+  async function handleUpload(file:File|undefined){if(!isAdmin||!file)return;setUploading(true);setError("");setUploadProgress(null);try{if(uploadMode==="sap") await processExperienceExport(file,p=>setUploadProgress(p)); else await importExperienceDataExport(file,p=>setUploadProgress(p)); await loadSummary(division,true)}catch(e:any){setError(e?.message||String(e))}finally{setUploading(false)}}
+  async function handleReset(){if(!isAdmin)return;const key=window.prompt("Enter month YYYY-MM, or ALL to erase all experience:","ALL");if(key===null)return;try{setUploading(true);if(key.trim().toUpperCase()==="ALL") await resetAllExperienceData(); else { const m=/^(\d{4})-(\d{2})$/.exec(key.trim()); if(!m) throw new Error("Enter month as YYYY-MM or ALL."); await resetExperiencePeriod(Number(m[1]), Number(m[2])); } await loadSummary(division,true)}catch(e:any){setError(e?.message||String(e))}finally{setUploading(false)}}
 
   function shapeDetailRows(rows:DetailRow[]):DetailRow[]{
     const daily:any[]=rows.map(d=>({...d,date:String(d.date||d.end_date||""),area:String(d.area_name||d.area||"UNKNOWN"),area_code:String(d.experienced_area_code||d.area_code||"UNKNOWN"),route_type:String(d.route_type||""),experience_division:String(d.experience_division||d.experience_type||d.sector||division),vehicle_type:String(d.vehicle_type||"UNKNOWN"),vehicle_number:String(d.vehicle_number||"")})).sort((a,b)=>a.date.localeCompare(b.date));
@@ -87,7 +100,7 @@ export default function Experience() {
       </div>
     </div>
     {error&&<div className="glass-card error-text" style={{marginBottom:20}}>{error}</div>}
-    <div className="glass-card table-scroll"><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><strong>Experience Summary — {division}</strong>{summaryLoading&&<span style={{fontSize:12,color:"var(--muted)"}}>Loading…</span>}</div><table className="data-table" style={{marginTop:10}}><thead><tr><th>Name</th><th>Type</th><th>Experience</th><th>Consumer / Pharma Orders</th><th>Vehicle Types</th><th>Areas</th><th>Days</th><th>Most Recent Area</th><th>Last Worked</th></tr></thead><tbody>{!summaryLoading&&filtered.length===0&&<tr><td colSpan={9} style={{color:"var(--muted)",textAlign:"center",padding:20}}>No experience history yet.</td></tr>}{filtered.map(s=><tr key={`${s.person_type}-${s.person_code}`} onClick={()=>openDetail(s.person_code,s.person_type,s.person_name)} style={{cursor:"pointer"}}><td><strong>{s.person_name}</strong> <span style={{color:"var(--muted)",fontSize:11}}>({s.person_code})</span></td><td>{s.person_type}</td><td><span className="badge" style={{background:s.experience==="Consumer"?"var(--blue-soft, rgba(59,130,246,.18))":"var(--purple-soft, rgba(168,85,247,.18))"}}>{s.experience}</span></td><td>{s.consumer_orders} Consumer / {s.pharma_orders} Pharma</td><td>{s.vehicle_types||"UNKNOWN"}</td><td>{s.distinct_areas}</td><td>{s.total_days}</td><td>{s.most_recent_area}</td><td>{s.most_recent_end}</td></tr>)}</tbody></table></div>
-    {selected&&<DetailWindow title={`Exact ${division} Experience History — ${selected.name} (${selected.code})`} loading={detailLoading} loadingMore={detailLoadingMore} truncated={detailHasMore} totalMatching={detailHasMore?undefined:detail.length} onLoadMore={()=>void loadMoreDetail()} columns={[{key:"area_code",label:"Area Code"},{key:"area",label:"Area"},{key:"route_type",label:"Route Type"},{key:"experience_division",label:"Experience"},{key:"vehicle_type",label:"Vehicle Type"},{key:"vehicle",label:"Vehicle(s)"},{key:"date_range",label:"Exact Dates"},{key:"days",label:"Consecutive Days"},{key:"order_count",label:"Orders"},{key:"consumer_orders",label:"Consumer Orders"},{key:"pharma_orders",label:"Pharma Orders"}]} rows={detail} onClose={()=>setSelected(null)}/>} 
+    <div className="glass-card table-scroll"><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><strong>Experience Summary — {division}</strong>{summaryLoading&&<span style={{fontSize:12,color:"var(--muted)"}}>Loading…</span>}</div><table className="data-table" style={{marginTop:10}}><thead><tr><th>Name</th><th>Type</th><th>Experience</th><th>Consumer / Pharma Orders</th><th>Vehicle Types</th><th>Areas</th><th>Days</th><th>Most Recent Area</th><th>Last Worked</th></tr></thead><tbody>{!summaryLoading&&filtered.length===0&&<tr><td colSpan={9} style={{color:"var(--muted)",textAlign:"center",padding:20}}>No experience history yet.</td></tr>}{filtered.map(s=><tr key={`${s.person_type}-${s.person_code}`} onMouseEnter={()=>{void prefetchExperienceDetail(s.person_code,s.person_type,division).catch(()=>{})}} onClick={()=>openDetail(s.person_code,s.person_type,s.person_name)} style={{cursor:"pointer"}}><td><strong>{s.person_name}</strong> <span style={{color:"var(--muted)",fontSize:11}}>({s.person_code})</span></td><td>{s.person_type}</td><td><span className="badge" style={{background:s.experience==="Consumer"?"var(--blue-soft, rgba(59,130,246,.18))":"var(--purple-soft, rgba(168,85,247,.18))"}}>{s.experience}</span></td><td>{s.consumer_orders} Consumer / {s.pharma_orders} Pharma</td><td>{s.vehicle_types||"UNKNOWN"}</td><td>{s.distinct_areas}</td><td>{s.total_days}</td><td>{s.most_recent_area}</td><td>{s.most_recent_end}</td></tr>)}</tbody></table></div>
+    {selected&&<DetailWindow key={`${division}|${selected.type}|${selected.code}`} title={`Exact ${division} Experience History — ${selected.name} (${selected.code})`} loading={detailLoading} loadingMore={detailLoadingMore} truncated={detailHasMore} totalMatching={detailHasMore?undefined:detail.length} onLoadMore={()=>void loadMoreDetail()} columns={[{key:"area_code",label:"Area Code"},{key:"area",label:"Area"},{key:"route_type",label:"Route Type"},{key:"experience_division",label:"Experience"},{key:"vehicle_type",label:"Vehicle Type"},{key:"vehicle",label:"Vehicle(s)"},{key:"date_range",label:"Exact Dates"},{key:"days",label:"Consecutive Days"},{key:"order_count",label:"Orders"},{key:"consumer_orders",label:"Consumer Orders"},{key:"pharma_orders",label:"Pharma Orders"}]} rows={detail} onClose={()=>setSelected(null)}/>} 
   </div>
 }

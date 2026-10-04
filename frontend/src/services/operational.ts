@@ -93,13 +93,46 @@ export async function getRouteDriverDates<T>():Promise<T[]>{const [sap,lm]=await
 export async function reconstructRoute<T>(driver:string,date:string):Promise<T>{const [sap,lm]=await Promise.all([supabase.from("sap_invoice_facts").select("invoice_no,customer_name,customer_name_source,box_entry_time,boxes,area,vehicle_key,vehicle_num").eq("driver_name",driver).eq("dispatch_date",date),supabase.from("landmark_visit_facts").select("customer_name,arrival,departure,minutes,vehicle_key,driver_name").eq("driver_name",driver)]);const error=sap.error||lm.error;if(error)throw new Error(error.message);const l=(lm.data||[]).filter(x=>dateFromArrival(x.arrival||"")===date);return{sap_route:{stops_missing_time:(sap.data||[]).filter(x=>!x.box_entry_time).length,stops:(sap.data||[])},landmark_route:{all_stops_count:l.length,delivery_stops:l.map(x=>({customer_name:x.customer_name,arrival:x.arrival,departure:x.departure,duration_minutes:x.minutes}))}} as unknown as unknown as T;}
 
 const EXPERIENCE_SELECT = "person_code,person_name,person_type,area_code,area_name,area,sector,route_type,date,end_date,vehicle_number,vehicle_type,experience_division,experience_type,experienced_area_code,experienced_area_name,order_count,consumer_orders,pharma_orders";
+type ExperienceDivision = "Pharma" | "Consumer";
+const EXPERIENCE_CACHE_KEY = "dispatchops.experience.summary.v3";
+const experienceSummaryMemory = new Map<ExperienceDivision, any[]>();
+const experienceSummaryRefresh = new Map<ExperienceDivision, Promise<any[]> | null>();
+const experienceDetailMemory = new Map<string, { rows: any[]; hasMore: boolean }>();
+const experienceDetailRefresh = new Map<string, Promise<any> | null>();
+
+function readExperienceCache(): Record<string, { savedAt:number; rows:any[] }> {
+  try {
+    const raw=sessionStorage.getItem(EXPERIENCE_CACHE_KEY);
+    if(!raw) return {};
+    const parsed=JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch { return {}; }
+}
+function writeExperienceCache(division:ExperienceDivision, rows:any[]) {
+  try {
+    const cache=readExperienceCache();
+    cache[division]={savedAt:Date.now(),rows};
+    sessionStorage.setItem(EXPERIENCE_CACHE_KEY,JSON.stringify(cache));
+  } catch { /* browser storage can be unavailable; memory cache still works */ }
+}
+function loadCachedExperienceSummary(division:ExperienceDivision):any[]|null {
+  const memory=experienceSummaryMemory.get(division);
+  if(memory) return memory;
+  const cached=readExperienceCache()[division];
+  if(!cached || !Array.isArray(cached.rows)) return null;
+  experienceSummaryMemory.set(division,cached.rows);
+  return cached.rows;
+}
+export function getCachedExperienceSummary<T>(division:ExperienceDivision):T[] {
+  return (loadCachedExperienceSummary(division)||[]) as unknown as T[];
+}
 
 function experienceDivisionFilter(q:any, division:string){
   const d=division.trim().toLowerCase()==="consumer"?"Consumer":"Pharma";
   return q.or(`experience_division.eq.${d},experience_type.eq.${d},sector.eq.${d}`);
 }
 
-async function getFederatedExperienceRows(division?:string):Promise<any[]>{
+async function getFederatedExperienceRows(division?:string):Promise<any[]> {
   const clients=getFederatedSupabaseClients();
   const results=await Promise.all(clients.map(async c=>{
     const rows:any[]=[]; const pageSize=1000;
@@ -120,8 +153,8 @@ async function getFederatedExperienceRows(division?:string):Promise<any[]>{
   return [...seen.values()].sort((a,b)=>String(b.date||"").localeCompare(String(a.date||"")));
 }
 
-export async function getExperienceSummary<T>(division:"Pharma"|"Consumer"="Pharma"):Promise<T[]>{
-  const data=await getFederatedExperienceRows(division); const map=new Map<string,any>();
+function buildExperienceSummary(data:any[], division:ExperienceDivision):any[] {
+  const map=new Map<string,any>();
   for(const r of data){
     const k=`${r.person_type}|${r.person_code}`;
     const x=map.get(k)||{person_code:r.person_code,person_name:r.person_name,person_type:r.person_type,dates:new Set<string>(),areas:new Set<string>(),consumer_orders:0,pharma_orders:0,vehicles:new Set<string>(),last_date:"",last_area:""};
@@ -131,7 +164,84 @@ export async function getExperienceSummary<T>(division:"Pharma"|"Consumer"="Phar
     if(!x.last_date||String(r.date)>x.last_date){x.last_date=String(r.date||"");x.last_area=`${String(r.experienced_area_code||r.area_code||"UNKNOWN")} · ${String(r.experienced_area_name||r.area_name||r.area||"")}`;}
     map.set(k,x);
   }
-  return [...map.values()].map(x=>({person_code:x.person_code,person_name:x.person_name,person_type:x.person_type,distinct_areas:x.areas.size,total_days:x.dates.size,consumer_orders:x.consumer_orders,pharma_orders:x.pharma_orders,most_recent_area:x.last_area,most_recent_end:x.last_date,vehicle_types:[...x.vehicles].join(" / ")||"UNKNOWN",experience:division})) as unknown as T[];
+  return [...map.values()].map(x=>({person_code:x.person_code,person_name:x.person_name,person_type:x.person_type,distinct_areas:x.areas.size,total_days:x.dates.size,consumer_orders:x.consumer_orders,pharma_orders:x.pharma_orders,most_recent_area:x.last_area,most_recent_end:x.last_date,vehicle_types:[...x.vehicles].join(" / ")||"UNKNOWN",experience:division}));
+}
+
+export async function refreshExperienceSummary(division:ExperienceDivision):Promise<any[]> {
+  const existing=experienceSummaryRefresh.get(division);
+  if(existing) return existing;
+  const promise=(async()=>{
+    const data=await getFederatedExperienceRows(division);
+    const rows=buildExperienceSummary(data,division);
+    experienceSummaryMemory.set(division,rows);
+    writeExperienceCache(division,rows);
+    return rows;
+  })().finally(()=>experienceSummaryRefresh.set(division,null));
+  experienceSummaryRefresh.set(division,promise);
+  return promise;
+}
+
+export function primeExperienceSummaryCache() {
+  // Warm both tabs in the background. The Experience page can therefore render
+  // the cached snapshot immediately instead of making the user wait after the tab opens.
+  void refreshExperienceSummary("Pharma").catch(()=>{});
+  void refreshExperienceSummary("Consumer").catch(()=>{});
+}
+
+export async function getExperienceSummary<T>(division:ExperienceDivision="Pharma", options?:{forceRefresh?:boolean}):Promise<T[]> {
+  const cached=loadCachedExperienceSummary(division);
+  if(cached && !options?.forceRefresh){
+    // Return immediately from the browser snapshot and refresh silently in the background.
+    void refreshExperienceSummary(division).catch(()=>{});
+    return cached as unknown as T[];
+  }
+  return await refreshExperienceSummary(division) as unknown as T[];
+}
+
+function detailCacheKey(code:string,type:string,division:ExperienceDivision){return `${division}|${type}|${code}`;}
+
+async function fetchExperienceDetailPage(code:string,type:string,division:ExperienceDivision,offset:number,limit:number):Promise<{rows:any[];hasMore:boolean}> {
+  const clients=getFederatedSupabaseClients();
+  const results=await Promise.all(clients.map(async c=>{
+    let q=c.from("experience_history").select(EXPERIENCE_SELECT).eq("person_code",code).eq("person_type",type);
+    q=experienceDivisionFilter(q,division).order("date",{ascending:false}).range(0,offset+limit-1);
+    const {data,error}=await q;if(error)throw error;return data||[];
+  }));
+  const seen=new Map<string,any>();
+  for(const rows of results) for(const r of rows){
+    const key=`${String(r.person_code||"").toUpperCase()}|${String(r.person_type||"")}|${String(r.date||"").slice(0,10)}|${String(r.area_code||r.area||"").toUpperCase()}|${String(r.vehicle_number||"").toUpperCase().replace(/[^A-Z0-9]/g,"")}|${String(r.experience_division||r.experience_type||r.sector||"").toUpperCase()}`;
+    if(!seen.has(key)) seen.set(key,r);
+  }
+  const rows=[...seen.values()].sort((a,b)=>String(b.date||"").localeCompare(String(a.date||"")));
+  return {rows:rows.slice(offset,offset+limit),hasMore:rows.length>offset+limit};
+}
+
+export async function prefetchExperienceDetail(code:string,type:string,division:ExperienceDivision):Promise<void> {
+  const key=detailCacheKey(code,type,division);
+  if(experienceDetailMemory.has(key)||experienceDetailRefresh.get(key)) return;
+  const promise=fetchExperienceDetailPage(code,type,division,0,100).then(page=>{
+    experienceDetailMemory.set(key,page);
+  }).finally(()=>experienceDetailRefresh.set(key,null));
+  experienceDetailRefresh.set(key,promise);
+  await promise;
+}
+
+export async function getExperienceDetailPage<T>(code:string,type:string,division:ExperienceDivision,offset=0,limit=100):Promise<{rows:T[];hasMore:boolean}> {
+  const key=detailCacheKey(code,type,division);
+  if(offset===0){
+    const cached=experienceDetailMemory.get(key);
+    if(cached) return cached as unknown as {rows:T[];hasMore:boolean};
+    await prefetchExperienceDetail(code,type,division);
+    const ready=experienceDetailMemory.get(key);
+    if(ready) return ready as unknown as {rows:T[];hasMore:boolean};
+  }
+  const page=await fetchExperienceDetailPage(code,type,division,offset,limit);
+  if(offset===0) experienceDetailMemory.set(key,page);
+  return page as unknown as {rows:T[];hasMore:boolean};
+}
+
+export async function getExperienceDetail<T>(code:string,type:string,division:ExperienceDivision="Pharma"):Promise<T[]> {
+  const first=await getExperienceDetailPage<T>(code,type,division,0,100); return first.rows;
 }
 
 export async function getExperienceSuggestions<T>(q:string):Promise<T[]>{
