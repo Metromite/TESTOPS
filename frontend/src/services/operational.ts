@@ -92,43 +92,78 @@ function dateFromArrival(s:string):string{const m=s.match(/(\d{1,2})\/(\d{1,2})\
 export async function getRouteDriverDates<T>():Promise<T[]>{const [sap,lm]=await Promise.all([supabase.from("sap_invoice_facts").select("driver_name,dispatch_date"),supabase.from("landmark_visit_facts").select("driver_name,arrival")]);const error=sap.error||lm.error;if(error)throw new Error(error.message);const set=new Set<string>();for(const r of sap.data||[])if(r.driver_name&&r.dispatch_date)set.add(`${r.driver_name}|${r.dispatch_date}`);for(const r of lm.data||[]){const d=dateFromArrival(r.arrival||"");if(r.driver_name&&d)set.add(`${r.driver_name}|${d}`)}return[...set].map(x=>{const[driver_name,date]=x.split("|");return{driver_name,date}}).sort((a,b)=>b.date.localeCompare(a.date)) as unknown as T[];}
 export async function reconstructRoute<T>(driver:string,date:string):Promise<T>{const [sap,lm]=await Promise.all([supabase.from("sap_invoice_facts").select("invoice_no,customer_name,customer_name_source,box_entry_time,boxes,area,vehicle_key,vehicle_num").eq("driver_name",driver).eq("dispatch_date",date),supabase.from("landmark_visit_facts").select("customer_name,arrival,departure,minutes,vehicle_key,driver_name").eq("driver_name",driver)]);const error=sap.error||lm.error;if(error)throw new Error(error.message);const l=(lm.data||[]).filter(x=>dateFromArrival(x.arrival||"")===date);return{sap_route:{stops_missing_time:(sap.data||[]).filter(x=>!x.box_entry_time).length,stops:(sap.data||[])},landmark_route:{all_stops_count:l.length,delivery_stops:l.map(x=>({customer_name:x.customer_name,arrival:x.arrival,departure:x.departure,duration_minutes:x.minutes}))}} as unknown as unknown as T;}
 
-async function getFederatedExperienceRows():Promise<any[]>{
+const EXPERIENCE_SELECT = "person_code,person_name,person_type,area_code,area_name,area,sector,route_type,date,end_date,vehicle_number,vehicle_type,experience_division,experience_type,experienced_area_code,experienced_area_name,order_count,consumer_orders,pharma_orders";
+
+function experienceDivisionFilter(q:any, division:string){
+  const d=division.trim().toLowerCase()==="consumer"?"Consumer":"Pharma";
+  return q.or(`experience_division.eq.${d},experience_type.eq.${d},sector.eq.${d}`);
+}
+
+async function getFederatedExperienceRows(division?:string):Promise<any[]>{
   const clients=getFederatedSupabaseClients();
-  // Supabase REST returns a maximum/default page (commonly 1,000 rows) when no
-  // range is supplied. Experience is accumulated across months, so reading only
-  // the first page makes older uploaded months disappear from Experience Summary
-  // even though the save succeeded. Read every page from every federated project.
   const results=await Promise.all(clients.map(async c=>{
-    const rows:any[]=[];
-    const pageSize=1000;
+    const rows:any[]=[]; const pageSize=1000;
     for(let from=0;;from+=pageSize){
-      const {data,error}=await c.from("experience_history").select("*").order("date",{ascending:false}).range(from,from+pageSize-1);
+      let q=c.from("experience_history").select(EXPERIENCE_SELECT).order("date",{ascending:false}).range(from,from+pageSize-1);
+      if(division) q=experienceDivisionFilter(q,division);
+      const {data,error}=await q;
       if(error) throw error;
-      const page=data||[];
-      rows.push(...page);
-      if(page.length<pageSize) break;
+      const page=data||[]; rows.push(...page); if(page.length<pageSize) break;
     }
-    return {data:rows,error:null};
+    return rows;
   }));
   const seen=new Map<string,any>();
-  for(const result of results) for(const r of result.data||[]){
-    const key=`${String(r.person_code||"").toUpperCase()}|${String(r.person_type||"")}|${String(r.date||"").slice(0,10)}|${String(r.area_code||r.area||"").toUpperCase()}|${String(r.vehicle_number||"").toUpperCase().replace(/[^A-Z0-9]/g,"")}`;
+  for(const rows of results) for(const r of rows){
+    const key=`${String(r.person_code||"").toUpperCase()}|${String(r.person_type||"")}|${String(r.date||"").slice(0,10)}|${String(r.area_code||r.area||"").toUpperCase()}|${String(r.vehicle_number||"").toUpperCase().replace(/[^A-Z0-9]/g,"")}|${String(r.experience_division||r.experience_type||r.sector||"").toUpperCase()}`;
     if(!seen.has(key)) seen.set(key,r);
   }
   return [...seen.values()].sort((a,b)=>String(b.date||"").localeCompare(String(a.date||"")));
 }
 
-export async function getExperienceSummary<T>():Promise<T[]>{
-  const data=await getFederatedExperienceRows(); const map=new Map<string,any>();
-  for(const r of data){const k=`${r.person_type}|${r.person_code}`;const x=map.get(k)||{person_code:r.person_code,person_name:r.person_name,person_type:r.person_type,dates:new Set<string>(),areas:new Set<string>(),divisions:{Consumer:0,Pharma:0},vehicles:{VAN:0,PICKUP:0},last_date:"",last_area:""};x.dates.add(String(r.date));x.areas.add(String(r.experienced_area_code||r.area_code||"UNKNOWN"));x.divisions.Consumer+=Number(r.consumer_orders||0);x.divisions.Pharma+=Number(r.pharma_orders||0);const vt=String(r.vehicle_type||"").toUpperCase();if(vt.includes("PICK"))x.vehicles.PICKUP+=1;else if(vt.includes("VAN"))x.vehicles.VAN+=1;if(!x.last_date||String(r.date)>x.last_date){x.last_date=String(r.date);x.last_area=`${String(r.experienced_area_code||r.area_code||"UNKNOWN")} · ${String(r.experienced_area_name||r.area_name||r.area||"")}`;}map.set(k,x);}
-  return [...map.values()].map(x=>({person_code:x.person_code,person_name:x.person_name,person_type:x.person_type,distinct_areas:x.areas.size,total_days:x.dates.size,consumer_days:0,pharma_days:0,consumer_orders:x.divisions.Consumer,pharma_orders:x.divisions.Pharma,most_recent_area:x.last_area,most_recent_end:x.last_date,vehicle_types:Object.entries(x.vehicles).filter(([,n])=>Number(n)>0).map(([k])=>k).join(" / ")||"UNKNOWN",experience:x.divisions.Consumer>x.divisions.Pharma?"Consumer":"Pharma"})) as unknown as T[];
+export async function getExperienceSummary<T>(division:"Pharma"|"Consumer"="Pharma"):Promise<T[]>{
+  const data=await getFederatedExperienceRows(division); const map=new Map<string,any>();
+  for(const r of data){
+    const k=`${r.person_type}|${r.person_code}`;
+    const x=map.get(k)||{person_code:r.person_code,person_name:r.person_name,person_type:r.person_type,dates:new Set<string>(),areas:new Set<string>(),consumer_orders:0,pharma_orders:0,vehicles:new Set<string>(),last_date:"",last_area:""};
+    x.dates.add(String(r.date||"")); x.areas.add(String(r.experienced_area_code||r.area_code||"UNKNOWN"));
+    x.consumer_orders+=Number(r.consumer_orders||0); x.pharma_orders+=Number(r.pharma_orders||0);
+    const vt=String(r.vehicle_type||"").toUpperCase(); if(vt) x.vehicles.add(vt.includes("PICK")?"PICKUP":vt.includes("VAN")?"VAN":String(r.vehicle_type));
+    if(!x.last_date||String(r.date)>x.last_date){x.last_date=String(r.date||"");x.last_area=`${String(r.experienced_area_code||r.area_code||"UNKNOWN")} · ${String(r.experienced_area_name||r.area_name||r.area||"")}`;}
+    map.set(k,x);
+  }
+  return [...map.values()].map(x=>({person_code:x.person_code,person_name:x.person_name,person_type:x.person_type,distinct_areas:x.areas.size,total_days:x.dates.size,consumer_orders:x.consumer_orders,pharma_orders:x.pharma_orders,most_recent_area:x.last_area,most_recent_end:x.last_date,vehicle_types:[...x.vehicles].join(" / ")||"UNKNOWN",experience:division})) as unknown as T[];
 }
+
 export async function getExperienceSuggestions<T>(q:string):Promise<T[]>{
-  const needle=q.trim().toLowerCase(); const [d,h,e]=await Promise.all([supabase.from("drivers").select("code,name").or(`code.ilike.%${q}%,name.ilike.%${q}%`).limit(10),supabase.from("helpers").select("code,name").or(`code.ilike.%${q}%,name.ilike.%${q}%`).limit(10),getFederatedExperienceRows()]);
-  const err=d.error||h.error;if(err)throw new Error(err.message); const out:any[]=[...(d.data||[]).map(x=>({label:`${x.name} (${x.code})`,value:x.code,kind:"Driver"})),...(h.data||[]).map(x=>({label:`${x.name} (${x.code})`,value:x.code,kind:"Helper"}))];
-  const seen=new Set(out.map(x=>`${x.kind}|${x.value}`)); for(const x of e){const label=`${x.person_name} (${x.person_code}) · ${x.area_name||x.area||"UNKNOWN"} · ${x.experience_division||""} · ${x.vehicle_type||""}${x.vehicle_number?` · ${x.vehicle_number}`:""}`;const k=`${x.person_type}|${x.person_code}`;if(!seen.has(k)&&(!needle||label.toLowerCase().includes(needle))) {out.push({label,value:x.person_code,kind:x.person_type});seen.add(k);}} return out.filter(x=>!needle||x.label.toLowerCase().includes(needle)).slice(0,30) as unknown as T[];
+  const needle=q.trim(); if(!needle) return [] as unknown as T[];
+  const [d,h]=await Promise.all([
+    supabase.from("drivers").select("code,name").or(`code.ilike.%${needle}%,name.ilike.%${needle}%`).limit(10),
+    supabase.from("helpers").select("code,name").or(`code.ilike.%${needle}%,name.ilike.%${needle}%`).limit(10)
+  ]);
+  const err=d.error||h.error;if(err)throw new Error(err.message);
+  const out:any[]=[...(d.data||[]).map(x=>({label:`${x.name} (${x.code})`,value:x.code,kind:"Driver"})),...(h.data||[]).map(x=>({label:`${x.name} (${x.code})`,value:x.code,kind:"Helper"}))];
+  return out.slice(0,30) as unknown as T[];
 }
-export async function getExperienceDetail<T>(code:string,type:string):Promise<T[]>{const rows=await getFederatedExperienceRows();return rows.filter(r=>String(r.person_code)===String(code)&&String(r.person_type)===String(type)) as unknown as T[];}
+
+export async function getExperienceDetailPage<T>(code:string,type:string,division:"Pharma"|"Consumer",offset=0,limit=100):Promise<{rows:T[];hasMore:boolean}> {
+  const clients=getFederatedSupabaseClients();
+  const results=await Promise.all(clients.map(async c=>{
+    let q=c.from("experience_history").select(EXPERIENCE_SELECT).eq("person_code",code).eq("person_type",type);
+    q=experienceDivisionFilter(q,division).order("date",{ascending:false}).range(0,offset+limit-1);
+    const {data,error}=await q;if(error)throw error;return data||[];
+  }));
+  const seen=new Map<string,any>();
+  for(const rows of results) for(const r of rows){
+    const key=`${String(r.person_code||"").toUpperCase()}|${String(r.person_type||"")}|${String(r.date||"").slice(0,10)}|${String(r.area_code||r.area||"").toUpperCase()}|${String(r.vehicle_number||"").toUpperCase().replace(/[^A-Z0-9]/g,"")}|${String(r.experience_division||r.experience_type||r.sector||"").toUpperCase()}`;
+    if(!seen.has(key)) seen.set(key,r);
+  }
+  const rows=[...seen.values()].sort((a,b)=>String(b.date||"").localeCompare(String(a.date||"")));
+  return {rows:rows.slice(offset,offset+limit) as unknown as T[],hasMore:rows.length>offset+limit};
+}
+
+export async function getExperienceDetail<T>(code:string,type:string,division:"Pharma"|"Consumer"="Pharma"):Promise<T[]>{
+  const first=await getExperienceDetailPage<T>(code,type,division,0,100); return first.rows;
+}
 
 export async function getControlCenterConfig<T>():Promise<T>{const{data,error}=await supabase.from("control_center_config").select("config,version,updated_at").eq("id",SINGLETON).maybeSingle();if(error)throw new Error(error.message);return{config:data?.config||null,version:Number(data?.version||0)} as unknown as unknown as T;}
 export async function saveControlCenterConfig<T>(config:unknown):Promise<T>{const version=Date.now();const{error}=await supabase.from("control_center_config").upsert({id:SINGLETON,config,version,updated_at:new Date().toISOString()});if(error)throw new Error(error.message);return{config,version} as unknown as unknown as T;}
