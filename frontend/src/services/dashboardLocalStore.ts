@@ -273,7 +273,10 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     };
     const routePromise = fetchDashboardEndpoint<PerfData>(`/dashboard/driver-performance`)
       .catch(() => emptyPerfData);
-    const fleetPromise = primary.from("vehicles").select("number,type,status");
+    const fleetPromise = primary.from("vehicles").select("number,type,status").then(({ data, error }) => ({
+      data: data || [],
+      error,
+    }));
 
     const [primaryResult, secondaryRows, routeResult, fleetVehicles] = await Promise.all([
       withTimeout(primaryPromise, 30000, [] as LocalSapRow[]),
