@@ -222,53 +222,51 @@ function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: numbe
 }
 
 
-function SplineLogiChatIcon({ size = 72 }: { size?: number }) {
-  const [sceneReady, setSceneReady] = useState(false);
-  const animationLoopRef = useRef<number | null>(null);
-
-  const handleLoad = (spline: any) => {
-    spline.setBackgroundColor?.("transparent");
-    // Keep the full authored Spline renderer, but pull the camera back so the
-    // 3D icon is fully visible instead of being cropped/zoomed inside the chat.
-    spline.setZoom?.(0.32);
-
-    // Keep the imported icon scene clean: transparent background, no floor,
-    // helper targets, messages, or Spline branding. The scene itself remains
-    // a real animated 3D object.
-    [
-      "Floor", "floor", "Message", "Message 2", "Message 3",
-      "SplineWatermark", "SplineWatermarkD", "logo", "mouseEventTarget",
-      "MouseEventTarget", "mouse event target", "Cursor Target", "cursor",
-      "Target Head", "Target Movement", "Target Px", "target", "Follow", "LookAt",
-    ].forEach((name) => {
-      const object = spline.findObjectByName?.(name);
-      if (object) object.visible = false;
-    });
-
-    spline.play?.();
-    if (animationLoopRef.current !== null) window.clearInterval(animationLoopRef.current);
-    animationLoopRef.current = window.setInterval(() => spline.play?.(), 4200);
-
-    // The imported scene is local and cleaned. One paint frame avoids a raw canvas
-    // flash while keeping the icon responsive.
-    window.requestAnimationFrame(() => setSceneReady(true));
-  };
-
-  useEffect(() => () => {
-    if (animationLoopRef.current !== null) window.clearInterval(animationLoopRef.current);
-  }, []);
-
+function LogiAiOrb({ size = 72, thinking = false, active = false }: { size?: number; thinking?: boolean; active?: boolean }) {
+  const stateClass = thinking ? "is-thinking" : active ? "is-active" : "is-idle";
   return (
     <div
-      className="logi-chat-3d-icon"
-      style={{ width: size, height: size, visibility: sceneReady ? "visible" : "hidden", opacity: sceneReady ? 1 : 0 }}
+      className={`logi-ai-orb ${stateClass}`}
+      style={{ width: size, height: size }}
       aria-hidden="true"
     >
-      <Spline
-        scene={LOGI_CHAT_SCENE}
-        onLoad={handleLoad}
-        style={{ width: "100%", height: "100%", background: "transparent" }}
-      />
+      <svg className="logi-ai-orb-svg" viewBox="0 0 100 100" role="presentation">
+        <defs>
+          <radialGradient id="logiOrbCore" cx="34%" cy="28%" r="72%">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity=".98" />
+            <stop offset="20%" stopColor="#9df7ff" stopOpacity=".96" />
+            <stop offset="48%" stopColor="#36bfff" stopOpacity=".82" />
+            <stop offset="76%" stopColor="#7c4dff" stopOpacity=".78" />
+            <stop offset="100%" stopColor="#17245e" stopOpacity=".96" />
+          </radialGradient>
+          <linearGradient id="logiOrbWave" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#8ffcff" />
+            <stop offset="48%" stopColor="#6a7dff" />
+            <stop offset="100%" stopColor="#ff75d8" />
+          </linearGradient>
+          <filter id="logiOrbGlow" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur stdDeviation="2.4" result="blur" />
+            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+          <clipPath id="logiOrbClip"><circle cx="50" cy="50" r="29" /></clipPath>
+        </defs>
+
+        <ellipse className="logi-ai-orb-halo" cx="50" cy="50" rx="35" ry="35" />
+        <ellipse className="logi-ai-orb-ring logi-ai-orb-ring-a" cx="50" cy="50" rx="37" ry="20" />
+        <ellipse className="logi-ai-orb-ring logi-ai-orb-ring-b" cx="50" cy="50" rx="37" ry="20" />
+        <ellipse className="logi-ai-orb-ring logi-ai-orb-ring-c" cx="50" cy="50" rx="34" ry="15" />
+        <circle className="logi-ai-orb-glass" cx="50" cy="50" r="29" />
+        <circle className="logi-ai-orb-core" cx="50" cy="50" r="26" fill="url(#logiOrbCore)" filter="url(#logiOrbGlow)" />
+
+        <g className="logi-ai-orb-waves" clipPath="url(#logiOrbClip)" fill="none" stroke="url(#logiOrbWave)" strokeLinecap="round">
+          <path className="wave wave-a" d="M18 48 C30 35 38 62 50 49 S70 35 84 49" strokeWidth="2.5" opacity=".78" />
+          <path className="wave wave-b" d="M14 55 C28 42 39 68 51 55 S72 42 88 55" strokeWidth="1.9" opacity=".66" />
+          <path className="wave wave-c" d="M16 42 C29 55 40 29 52 43 S73 55 86 42" strokeWidth="1.4" opacity=".58" />
+          <path className="wave wave-d" d="M19 61 C31 51 42 69 53 60 S72 49 82 59" strokeWidth="1.1" opacity=".45" />
+        </g>
+        <circle className="logi-ai-orb-specular" cx="39" cy="35" r="7" />
+        <circle className="logi-ai-orb-pulse" cx="50" cy="50" r="31" />
+      </svg>
     </div>
   );
 }
@@ -354,7 +352,7 @@ export default function FloatingAiWidget() {
         <div
           className="glass-card modal-pop"
           style={{
-            position: "fixed", bottom: 154, right: 6, width: 380, height: 520,
+            position: "fixed", bottom: 169, right: 6, width: 380, height: 520,
             display: "flex", flexDirection: "column", zIndex: 1500, padding: 0, overflow: "hidden",
             boxShadow: "var(--elevation-2)",
           }}
@@ -369,7 +367,7 @@ export default function FloatingAiWidget() {
           <div style={{ flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
             {messages.length === 0 && (
               <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                <SplineLogiChatIcon size={72} />
+                <LogiAiOrb size={72} active={!!input.trim()} />
                 <div style={{ background: "var(--navy3)", padding: "10px 12px", borderRadius: 10, fontSize: 13, maxWidth: "85%" }}>
                   👋 Hi, I'm LOGI. I can look things up for you, and actually do things. Just ask.
                 </div>
@@ -377,7 +375,7 @@ export default function FloatingAiWidget() {
             )}
             {messages.map((m, i) => (
               <div key={i} style={{ alignSelf: m.role === "user" ? "flex-end" : "flex-start", maxWidth: "92%", display: "flex", gap: 7, alignItems: "flex-end" }}>
-                {m.role === "assistant" && <SplineLogiChatIcon size={72} />}
+                {m.role === "assistant" && <LogiAiOrb size={72} active={!!input.trim()} />}
                 <div style={{ minWidth: 0 }}>
                   <div className={m.role === "assistant" ? "logi-chat-bubble" : undefined} style={{
                     background: m.role === "user" ? "var(--blue)" : "var(--navy3)",
@@ -419,7 +417,7 @@ export default function FloatingAiWidget() {
             ))}
             {loading && (
               <div style={{ alignSelf: "flex-start", display: "flex", gap: 7, alignItems: "flex-end" }}>
-                <SplineLogiChatIcon size={72} />
+                <LogiAiOrb size={72} thinking />
                 <div className="logi-chat-bubble" style={{ background: "var(--navy3)", padding: "9px 12px", borderRadius: 10, fontSize: 13 }}>
                   <span className="logi-typing-dots"><i></i><i></i><i></i></span>
                 </div>

@@ -7558,3 +7558,91 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
   height: 100% !important;
   transform: none !important;
 }
+
+
+/* LOGI 3.4 — lightweight Siri-style liquid-glass AI orb for the chat.
+   Pure SVG/CSS: no Spline scene, no WebGL, no network asset, instant paint. */
+.logi-ai-orb {
+  position: relative !important;
+  flex: 0 0 auto !important;
+  display: block !important;
+  overflow: visible !important;
+  pointer-events: none !important;
+  filter: drop-shadow(0 5px 12px rgba(49, 112, 255, .22));
+  transform: translateZ(0);
+}
+.logi-ai-orb-svg {
+  width: 100% !important;
+  height: 100% !important;
+  display: block !important;
+  overflow: visible !important;
+}
+.logi-ai-orb-halo {
+  fill: rgba(91, 181, 255, .10);
+  filter: blur(5px);
+  animation: logiOrbBreathe 3.4s ease-in-out infinite;
+}
+.logi-ai-orb-glass {
+  fill: rgba(255,255,255,.08);
+  stroke: rgba(255,255,255,.52);
+  stroke-width: .9;
+  filter: drop-shadow(0 0 4px rgba(123, 225, 255, .28));
+}
+.logi-ai-orb-core {
+  transform-origin: 50px 50px;
+  animation: logiOrbCore 4.8s ease-in-out infinite;
+}
+.logi-ai-orb-ring {
+  fill: none;
+  stroke: url(#logiOrbWave);
+  stroke-linecap: round;
+  opacity: .72;
+  transform-origin: 50px 50px;
+  filter: blur(.15px) drop-shadow(0 0 3px rgba(100, 190, 255, .42));
+}
+.logi-ai-orb-ring-a { stroke-width: 1.35; animation: logiOrbOrbitA 4.6s linear infinite; }
+.logi-ai-orb-ring-b { stroke-width: .85; opacity: .52; animation: logiOrbOrbitB 6.1s linear infinite reverse; }
+.logi-ai-orb-ring-c { stroke-width: .65; opacity: .42; animation: logiOrbOrbitC 3.8s ease-in-out infinite; }
+.logi-ai-orb-waves { transform-origin: 50px 50px; animation: logiOrbWaveFloat 3.6s ease-in-out infinite; }
+.logi-ai-orb .wave { vector-effect: non-scaling-stroke; }
+.wave-a { animation: logiOrbWaveA 2.9s ease-in-out infinite; }
+.wave-b { animation: logiOrbWaveB 2.3s ease-in-out infinite .15s; }
+.wave-c { animation: logiOrbWaveC 3.2s ease-in-out infinite .2s; }
+.wave-d { animation: logiOrbWaveD 2.6s ease-in-out infinite .35s; }
+.logi-ai-orb-specular {
+  fill: rgba(255,255,255,.64);
+  filter: blur(1.2px);
+  animation: logiOrbSpecular 3.2s ease-in-out infinite;
+}
+.logi-ai-orb-pulse {
+  fill: none;
+  stroke: rgba(133, 225, 255, .36);
+  stroke-width: .8;
+  transform-origin: 50px 50px;
+  animation: logiOrbPulse 3s ease-out infinite;
+}
+.logi-ai-orb.is-active .logi-ai-orb-ring-a,
+.logi-ai-orb.is-active .logi-ai-orb-ring-b { animation-duration: 3.2s; }
+.logi-ai-orb.is-active .logi-ai-orb-waves { animation-duration: 2.1s; }
+.logi-ai-orb.is-thinking .logi-ai-orb-core { animation-duration: 1.5s; }
+.logi-ai-orb.is-thinking .logi-ai-orb-ring-a { animation-duration: 1.55s; }
+.logi-ai-orb.is-thinking .logi-ai-orb-ring-b { animation-duration: 2.05s; }
+.logi-ai-orb.is-thinking .logi-ai-orb-ring-c { animation-duration: 1.2s; }
+.logi-ai-orb.is-thinking .logi-ai-orb-waves { animation-duration: .95s; }
+.logi-ai-orb.is-thinking .logi-ai-orb-pulse { animation-duration: 1.15s; }
+
+@keyframes logiOrbBreathe { 0%,100%{opacity:.65;transform:scale(.96)} 50%{opacity:1;transform:scale(1.04)} }
+@keyframes logiOrbCore { 0%,100%{transform:scale(.96)} 50%{transform:scale(1.045)} }
+@keyframes logiOrbOrbitA { from{transform:rotate(0deg) scaleY(.98)} to{transform:rotate(360deg) scaleY(.98)} }
+@keyframes logiOrbOrbitB { from{transform:rotate(360deg) scaleY(.93)} to{transform:rotate(0deg) scaleY(.93)} }
+@keyframes logiOrbOrbitC { 0%,100%{transform:rotate(-12deg) scale(1)} 50%{transform:rotate(12deg) scale(1.04)} }
+@keyframes logiOrbWaveFloat { 0%,100%{transform:translateY(1px) scaleX(.96)} 50%{transform:translateY(-1px) scaleX(1.04)} }
+@keyframes logiOrbWaveA { 0%,100%{transform:translateX(-2px) skewX(-2deg)} 50%{transform:translateX(2px) skewX(3deg)} }
+@keyframes logiOrbWaveB { 0%,100%{transform:translateX(2px) scaleY(.92)} 50%{transform:translateX(-2px) scaleY(1.08)} }
+@keyframes logiOrbWaveC { 0%,100%{transform:translateX(-1px) rotate(-1deg)} 50%{transform:translateX(2px) rotate(2deg)} }
+@keyframes logiOrbWaveD { 0%,100%{transform:translateX(1px) scaleY(.9)} 50%{transform:translateX(-2px) scaleY(1.12)} }
+@keyframes logiOrbSpecular { 0%,100%{transform:translate(-1px,1px);opacity:.45} 50%{transform:translate(3px,-2px);opacity:.9} }
+@keyframes logiOrbPulse { 0%{transform:scale(.88);opacity:.65} 75%,100%{transform:scale(1.18);opacity:0} }
+
+/* Requested alignment: greeting lower, chat panel higher. */
+.logi-hover-tip { bottom: 170px !important; }
