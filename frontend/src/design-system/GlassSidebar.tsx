@@ -1,7 +1,7 @@
 import { ReactNode, useRef, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, useLocation } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -185,12 +185,10 @@ export function GlassNavGroup({
         guarantees it always paints above all page content.
       */}
       {menuPos && createPortal(
-        <AnimatePresence>
-          {open && (
+        {open && (
             <motion.div
               initial={{ opacity: 0, y: -4, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -4, scale: 0.98 }}
               transition={{ duration: 0.15 }}
               style={{ position: "fixed", left: menuPos.left, top: menuPos.top, zIndex: 9999 }}
               // ITEM PASS 6: same fix as MultiSelectSlicer's dropdown -
@@ -216,8 +214,7 @@ export function GlassNavGroup({
                 </NavLink>
               ))}
             </motion.div>
-          )}
-        </AnimatePresence>,
+          )},
         document.body
       )}
     </div>

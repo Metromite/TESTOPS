@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, X } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { getOptionIcon } from "@/lib/domainIcons";
 import type { LucideIcon } from "lucide-react";
@@ -107,12 +107,10 @@ export default function MultiSelectSlicer({
         <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} />
       </button>
       {menuPos && createPortal(
-        <AnimatePresence>
-          {open && (
+        {open && (
             <motion.div
               initial={{ opacity: 0, y: -4, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -4, scale: 0.98 }}
               transition={{ duration: 0.14 }}
               style={{ position: "fixed", left: menuPos.left, top: menuPos.top, zIndex: 9999, minWidth: Math.max(200, menuPos.width), maxHeight: "min(70vh, 520px)", overflowY: "auto" }}
               // ITEM PASS 6 (Part 5/6, glass surface hierarchy): was
@@ -152,8 +150,7 @@ export default function MultiSelectSlicer({
                 );
               })}
             </motion.div>
-          )}
-        </AnimatePresence>,
+          )},
         document.body
       )}
     </div>
