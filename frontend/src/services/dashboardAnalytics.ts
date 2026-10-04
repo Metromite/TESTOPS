@@ -234,8 +234,8 @@ function mergeSnapshot(a: DashboardSnapshot, b: DashboardSnapshot): DashboardSna
 
 async function getDashboardSnapshot<T>(params: URLSearchParams): Promise<DashboardSnapshot> {
   return cachedAnalytics(snapshotKey(params), async()=>{
-    const { getFederatedSupabaseClients } = await import("@/lib/supabase");
-    const clients=getFederatedSupabaseClients();
+    const { getPrimarySupabaseClient, getSecondarySupabaseClient } = await import("@/lib/supabase");
+    const clients=[getPrimarySupabaseClient(), getSecondarySupabaseClient()].filter(Boolean);
     const parts=await Promise.all(clients.map(c=>fetchSnapshotFromClient(c,params)));
     return parts.reduce((acc:any,part:any)=>acc?mergeSnapshot(acc,part):part,null) as DashboardSnapshot;
   });
@@ -244,11 +244,12 @@ async function getDashboardSnapshot<T>(params: URLSearchParams): Promise<Dashboa
 async function fetchTargetedRpcFromProjects(rpc: string, params: URLSearchParams, key: keyof DashboardSnapshot): Promise<any> {
   const cacheKey = `targeted:${rpc}:${snapshotKey(params)}`;
   return cachedAnalytics(cacheKey, async () => {
-    const { getFederatedSupabaseClients } = await import("@/lib/supabase");
+    const { getPrimarySupabaseClient, getSecondarySupabaseClient } = await import("@/lib/supabase");
+    const dashboardClients=[getPrimarySupabaseClient(), getSecondarySupabaseClient()].filter(Boolean);
     const start = params.get("start_date") || null;
     const end = params.get("end_date") || null;
     const filters = leadTimeFilterJson(params);
-    const parts = await Promise.all(getFederatedSupabaseClients().map(async (client:any) => {
+    const parts = await Promise.all(dashboardClients.map(async (client:any) => {
       const { data, error } = await client.rpc(rpc, { p_start: start, p_end: end, p_filters: filters });
       if (error) throw new Error(error.message);
       return { lead_time:{}, order_summary:{}, area_analytics:{}, not_supplied:{}, driver_performance:{}, [key]: data || {} } as DashboardSnapshot;

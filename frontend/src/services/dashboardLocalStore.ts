@@ -66,7 +66,7 @@ const LOCAL_DB_NAME = "dispatchops-dashboard-local-v3";
 const LOCAL_DB_STORE = "dataset";
 const LOCAL_DB_KEY = "all-history";
 const LOCAL_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
-const LOCAL_DATASET_VERSION = 3;
+const LOCAL_DATASET_VERSION = 2;
 
 function openLocalDb(): Promise<IDBDatabase | null> {
   if (typeof indexedDB === "undefined") return Promise.resolve(null);

@@ -97,9 +97,6 @@ type ExperienceDivision = "Pharma" | "Consumer";
 const EXPERIENCE_CACHE_KEY = "dispatchops.experience.summary.v3";
 const experienceSummaryMemory = new Map<ExperienceDivision, any[]>();
 const experienceSummaryRefresh = new Map<ExperienceDivision, Promise<any[]> | null>();
-// One federated read warms both divisions together. Once this bundle is ready,
-// switching Pharma/Consumer is a pure in-memory operation with no network wait.
-let experienceSummaryBundleRefresh: Promise<{Pharma:any[];Consumer:any[]}> | null = null;
 const experienceDetailMemory = new Map<string, { rows: any[]; hasMore: boolean }>();
 const experienceDetailRefresh = new Map<string, Promise<any> | null>();
 
@@ -170,25 +167,16 @@ function buildExperienceSummary(data:any[], division:ExperienceDivision):any[] {
   return [...map.values()].map(x=>({person_code:x.person_code,person_name:x.person_name,person_type:x.person_type,distinct_areas:x.areas.size,total_days:x.dates.size,consumer_orders:x.consumer_orders,pharma_orders:x.pharma_orders,most_recent_area:x.last_area,most_recent_end:x.last_date,vehicle_types:[...x.vehicles].join(" / ")||"UNKNOWN",experience:division}));
 }
 
-async function refreshExperienceSummaryBundle():Promise<{Pharma:any[];Consumer:any[]}> {
-  if(experienceSummaryBundleRefresh) return experienceSummaryBundleRefresh;
-  experienceSummaryBundleRefresh=(async()=>{
-    const data=await getFederatedExperienceRows();
-    const Pharma=buildExperienceSummary(data,"Pharma");
-    const Consumer=buildExperienceSummary(data,"Consumer");
-    experienceSummaryMemory.set("Pharma",Pharma);
-    experienceSummaryMemory.set("Consumer",Consumer);
-    writeExperienceCache("Pharma",Pharma);
-    writeExperienceCache("Consumer",Consumer);
-    return {Pharma,Consumer};
-  })().finally(()=>{experienceSummaryBundleRefresh=null;});
-  return experienceSummaryBundleRefresh;
-}
-
 export async function refreshExperienceSummary(division:ExperienceDivision):Promise<any[]> {
   const existing=experienceSummaryRefresh.get(division);
   if(existing) return existing;
-  const promise=refreshExperienceSummaryBundle().then(bundle=>bundle[division]).finally(()=>experienceSummaryRefresh.set(division,null));
+  const promise=(async()=>{
+    const data=await getFederatedExperienceRows(division);
+    const rows=buildExperienceSummary(data,division);
+    experienceSummaryMemory.set(division,rows);
+    writeExperienceCache(division,rows);
+    return rows;
+  })().finally(()=>experienceSummaryRefresh.set(division,null));
   experienceSummaryRefresh.set(division,promise);
   return promise;
 }
@@ -265,6 +253,26 @@ export async function getExperienceSuggestions<T>(q:string):Promise<T[]>{
   const err=d.error||h.error;if(err)throw new Error(err.message);
   const out:any[]=[...(d.data||[]).map(x=>({label:`${x.name} (${x.code})`,value:x.code,kind:"Driver"})),...(h.data||[]).map(x=>({label:`${x.name} (${x.code})`,value:x.code,kind:"Helper"}))];
   return out.slice(0,30) as unknown as T[];
+}
+
+export async function getExperienceDetailPage<T>(code:string,type:string,division:"Pharma"|"Consumer",offset=0,limit=100):Promise<{rows:T[];hasMore:boolean}> {
+  const clients=getFederatedSupabaseClients();
+  const results=await Promise.all(clients.map(async c=>{
+    let q=c.from("experience_history").select(EXPERIENCE_SELECT).eq("person_code",code).eq("person_type",type);
+    q=experienceDivisionFilter(q,division).order("date",{ascending:false}).range(0,offset+limit-1);
+    const {data,error}=await q;if(error)throw error;return data||[];
+  }));
+  const seen=new Map<string,any>();
+  for(const rows of results) for(const r of rows){
+    const key=`${String(r.person_code||"").toUpperCase()}|${String(r.person_type||"")}|${String(r.date||"").slice(0,10)}|${String(r.area_code||r.area||"").toUpperCase()}|${String(r.vehicle_number||"").toUpperCase().replace(/[^A-Z0-9]/g,"")}|${String(r.experience_division||r.experience_type||r.sector||"").toUpperCase()}`;
+    if(!seen.has(key)) seen.set(key,r);
+  }
+  const rows=[...seen.values()].sort((a,b)=>String(b.date||"").localeCompare(String(a.date||"")));
+  return {rows:rows.slice(offset,offset+limit) as unknown as T[],hasMore:rows.length>offset+limit};
+}
+
+export async function getExperienceDetail<T>(code:string,type:string,division:"Pharma"|"Consumer"="Pharma"):Promise<T[]>{
+  const first=await getExperienceDetailPage<T>(code,type,division,0,100); return first.rows;
 }
 
 export async function getControlCenterConfig<T>():Promise<T>{const{data,error}=await supabase.from("control_center_config").select("config,version,updated_at").eq("id",SINGLETON).maybeSingle();if(error)throw new Error(error.message);return{config:data?.config||null,version:Number(data?.version||0)} as unknown as unknown as T;}

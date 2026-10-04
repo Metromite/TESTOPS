@@ -174,7 +174,7 @@ export function BoxesByDriverChart({ data, onBarClick }: { data: HomeDashboard; 
   );
 }
 export function FacilityDistributionChart({ data }: { data: HomeDashboard }) {
-  const facilityData = data.charts.facility.labels.map((l, i) => ({ name: l, value: data.charts.facility.values[i] })).filter((item) => Number(item.value) > 0);
+  const facilityData = data.charts.facility.labels.map((l, i) => ({ name: l, value: data.charts.facility.values[i] }));
   return (
     <ChartPanel title="Facility Distribution" icon={Store}>
       <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
