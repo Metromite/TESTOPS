@@ -263,15 +263,22 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
           setLoadingProgress(Math.min(65, 28 + Math.round(Math.log10(primaryRowsLoaded + secondaryRowsLoaded + 1) * 22)));
         }).catch(() => [] as LocalSapRow[])
       : Promise.resolve([] as LocalSapRow[]);
+    const emptyPerfData: PerfData = {
+      standalone_mode: false,
+      validation_results: [],
+      kpis: { gps_vehicles: 0, total_gps_stops: 0, avg_stops_per_vehicle: 0, avg_route_duration_hrs: null, avg_stop_duration: "0m", sap_orders: 0, sap_total_boxes: 0 },
+      chart_stops: { labels: [], values: [] },
+      chart_route_hours: { labels: [], values: [] },
+      route_cards: [],
+    };
     const routePromise = fetchDashboardEndpoint<PerfData>(`/dashboard/driver-performance`)
-      .catch(() => ({ route_cards: [] } as PerfData));
-    const fleetPromise = primary.from("vehicles").select("number,type,status")
-      .catch(() => ({ data: [], error: { message: "Fleet lookup failed" } }));
+      .catch(() => emptyPerfData);
+    const fleetPromise = primary.from("vehicles").select("number,type,status");
 
     const [primaryResult, secondaryRows, routeResult, fleetVehicles] = await Promise.all([
       withTimeout(primaryPromise, 30000, [] as LocalSapRow[]),
       withTimeout(secondaryPromise, 20000, [] as LocalSapRow[]),
-      withTimeout(routePromise, 15000, { route_cards: [] } as PerfData),
+      withTimeout(routePromise, 15000, emptyPerfData),
       withTimeout(fleetPromise, 5000, { data: [], error: { message: "Fleet lookup timed out" } }),
     ]);
 
