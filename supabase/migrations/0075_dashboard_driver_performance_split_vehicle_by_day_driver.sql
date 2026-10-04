@@ -1,4 +1,0 @@
--- Reverted: the temporary day/driver split for Driver Performance was removed.
--- The production RPC is restored to the previous vehicle-level behavior.
--- Keep this migration as a no-op so a fresh application package does not
--- re-apply the reverted performance change.

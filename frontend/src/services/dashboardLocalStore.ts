@@ -187,6 +187,13 @@ function normalizeRow(r: any): LocalSapRow {
   };
 }
 
+async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return await Promise.race([
+    promise,
+    new Promise<T>((resolve) => window.setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
 async function fetchRowsForClient(client: any, start = "", end = "", onPage?: (rows: number) => void): Promise<LocalSapRow[]> {
   const PAGE = 1000;
   const out: LocalSapRow[] = [];
@@ -241,72 +248,55 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     let primaryRowsLoaded = 0;
     let secondaryRowsLoaded = 0;
 
-    // The Primary dataset is the authoritative fast path. Secondary and GPS
-    // aggregation are fallbacks/enrichment and must never block a brand-new
-    // browser from opening the Dashboard. Older browsers appeared healthy only
-    // because IndexedDB returned the already-built dataset before this network
-    // pipeline ran.
+    // All dashboard sources start together, as in the original working flow.
+    // The important fix is that a stalled federated request can no longer leave
+    // the whole Promise.all pending forever. Each source has a bounded wait and
+    // a safe fallback, while successful sources still finish and are combined
+    // in the same initial dataset.
     const primaryPromise = fetchRowsForClient(primary, "", "", (n) => {
       primaryRowsLoaded += n;
-      setLoadingProgress(Math.min(72, 5 + Math.round(Math.log10(primaryRowsLoaded + 1) * 24)));
+      setLoadingProgress(Math.min(55, 5 + Math.round(Math.log10(primaryRowsLoaded + 1) * 22)));
     });
     const secondaryPromise = secondary
       ? fetchRowsForClient(secondary, "", "", (n) => {
           secondaryRowsLoaded += n;
-          setLoadingProgress(Math.min(78, 35 + Math.round(Math.log10(primaryRowsLoaded + secondaryRowsLoaded + 1) * 18)));
-        })
+          setLoadingProgress(Math.min(65, 28 + Math.round(Math.log10(primaryRowsLoaded + secondaryRowsLoaded + 1) * 22)));
+        }).catch(() => [] as LocalSapRow[])
       : Promise.resolve([] as LocalSapRow[]);
-    const routePromise = fetchDashboardEndpoint<PerfData>(`/dashboard/driver-performance`);
-    const fleetPromise = primary.from("vehicles").select("number,type,status");
+    const routePromise = fetchDashboardEndpoint<PerfData>(`/dashboard/driver-performance`)
+      .catch(() => ({ route_cards: [] } as PerfData));
+    const fleetPromise = primary.from("vehicles").select("number,type,status")
+      .catch(() => ({ data: [], error: { message: "Fleet lookup failed" } }));
 
-    // Only Primary + the small Fleet lookup are required for first paint.
-    // This is intentionally awaited so the app remains data-backed, but it is
-    // no longer coupled to the health/speed of Secondary or GPS RPCs.
-    const [primaryRows, fleetVehicles, routeResult] = await Promise.all([primaryPromise, fleetPromise, routePromise]);
-    setLoadingProgress(82);
+    const [primaryResult, secondaryRows, routeResult, fleetVehicles] = await Promise.all([
+      withTimeout(primaryPromise, 30000, [] as LocalSapRow[]),
+      withTimeout(secondaryPromise, 20000, [] as LocalSapRow[]),
+      withTimeout(routePromise, 15000, { route_cards: [] } as PerfData),
+      withTimeout(fleetPromise, 5000, { data: [], error: { message: "Fleet lookup timed out" } }),
+    ]);
 
+    const typedPrimaryRows = primaryResult as LocalSapRow[];
     const fleetVehicleRows = fleetVehicles.error ? [] : (fleetVehicles.data || []);
-    const typedPrimaryRows = primaryRows as LocalSapRow[];
-    const rows = applyFleetVehicleTypes(typedPrimaryRows.filter((r: LocalSapRow) =>
+    const primaryDates = new Set(typedPrimaryRows.map((r: LocalSapRow) => String(r.dispatch_date || "")).filter(Boolean));
+    const extraRows = (secondaryRows as LocalSapRow[]).filter((r) => !primaryDates.has(String(r.dispatch_date || "")));
+    const combinedRows = typedPrimaryRows.concat(extraRows);
+    const rows = applyFleetVehicleTypes(combinedRows.filter((r: LocalSapRow) =>
       !isUnknown(r.division_desc) && !isUnknown(classification(r))
     ), fleetVehicleRows);
 
     setLoadingProgress(94);
-    current = { key, rows, routeCards: routeResult?.route_cards || [], loadedAt: Date.now(), datasetVersion: LOCAL_DATASET_VERSION };
+    current = { key, rows, routeCards: routeResult.route_cards || [], loadedAt: Date.now(), datasetVersion: LOCAL_DATASET_VERSION };
     setLoadingProgress(100);
     loading = null;
     emit();
-
-    // Enrichment continues after the Dashboard is already usable. Preserve the
-    // existing Primary -> Secondary date ownership rule when Secondary returns.
-    void Promise.allSettled([secondaryPromise]).then(([secondaryResult]) => {
-      let next = current;
-      if (!next || next.key !== key) return;
-
-      if (secondaryResult.status === "fulfilled") {
-        const typedSecondaryRows = secondaryResult.value as LocalSapRow[];
-        const primaryDates = new Set(typedPrimaryRows.map((r: LocalSapRow) => String(r.dispatch_date || "")).filter(Boolean));
-        const mergedRaw = typedPrimaryRows.concat(
-          typedSecondaryRows.filter((r: LocalSapRow) => !primaryDates.has(String(r.dispatch_date || "")))
-        );
-        const mergedRows = applyFleetVehicleTypes(mergedRaw.filter((r: LocalSapRow) =>
-          !isUnknown(r.division_desc) && !isUnknown(classification(r))
-        ), fleetVehicleRows);
-        next = { ...next, rows: mergedRows, loadedAt: Date.now() };
-      }
-
-
-      if (next !== current) {
-        current = next;
-        void writePersistentDataset(next);
-        emit();
-      }
-    });
     void writePersistentDataset(current);
+
     return current;
   })().catch((e) => { loading = null; resetLoadingProgress(0); throw e; });
   return loading;
 }
+
+
 
 export function useDashboardLocalSnapshot(start: string, end: string): DashboardLocalDataset | null {
   // This function intentionally has no React dependency. Consumers subscribe
