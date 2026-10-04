@@ -7548,7 +7548,7 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
 .logi-chat-3d-icon canvas {
   width: 100% !important;
   height: 100% !important;
-  transform: scale(.52) !important;
+  transform: none !important;
   transform-origin: 50% 50% !important;
   overflow: visible !important;
 }
@@ -7557,18 +7557,4 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
   width: 100% !important;
   height: 100% !important;
   transform: none !important;
-}
-
-
-/* LOGI 3.4 — exact user-requested spacing + camera framing. */
-.logi-hover-tip {
-  bottom: 180px !important;
-}
-.logi-chat-3d-icon canvas {
-  transform: none !important;
-}
-.logi-chat-3d-icon {
-  width: 72px !important;
-  height: 72px !important;
-  flex: 0 0 72px !important;
 }
