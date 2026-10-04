@@ -184,8 +184,7 @@ export function GlassNavGroup({
         document.body, positioned from the trigger's live bounding rect,
         guarantees it always paints above all page content.
       */}
-      {menuPos && createPortal(
-        {open && (
+      {menuPos && open && createPortal(
             <motion.div
               initial={{ opacity: 0, y: -4, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -213,8 +212,7 @@ export function GlassNavGroup({
                   {item.label}
                 </NavLink>
               ))}
-            </motion.div>
-          )},
+            </motion.div>,
         document.body
       )}
     </div>

@@ -106,8 +106,7 @@ export default function MultiSelectSlicer({
         {label}{selected.length ? ` (${selected.length})` : ""}
         <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} />
       </button>
-      {menuPos && createPortal(
-        {open && (
+      {menuPos && open && createPortal(
             <motion.div
               initial={{ opacity: 0, y: -4, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -149,8 +148,7 @@ export default function MultiSelectSlicer({
                   </label>
                 );
               })}
-            </motion.div>
-          )},
+            </motion.div>,
         document.body
       )}
     </div>
