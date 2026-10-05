@@ -81,11 +81,13 @@ export function GlassNavGroup({
   icon,
   items,
   layoutId,
+  onOpen,
 }: {
   label: string;
   icon?: ReactNode;
   items: NavItemDef[];
   layoutId: string;
+  onOpen?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
@@ -136,7 +138,11 @@ export function GlassNavGroup({
   }, [open]);
 
   function toggleOpen() {
-    setOpen((current) => !current);
+    setOpen((current) => {
+      const next = !current;
+      if (next) onOpen?.();
+      return next;
+    });
   }
 
   return (
