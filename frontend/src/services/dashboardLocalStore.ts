@@ -60,6 +60,7 @@ type Listener = () => void;
 const listeners = new Set<Listener>();
 const progressListeners = new Set<(pct: number) => void>();
 let current: DashboardLocalDataset | null = null;
+let baseRouteCards: RouteCard[] = [];
 let loading: Promise<DashboardLocalDataset> | null = null;
 let loadingProgress = 0;
 const LOCAL_DB_NAME = "dispatchops-dashboard-local-v3";
@@ -215,6 +216,9 @@ async function fetchRowsForClient(client: any, start = "", end = "", onPage?: (r
 export async function preloadDashboardLocalDataset(_start = "", _end = "", force = false): Promise<DashboardLocalDataset> {
   const key = "ALL";
   if (!force && current?.key === key && current.rows.length) {
+    current.routeCards = [...baseRouteCards];
+    sharedVehicleHydrationKey = "";
+    void hydrateSharedVehicleDriverCards(current, _start, _end);
     setLoadingProgress(100);
     return current;
   }
@@ -226,8 +230,10 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
       const persisted = await readPersistentDataset();
       if (persisted && Date.now() - Number(persisted.loadedAt || 0) < LOCAL_CACHE_TTL_MS && persisted.rows.length) {
         current = { ...persisted, key };
+        baseRouteCards = [...(persisted.routeCards || [])];
         setLoadingProgress(100);
         emit();
+        void hydrateSharedVehicleDriverCards(current, _start, _end);
         // Return the persistent snapshot immediately. A background refresh is
         // intentionally handled by the realtime/manual Refresh path.
         loading = null;
@@ -280,10 +286,21 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     ), fleetVehicleRows);
 
     setLoadingProgress(94);
-    current = { key, rows, routeCards: routeResult.route_cards || [], loadedAt: Date.now(), datasetVersion: LOCAL_DATASET_VERSION };
+    baseRouteCards = [...(routeResult.route_cards || [])];
+    current = { key, rows, routeCards: [...baseRouteCards], loadedAt: Date.now(), datasetVersion: LOCAL_DATASET_VERSION };
     setLoadingProgress(100);
     loading = null;
     emit();
+
+    // Driver Performance exception: the dashboard RPC is intentionally kept
+    // vehicle-level for the normal fast path. If the same vehicle has multiple
+    // SAP drivers in the selected period, hydrate only those vehicles from the
+    // existing Landmark facts and split their GPS performance by driver. This
+    // is application-side only; no RPC, table, schema, or database data is
+    // modified. The split runs after the normal dashboard dataset is ready so
+    // it cannot reintroduce the old Dashboard loading stall.
+    void hydrateSharedVehicleDriverCards(current, _start, _end);
+
     void writePersistentDataset(current);
     return current;
   })().catch((e) => { loading = null; resetLoadingProgress(0); throw e; });
@@ -565,6 +582,131 @@ function normalizeMatchKey(value: unknown): string {
 
 function routeMonth(value: unknown): string {
   return String(value ?? "").slice(0, 7);
+}
+
+
+let sharedVehicleHydrationKey = "";
+let sharedVehicleHydrationPromise: Promise<void> | null = null;
+
+async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, start: string, end: string): Promise<void> {
+  const periodStart = String(start || "");
+  const periodEnd = String(end || "");
+  if (!periodStart && !periodEnd) return;
+  const key = `${periodStart}::${periodEnd}`;
+  if (sharedVehicleHydrationKey === key || sharedVehicleHydrationPromise) return;
+
+  const ownersByVehicle = new Map<string, Map<string, { display: string; dates: Set<string>; invoices: number; boxes: number; freezer: number }>>();
+  for (const row of dataset.rows) {
+    const date = String(row.dispatch_date || "").slice(0, 10);
+    if (!date || (periodStart && date < periodStart) || (periodEnd && date > periodEnd)) continue;
+    const vehicle = normalizeMatchKey(row.vehicle_key || row.vehicle_num);
+    const driver = normalizeDriverIdentity(row.driver_name);
+    if (!vehicle || !driver) continue;
+    const byDriver = ownersByVehicle.get(vehicle) || new Map();
+    const owner = byDriver.get(driver) || { display: String(row.driver_name || driver).trim() || driver, dates: new Set<string>(), invoices: 0, boxes: 0, freezer: 0 };
+    owner.dates.add(date); owner.invoices += 1; owner.boxes += Number(row.boxes || 0); owner.freezer += Number(row.freezer_boxes || 0);
+    byDriver.set(driver, owner); ownersByVehicle.set(vehicle, byDriver);
+  }
+
+  const sharedVehicles = [...ownersByVehicle.entries()].filter(([, drivers]) => drivers.size > 1).map(([vehicle]) => vehicle);
+  if (!sharedVehicles.length) { sharedVehicleHydrationKey = key; return; }
+
+  sharedVehicleHydrationPromise = (async () => {
+    try {
+      const clients = getFederatedSupabaseClients();
+      const lmRows: any[] = [];
+      const chunks: string[][] = [];
+      for (let i = 0; i < sharedVehicles.length; i += 80) chunks.push(sharedVehicles.slice(i, i + 80));
+      for (const client of clients) {
+        for (const chunk of chunks) {
+          let q = client.from("landmark_visit_facts").select("vehicle_key,vehicle_raw,driver_name,visit_date,arrival,departure,minutes,is_passthrough,is_depot").in("vehicle_key", chunk);
+          if (periodStart) q = q.gte("visit_date", periodStart);
+          if (periodEnd) q = q.lte("visit_date", periodEnd);
+          const { data, error } = await q;
+          if (error) throw new Error(error.message);
+          lmRows.push(...(data || []));
+        }
+      }
+
+      const split = new Map<string, any>();
+      const parseTime = (value: unknown) => {
+        const t = Date.parse(String(value || ""));
+        return Number.isFinite(t) ? t : null;
+      };
+      for (const row of lmRows) {
+        const vehicle = normalizeMatchKey(row.vehicle_key);
+        const date = String(row.visit_date || "").slice(0, 10);
+        const owners = ownersByVehicle.get(vehicle);
+        if (!owners || owners.size < 2) continue;
+        let driver = normalizeDriverIdentity(row.driver_name);
+        if (!driver || !owners.has(driver)) {
+          const dayOwners = [...owners.entries()].filter(([, owner]) => owner.dates.has(date));
+          if (dayOwners.length === 1) driver = dayOwners[0][0];
+        }
+        if (!driver || !owners.has(driver)) continue;
+        const k = `${vehicle}::${driver}`;
+        const item = split.get(k) || { vehicle, driver, vehicle_raw: String(row.vehicle_raw || ""), stops: 0, passthru: 0, stopMinutes: 0, routeStart: null as number | null, routeEnd: null as number | null };
+        const isPass = Boolean(row.is_passthrough);
+        const isDepot = Boolean(row.is_depot);
+        const minutes = Number(row.minutes || 0);
+        if (isPass) item.passthru += 1;
+        if (!isPass && !isDepot) { item.stops += 1; item.stopMinutes += Number.isFinite(minutes) ? minutes : 0; }
+        const ts = parseTime(row.departure || row.arrival);
+        if (ts !== null && isDepot) item.routeStart = item.routeStart === null ? ts : Math.min(item.routeStart, ts);
+        if (ts !== null && !isPass && !isDepot) item.routeEnd = item.routeEnd === null ? ts : Math.max(item.routeEnd, ts);
+        split.set(k, item);
+      }
+
+      const originalByVehicle = new Map<string, RouteCard>();
+      for (const card of dataset.routeCards) originalByVehicle.set(normalizeMatchKey(card.vehicle_key || card.vehicle_num), card);
+      const replacements = new Map<string, RouteCard[]>();
+      for (const item of split.values()) {
+        const base = originalByVehicle.get(item.vehicle);
+        if (!base) continue;
+        const owner = ownersByVehicle.get(item.vehicle)?.get(item.driver);
+        if (!owner) continue;
+        const hours = item.routeStart !== null && item.routeEnd !== null && item.routeEnd >= item.routeStart ? (item.routeEnd - item.routeStart) / 3600000 : 0;
+        const avgStop = item.stops ? item.stopMinutes / item.stops : 0;
+        const card: RouteCard = {
+          ...base,
+          vehicle_key: `${base.vehicle_key}::driver::${item.driver}`,
+          display_driver: owner.display,
+          match_method: "vehicle",
+          match_confidence: "daily-driver",
+          route_start: item.routeStart !== null ? new Date(item.routeStart).toISOString() : base.route_start,
+          route_end: item.routeEnd !== null ? new Date(item.routeEnd).toISOString() : base.route_end,
+          route_duration_hm: `${Math.floor(hours)}h ${Math.floor((hours * 60) % 60)}m`,
+          stops: item.stops,
+          avg_stop_hm: `${Math.floor(avgStop / 60)}h ${Math.floor(avgStop % 60)}m`,
+          passthru_count: item.passthru,
+          sap_orders: { invoices: owner.invoices, boxes: owner.boxes, freezer: owner.freezer },
+        };
+        const list = replacements.get(item.vehicle) || []; list.push(card); replacements.set(item.vehicle, list);
+      }
+
+      if (replacements.size) {
+        const next: RouteCard[] = [];
+        for (const card of dataset.routeCards) {
+          const vehicle = normalizeMatchKey(card.vehicle_key || card.vehicle_num);
+          const replacement = replacements.get(vehicle);
+          if (replacement?.length) next.push(...replacement);
+          else next.push(card);
+        }
+        dataset.routeCards = next;
+        sharedVehicleHydrationKey = key;
+        emit();
+      } else {
+        sharedVehicleHydrationKey = key;
+      }
+    } catch {
+      // Never break the already-working dashboard if the optional split query
+      // is unavailable. The original vehicle-level route cards remain intact.
+      sharedVehicleHydrationKey = key;
+    } finally {
+      sharedVehicleHydrationPromise = null;
+    }
+  })();
+  await sharedVehicleHydrationPromise;
 }
 
 export function buildLocalDriverPerformance(rows: LocalSapRow[], routeCards: RouteCard[], gf?: GlobalFilters): PerfData {

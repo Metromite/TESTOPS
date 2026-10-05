@@ -92,7 +92,7 @@ export function KpiTile({ icon, label, value, onClick }: { icon: string; label: 
 
 function pctTooltipFormatter(data: { name: string; value: number }[]) {
   const total = data.reduce((sum, d) => sum + d.value, 0);
-  return (value: number, name: string): [string, string] => [`${value} (${total ? Math.round((value / total) * 100) : 0}%)`, name];
+  return (value: number, name: string): [string, string] => [`${value} (${total ? ((value / total) * 100).toFixed(1) : "0.0"}%)`, name];
 }
 
 function ChartBreakdownLegend({
@@ -111,13 +111,13 @@ function ChartBreakdownLegend({
         const Icon = iconGroup === "facility"
           ? getOptionIcon("Facility Type", item.name, Store)
           : item.name.toLowerCase() === "delivered" ? CheckCircle2 : AlertTriangle;
-        const percentage = total ? Math.round((item.value / total) * 100) : 0;
+        const percentage = total ? (item.value / total) * 100 : 0;
         const color = colors[index % colors.length];
         return (
           <div
             key={item.name}
             className="flex min-w-0 items-center gap-2"
-            title={`${item.name}: ${item.value} (${percentage}%)`}
+            title={`${item.name}: ${item.value} (${percentage.toFixed(1)}%)`}
           >
             <Icon
               className="h-4 w-4 shrink-0"
@@ -199,7 +199,7 @@ export function FacilityDistributionChart({ data }: { data: HomeDashboard }) {
             the Cell colors, and the Legend/Tooltip are all identical to
             before.
           */}
-          <Pie data={facilityData} dataKey="value" nameKey="name" outerRadius={90}>
+          <Pie data={facilityData} dataKey="value" nameKey="name" outerRadius={90} minAngle={2}>
             {facilityData.map((_, i) => <Cell key={i} fill={CHART_PALETTE[i % CHART_PALETTE.length]} stroke="var(--navy2)" strokeWidth={2} />)}
           </Pie>
           <Tooltip content={<GlassTooltip formatter={pctTooltipFormatter(facilityData)} />} />

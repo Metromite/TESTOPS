@@ -15,6 +15,7 @@ if (typeof window !== "undefined") {
 
 function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: number; headOnly?: boolean; onReady?: () => void }) {
   const [sceneReady, setSceneReady] = useState(false);
+  const [engravingReady, setEngravingReady] = useState(false);
   const rafRef = useRef<number | null>(null);
   const splineRef = useRef<any>(null);
   const robotRef = useRef<any>(null);
@@ -190,10 +191,11 @@ function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: numbe
     if (animationLoopRef.current !== null) window.clearInterval(animationLoopRef.current);
     animationLoopRef.current = window.setInterval(() => spline.play?.(), 4200);
 
-    // onLoad is the Spline scene-ready boundary. Reveal after one paint frame;
-    // the old two-frame + timeout gate added startup latency without benefit.
+    // Reveal the mascot scene and its company mark as one composed visual layer.
+    // Keep them synchronized so the logo never paints as a separate earlier/later state.
     window.requestAnimationFrame(() => {
       setSceneReady(true);
+      setEngravingReady(true);
       onReady?.();
     });
   };
@@ -209,7 +211,7 @@ function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: numbe
         onLoad={handleLoad}
         style={{ width: "100%", height: "100%", background: "transparent" }}
       />
-      {!headOnly && sceneReady && (
+      {!headOnly && sceneReady && engravingReady && (
         <span className="logi-bot-engraving is-ready">
           <img src="/logi-company-engraving.webp" alt="" />
         </span>

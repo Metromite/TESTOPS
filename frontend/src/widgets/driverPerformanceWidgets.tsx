@@ -132,7 +132,7 @@ export function RouteDetailTable({ data }: { data: PerfData }) {
           </GlassTable.Header>
           <GlassTable.Body>
             {data.route_cards.map((r) => (
-              <tr key={r.vehicle_key}>
+              <tr key={`${r.vehicle_key}::${r.display_driver}`}>
                 <GlassTable.Td>{r.vehicle_num}{r.vehicle_model && <span className="text-muted"> ({r.vehicle_model})</span>}</GlassTable.Td>
                 <GlassTable.Td>{r.display_driver}</GlassTable.Td>
                 <GlassTable.Td><GlassBadge tone={methodTone[r.match_method]}>{r.match_method}</GlassBadge></GlassTable.Td>
