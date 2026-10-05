@@ -669,7 +669,11 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
         const avgStop = item.stops ? item.stopMinutes / item.stops : 0;
         const card: RouteCard = {
           ...base,
-          vehicle_key: `${base.vehicle_key}::driver::${item.driver}`,
+          // Keep the real vehicle identity intact. The driver is already carried
+          // separately by display_driver; putting the driver into vehicle_key
+          // made later vehicle matching treat the same vehicle as a different
+          // vehicle and could replace one shared-vehicle driver with another.
+          vehicle_key: base.vehicle_key,
           display_driver: owner.display,
           match_method: "vehicle",
           match_confidence: "daily-driver",
@@ -786,10 +790,25 @@ export function buildLocalDriverPerformance(rows: LocalSapRow[], routeCards: Rou
     return !!compactLeft && !!compactRight && compactLeft === compactRight;
   };
 
+  const selectedDrivers = new Set(
+    String(gf?.drivers || "")
+      .split(",")
+      .map((value) => normalizeDriverIdentity(value))
+      .filter(Boolean)
+  );
+
   const cards = routeCards
     .filter((card) => {
       const date = String(card.route_start || card.route_end || "").slice(0, 10);
-      return inSelectedPeriod(date);
+      if (!inSelectedPeriod(date)) return false;
+      // When Driver slicers are active, preserve the route card's own resolved
+      // driver identity. Never relabel a shared-vehicle route just because the
+      // filtered SAP rows now contain only the other driver.
+      if (selectedDrivers.size) {
+        const cardDriver = normalizeDriverIdentity(card.display_driver);
+        if (!cardDriver || !selectedDrivers.has(cardDriver)) return false;
+      }
+      return true;
     })
     .map((card) => {
       const date = String(card.route_start || card.route_end || "").slice(0, 10);

@@ -134,7 +134,7 @@ function ChartBreakdownLegend({
               className="shrink-0 text-[12px] font-semibold tabular-nums"
               style={{ color }}
             >
-              {percentage}%
+              {percentage > 0 && percentage < 0.05 ? "<0.1" : percentage.toFixed(1).replace(/\.0$/, "")}%
             </span>
           </div>
         );
