@@ -230,7 +230,9 @@ async function fetchExperienceDetailPage(code:string,type:string,division:Experi
 
 export async function prefetchExperienceDetail(code:string,type:string,division:ExperienceDivision):Promise<void> {
   const key=detailCacheKey(code,type,division);
-  if(experienceDetailMemory.has(key)||experienceDetailRefresh.get(key)) return;
+  if(experienceDetailMemory.has(key)) return;
+  const existing=experienceDetailRefresh.get(key);
+  if(existing){ await existing; return; }
   const promise=fetchExperienceDetailPage(code,type,division,0,100).then(page=>{
     experienceDetailMemory.set(key,page);
   }).finally(()=>experienceDetailRefresh.set(key,null));

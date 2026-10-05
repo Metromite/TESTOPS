@@ -448,7 +448,14 @@ export function buildLocalHome(rows: LocalSapRow[], routeCards: RouteCard[]): Ho
     if (r.vehicle_key) vehicles.add(r.vehicle_key);
     if (r.facility_type) facilities.set(r.facility_type, (facilities.get(r.facility_type) || 0) + 1);
     if (r.vehicle_type) { const v = vehicleTypes.get(r.vehicle_type) || { normal: 0, freezer: 0 }; v.normal += r.normal_boxes; v.freezer += r.freezer_boxes; vehicleTypes.set(r.vehicle_type, v); }
-    if (r.driver_name) { const d = drivers.get(r.driver_name) || { driver_name: r.driver_name, vehicle_num: r.vehicle_num || "-", vehicle_type: r.vehicle_type, orders: 0, boxes: 0, freezer: 0, not_supplied: 0 }; d.orders++; d.boxes += r.boxes; d.freezer += r.freezer_boxes; if (r.not_supplied_reason) d.not_supplied++; drivers.set(r.driver_name, d); }
+    if (r.driver_name) {
+      const d = drivers.get(r.driver_name) || { driver_name: r.driver_name, vehicle_num: r.vehicle_num || "-", vehicle_type: r.vehicle_type, orders: 0, boxes: 0, freezer: 0, not_supplied: 0 };
+      d.orders++; d.boxes += r.boxes; d.freezer += r.freezer_boxes;
+      if ((d.vehicle_num === "-" || !d.vehicle_num) && r.vehicle_num) d.vehicle_num = r.vehicle_num;
+      if (!d.vehicle_type && r.vehicle_type) d.vehicle_type = r.vehicle_type;
+      if (r.not_supplied_reason) d.not_supplied++;
+      drivers.set(r.driver_name, d);
+    }
     const days = dayDiff(r.invoice_date, r.dispatch_date); if (days !== null && days >= 0) { leadTotal += days; leadCount++; }
   }
   const driverRows = [...drivers.values()].sort((a, b) => b.boxes - a.boxes);
@@ -595,20 +602,33 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
   const key = `${periodStart}::${periodEnd}`;
   if (sharedVehicleHydrationKey === key || sharedVehicleHydrationPromise) return;
 
-  const ownersByVehicle = new Map<string, Map<string, { display: string; dates: Set<string>; invoices: number; boxes: number; freezer: number }>>();
+  // Build the real SAP ownership timeline first: Vehicle -> Day -> Driver.
+  // A vehicle can legitimately have different drivers on different days.
+  const ownersByVehicleDay = new Map<string, Map<string, Map<string, { display: string; dates: Set<string>; invoices: number; boxes: number; freezer: number }>>>();
   for (const row of dataset.rows) {
     const date = String(row.dispatch_date || "").slice(0, 10);
     if (!date || (periodStart && date < periodStart) || (periodEnd && date > periodEnd)) continue;
     const vehicle = normalizeMatchKey(row.vehicle_key || row.vehicle_num);
     const driver = normalizeDriverIdentity(row.driver_name);
     if (!vehicle || !driver) continue;
-    const byDriver = ownersByVehicle.get(vehicle) || new Map();
-    const owner = byDriver.get(driver) || { display: String(row.driver_name || driver).trim() || driver, dates: new Set<string>(), invoices: 0, boxes: 0, freezer: 0 };
-    owner.dates.add(date); owner.invoices += 1; owner.boxes += Number(row.boxes || 0); owner.freezer += Number(row.freezer_boxes || 0);
-    byDriver.set(driver, owner); ownersByVehicle.set(vehicle, byDriver);
+    const byDate = ownersByVehicleDay.get(vehicle) || new Map();
+    const byDriver = byDate.get(date) || new Map();
+    const owner = byDriver.get(driver) || {
+      display: String(row.driver_name || driver).trim() || driver,
+      dates: new Set<string>(), invoices: 0, boxes: 0, freezer: 0,
+    };
+    owner.dates.add(date);
+    owner.invoices += 1;
+    owner.boxes += Number(row.boxes || 0);
+    owner.freezer += Number(row.freezer_boxes || 0);
+    byDriver.set(driver, owner);
+    byDate.set(date, byDriver);
+    ownersByVehicleDay.set(vehicle, byDate);
   }
 
-  const sharedVehicles = [...ownersByVehicle.entries()].filter(([, drivers]) => drivers.size > 1).map(([vehicle]) => vehicle);
+  const sharedVehicles = [...ownersByVehicleDay.entries()]
+    .filter(([, byDate]) => [...byDate.values()].some((drivers) => drivers.size > 1) || byDate.size > 1)
+    .map(([vehicle]) => vehicle);
   if (!sharedVehicles.length) { sharedVehicleHydrationKey = key; return; }
 
   sharedVehicleHydrationPromise = (async () => {
@@ -617,9 +637,12 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
       const lmRows: any[] = [];
       const chunks: string[][] = [];
       for (let i = 0; i < sharedVehicles.length; i += 80) chunks.push(sharedVehicles.slice(i, i + 80));
+
       for (const client of clients) {
         for (const chunk of chunks) {
-          let q = client.from("landmark_visit_facts").select("vehicle_key,vehicle_raw,driver_name,visit_date,arrival,departure,minutes,is_passthrough,is_depot").in("vehicle_key", chunk);
+          let q = client.from("landmark_visit_facts")
+            .select("vehicle_key,vehicle_raw,driver_name,visit_date,arrival,departure,minutes,is_passthrough,is_depot")
+            .in("vehicle_key", chunk);
           if (periodStart) q = q.gte("visit_date", periodStart);
           if (periodEnd) q = q.lte("visit_date", periodEnd);
           const { data, error } = await q;
@@ -628,83 +651,113 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
         }
       }
 
-      const split = new Map<string, any>();
       const parseTime = (value: unknown) => {
         const t = Date.parse(String(value || ""));
         return Number.isFinite(t) ? t : null;
       };
+      const gpsByVehicleDayDriver = new Map<string, { vehicle: string; date: string; driver: string; vehicle_raw: string; stops: number; passthru: number; stopMinutes: number; routeStart: number | null; routeEnd: number | null }>();
+
       for (const row of lmRows) {
         const vehicle = normalizeMatchKey(row.vehicle_key);
         const date = String(row.visit_date || "").slice(0, 10);
-        const owners = ownersByVehicle.get(vehicle);
-        if (!owners || owners.size < 2) continue;
+        if (!vehicle || !date) continue;
+        const owners = ownersByVehicleDay.get(vehicle)?.get(date);
+        if (!owners?.size) continue;
+
         let driver = normalizeDriverIdentity(row.driver_name);
         if (!driver || !owners.has(driver)) {
-          const dayOwners = [...owners.entries()].filter(([, owner]) => owner.dates.has(date));
-          if (dayOwners.length === 1) driver = dayOwners[0][0];
+          // If GPS has no usable driver, only infer when SAP has one driver for
+          // that exact vehicle/day. Never borrow a driver from another day.
+          if (owners.size === 1) driver = [...owners.keys()][0];
         }
         if (!driver || !owners.has(driver)) continue;
-        const k = `${vehicle}::${driver}`;
-        const item = split.get(k) || { vehicle, driver, vehicle_raw: String(row.vehicle_raw || ""), stops: 0, passthru: 0, stopMinutes: 0, routeStart: null as number | null, routeEnd: null as number | null };
+
+        const k = `${vehicle}::${date}::${driver}`;
+        const item = gpsByVehicleDayDriver.get(k) || {
+          vehicle, date, driver, vehicle_raw: String(row.vehicle_raw || ""),
+          stops: 0, passthru: 0, stopMinutes: 0, routeStart: null, routeEnd: null,
+        };
         const isPass = Boolean(row.is_passthrough);
         const isDepot = Boolean(row.is_depot);
         const minutes = Number(row.minutes || 0);
         if (isPass) item.passthru += 1;
-        if (!isPass && !isDepot) { item.stops += 1; item.stopMinutes += Number.isFinite(minutes) ? minutes : 0; }
+        if (!isPass && !isDepot) {
+          item.stops += 1;
+          item.stopMinutes += Number.isFinite(minutes) ? minutes : 0;
+        }
         const ts = parseTime(row.departure || row.arrival);
         if (ts !== null && isDepot) item.routeStart = item.routeStart === null ? ts : Math.min(item.routeStart, ts);
         if (ts !== null && !isPass && !isDepot) item.routeEnd = item.routeEnd === null ? ts : Math.max(item.routeEnd, ts);
-        split.set(k, item);
+        gpsByVehicleDayDriver.set(k, item);
       }
 
-      const originalByVehicle = new Map<string, RouteCard>();
-      for (const card of dataset.routeCards) originalByVehicle.set(normalizeMatchKey(card.vehicle_key || card.vehicle_num), card);
-      const replacements = new Map<string, RouteCard[]>();
-      for (const item of split.values()) {
-        const base = originalByVehicle.get(item.vehicle);
-        if (!base) continue;
-        const owner = ownersByVehicle.get(item.vehicle)?.get(item.driver);
-        if (!owner) continue;
-        const hours = item.routeStart !== null && item.routeEnd !== null && item.routeEnd >= item.routeStart ? (item.routeEnd - item.routeStart) / 3600000 : 0;
-        const avgStop = item.stops ? item.stopMinutes / item.stops : 0;
-        const card: RouteCard = {
+      const next: RouteCard[] = [];
+      for (const base of dataset.routeCards) {
+        const vehicle = normalizeMatchKey(base.vehicle_key || base.vehicle_num);
+        const date = String(base.route_start || base.route_end || "").slice(0, 10);
+        const byDate = ownersByVehicleDay.get(vehicle);
+        const owners = byDate?.get(date);
+
+        if (!vehicle || !date || !owners?.size) {
+          next.push(base);
+          continue;
+        }
+
+        // Prefer the route card's own driver when it matches the exact SAP day;
+        // otherwise use the only SAP owner for that exact day. This prevents a
+        // driver from another day on the same vehicle from replacing this one.
+        const cardDriver = normalizeDriverIdentity(base.display_driver);
+        let ownerEntry = cardDriver ? [...owners.entries()].find(([id]) => normalizeMatchKey(id) === normalizeMatchKey(cardDriver)) : undefined;
+        if (!ownerEntry && owners.size === 1) ownerEntry = [...owners.entries()][0];
+        if (!ownerEntry) {
+          // Multiple SAP drivers on the same day and GPS did not identify one:
+          // keep the original route card rather than inventing ownership.
+          next.push(base);
+          continue;
+        }
+
+        const [driver, owner] = ownerEntry;
+        const gps = gpsByVehicleDayDriver.get(`${vehicle}::${date}::${driver}`);
+        if (!gps) {
+          // The driver has valid SAP orders for this vehicle/day even when GPS
+          // did not return a matching row. Preserve the existing route metrics
+          // and attach the correct daily driver instead of showing zero/unknown.
+          next.push({
+            ...base,
+            vehicle_key: base.vehicle_key,
+            display_driver: owner.display,
+            match_method: "vehicle",
+            match_confidence: "daily-driver",
+            sap_orders: { invoices: owner.invoices, boxes: owner.boxes, freezer: owner.freezer },
+          });
+          continue;
+        }
+
+        const hours = gps.routeStart !== null && gps.routeEnd !== null && gps.routeEnd >= gps.routeStart
+          ? (gps.routeEnd - gps.routeStart) / 3600000 : 0;
+        const avgStop = gps.stops ? gps.stopMinutes / gps.stops : 0;
+        next.push({
           ...base,
-          // Keep the real vehicle identity intact. The driver is already carried
-          // separately by display_driver; putting the driver into vehicle_key
-          // made later vehicle matching treat the same vehicle as a different
-          // vehicle and could replace one shared-vehicle driver with another.
           vehicle_key: base.vehicle_key,
+          vehicle_num: base.vehicle_num || gps.vehicle_raw,
           display_driver: owner.display,
           match_method: "vehicle",
           match_confidence: "daily-driver",
-          route_start: item.routeStart !== null ? new Date(item.routeStart).toISOString() : base.route_start,
-          route_end: item.routeEnd !== null ? new Date(item.routeEnd).toISOString() : base.route_end,
+          route_start: gps.routeStart !== null ? new Date(gps.routeStart).toISOString() : base.route_start,
+          route_end: gps.routeEnd !== null ? new Date(gps.routeEnd).toISOString() : base.route_end,
           route_duration_hm: `${Math.floor(hours)}h ${Math.floor((hours * 60) % 60)}m`,
-          stops: item.stops,
+          stops: gps.stops,
           avg_stop_hm: `${Math.floor(avgStop / 60)}h ${Math.floor(avgStop % 60)}m`,
-          passthru_count: item.passthru,
+          passthru_count: gps.passthru,
           sap_orders: { invoices: owner.invoices, boxes: owner.boxes, freezer: owner.freezer },
-        };
-        const list = replacements.get(item.vehicle) || []; list.push(card); replacements.set(item.vehicle, list);
+        });
       }
 
-      if (replacements.size) {
-        const next: RouteCard[] = [];
-        for (const card of dataset.routeCards) {
-          const vehicle = normalizeMatchKey(card.vehicle_key || card.vehicle_num);
-          const replacement = replacements.get(vehicle);
-          if (replacement?.length) next.push(...replacement);
-          else next.push(card);
-        }
-        dataset.routeCards = next;
-        sharedVehicleHydrationKey = key;
-        emit();
-      } else {
-        sharedVehicleHydrationKey = key;
-      }
+      dataset.routeCards = next;
+      sharedVehicleHydrationKey = key;
+      emit();
     } catch {
-      // Never break the already-working dashboard if the optional split query
-      // is unavailable. The original vehicle-level route cards remain intact.
+      // Optional enrichment must never break the working Dashboard.
       sharedVehicleHydrationKey = key;
     } finally {
       sharedVehicleHydrationPromise = null;
