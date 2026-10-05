@@ -1010,6 +1010,21 @@ export function buildLocalDriverPerformance(rows: LocalSapRow[], routeCards: Rou
       .filter(Boolean)
   );
 
+  const selectedDriverMatches = (cardDriver: string, selected: Set<string>) => {
+    if (!selected.size) return true;
+    const candidate = normalizeDriverIdentity(cardDriver);
+    if (!candidate) return false;
+    for (const wanted of selected) {
+      if (candidate === wanted) return true;
+      const score = driverNameSimilarity(candidate, wanted);
+      if (score >= 0.82) return true;
+      const left = normalizeMatchKey(candidate);
+      const right = normalizeMatchKey(wanted);
+      if (left && right && (left.startsWith(right) || right.startsWith(left)) && Math.min(left.length, right.length) >= 5) return true;
+    }
+    return false;
+  };
+
   const cards = routeCards
     .filter((card) => {
       const date = String(card.route_start || card.route_end || "").slice(0, 10);
@@ -1069,7 +1084,7 @@ export function buildLocalDriverPerformance(rows: LocalSapRow[], routeCards: Rou
     // Apply the Driver slicer only after the GPS/SAP driver identity has been
     // resolved. Otherwise a valid GPS alias can be filtered out before it gets
     // mapped to the selected SAP driver name.
-    .filter((card) => !selectedDrivers.size || selectedDrivers.has(normalizeDriverIdentity(card.display_driver)));
+    .filter((card) => selectedDriverMatches(card.display_driver, selectedDrivers));
 
   const stops=cards.reduce((n,r)=>n+Number(r.stops||0),0);
   const hours=cards.map(r=>{const m=String(r.route_duration_hm||"").match(/(\d+)h\s+(\d+)m/);return m?Number(m[1])+Number(m[2])/60:0;}).filter(n=>n>0);
