@@ -11,6 +11,7 @@ export type BulkOrganizerPlan = {
   buildings?: any[];
   vehicle_meta?: Record<string, { driver?: string; helper?: string; building_id?: string | null }>;
   customer_schedules?: any[];
+  deleted_invoice_ids?: string[];
   updated_at?: string;
 };
 
@@ -55,6 +56,7 @@ export async function loadBulkOrganizerPlan(planDate: string): Promise<BulkOrgan
     customer_schedules: Array.isArray(data.customer_schedules) ? data.customer_schedules : [],
     pallet_assignments: data.pallet_assignments || {},
     vehicle_meta: data.vehicle_meta || {},
+    deleted_invoice_ids: Array.isArray(data.deleted_invoice_ids) ? data.deleted_invoice_ids : [],
   } as BulkOrganizerPlan;
 }
 
@@ -75,6 +77,7 @@ export async function saveBulkOrganizerPlan(plan: BulkOrganizerPlan): Promise<Bu
     buildings: plan.buildings || [],
     vehicle_meta: plan.vehicle_meta || {},
     customer_schedules: plan.customer_schedules || [],
+    deleted_invoice_ids: plan.deleted_invoice_ids || [],
     updated_at: new Date().toISOString(),
   };
   if (preserveEmpty && Array.isArray(existing?.invoices) && existing.invoices.length > 0 && payload.invoices.length === 0) {
