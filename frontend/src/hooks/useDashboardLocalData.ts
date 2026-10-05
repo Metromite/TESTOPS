@@ -109,7 +109,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
 
     void Promise.all(missingDrivers.map(loadOne)).then((remotes) => {
       if (seq !== driverFallbackSeq.current) return;
-      const valid = remotes.filter((remote): remote is T => !!remote && (Number((remote as any)?.kpis?.gps_vehicles || 0) > 0 || (Array.isArray((remote as any)?.route_cards) && (remote as any).route_cards.length > 0)));
+      const valid = remotes.filter((remote) => !!remote && (Number((remote as any)?.kpis?.gps_vehicles || 0) > 0 || (Array.isArray((remote as any)?.route_cards) && (remote as any).route_cards.length > 0)));
       if (!valid.length) {
         setDriverFallback(null);
         return;
