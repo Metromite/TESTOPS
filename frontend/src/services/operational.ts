@@ -213,16 +213,23 @@ export async function getExperienceSummary<T>(division:ExperienceDivision="Pharm
 function detailCacheKey(code:string,type:string,division:ExperienceDivision){return `${division}|${type}|${code}`;}
 
 async function fetchExperienceDetailPage(code:string,type:string,division:ExperienceDivision,offset:number,limit:number):Promise<{rows:any[];hasMore:boolean}> {
-  const clients=getFederatedSupabaseClients();
-  const results=await Promise.all(clients.map(async c=>{
+  // Experience history is a federated fact table owned by Primary + Secondary.
+  // Tertiary is not an Experience source; excluding it prevents a slow/empty
+  // third client from delaying the first popup. allSettled also lets valid data
+  // from the healthy project render immediately if the other project is slow.
+  const clients=getFederatedSupabaseClients().slice(0,2);
+  const results=await Promise.allSettled(clients.map(async c=>{
     let q=c.from("experience_history").select(EXPERIENCE_SELECT).eq("person_code",code).eq("person_type",type);
     q=experienceDivisionFilter(q,division).order("date",{ascending:false}).range(0,offset+limit-1);
     const {data,error}=await q;if(error)throw error;return data||[];
   }));
   const seen=new Map<string,any>();
-  for(const rows of results) for(const r of rows){
-    const key=`${String(r.person_code||"").toUpperCase()}|${String(r.person_type||"")}|${String(r.date||"").slice(0,10)}|${String(r.area_code||r.area||"").toUpperCase()}|${String(r.vehicle_number||"").toUpperCase().replace(/[^A-Z0-9]/g,"")}|${String(r.experience_division||r.experience_type||r.sector||"").toUpperCase()}`;
-    if(!seen.has(key)) seen.set(key,r);
+  for(const result of results){
+    if(result.status!=="fulfilled") continue;
+    for(const r of result.value){
+      const key=`${String(r.person_code||"").toUpperCase()}|${String(r.person_type||"")}|${String(r.date||"").slice(0,10)}|${String(r.area_code||r.area||"").toUpperCase()}|${String(r.vehicle_number||"").toUpperCase().replace(/[^A-Z0-9]/g,"")}|${String(r.experience_division||r.experience_type||r.sector||"").toUpperCase()}`;
+      if(!seen.has(key)) seen.set(key,r);
+    }
   }
   const rows=[...seen.values()].sort((a,b)=>String(b.date||"").localeCompare(String(a.date||"")));
   return {rows:rows.slice(offset,offset+limit),hasMore:rows.length>offset+limit};

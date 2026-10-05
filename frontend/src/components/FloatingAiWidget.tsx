@@ -7,11 +7,27 @@ interface PendingAction { tool: string; params: Record<string, any>; }
 interface Msg { role: "user" | "assistant"; content: string; meta?: string; pendingAction?: PendingAction; actionResult?: string; navigate_to?: string; }
 
 const LOGI_BOT_SCENE = "/scene-clean.splinecode";
-// Start fetching only the critical local mascot scene immediately. The chat orb is
-// CSS-only now, so it does not compete with Logi for network/GPU startup.
-if (typeof window !== "undefined") {
-  void fetch(LOGI_BOT_SCENE, { cache: "force-cache" }).catch(() => undefined);
-}
+const LOGI_ENGRAVING = "/logi-company-engraving.webp";
+const LOGI_MARK = "/city-pharmacy-logi-mark.png";
+
+// Warm both visual assets once at module load. The launcher is revealed only
+// after Spline is ready AND the external mark has finished decoding, so the
+// browser never paints the logo/head/body as separate startup stages.
+const LOGI_SCENE_PRELOAD = typeof window !== "undefined"
+  ? fetch(LOGI_BOT_SCENE, { cache: "force-cache" }).catch(() => undefined)
+  : Promise.resolve(undefined);
+const preloadImage = (src: string) => typeof window !== "undefined"
+  ? new Promise<void>((resolve) => {
+      const img = new Image();
+      img.decoding = "async";
+      img.onload = () => { void img.decode?.().catch?.(() => undefined).finally?.(() => resolve()); };
+      img.onerror = () => resolve();
+      img.src = src;
+      if (img.complete) resolve();
+    })
+  : Promise.resolve();
+const LOGI_ENGRAVING_PRELOAD = preloadImage(LOGI_ENGRAVING);
+const LOGI_MARK_PRELOAD = preloadImage(LOGI_MARK);
 
 function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: number; headOnly?: boolean; onReady?: () => void }) {
   const [sceneReady, setSceneReady] = useState(false);
@@ -185,18 +201,20 @@ function SplineLogiBot({ size = 250, headOnly = false, onReady }: { size?: numbe
       }
     });
 
-    // Start the authored animation immediately, then replay it periodically so
-    // the mascot's color/idle motion never freezes on its final state.
-    spline.play?.();
-    if (animationLoopRef.current !== null) window.clearInterval(animationLoopRef.current);
-    animationLoopRef.current = window.setInterval(() => spline.play?.(), 4200);
-
-    // Reveal the mascot scene and its company mark as one composed visual layer.
-    // Keep them synchronized so the logo never paints as a separate earlier/later state.
-    window.requestAnimationFrame(() => {
-      setSceneReady(true);
-      setEngravingReady(true);
-      onReady?.();
+    // Start the authored animation only after the browser has had a chance to
+    // finish the same startup frame used for the visual reveal. The launcher
+    // remains hidden until both the Spline scene and company mark are ready.
+    void Promise.all([LOGI_SCENE_PRELOAD, LOGI_ENGRAVING_PRELOAD, LOGI_MARK_PRELOAD]).then(() => {
+      spline.play?.();
+      if (animationLoopRef.current !== null) window.clearInterval(animationLoopRef.current);
+      animationLoopRef.current = window.setInterval(() => spline.play?.(), 4200);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          setSceneReady(true);
+          setEngravingReady(true);
+          onReady?.();
+        });
+      });
     });
   };
 

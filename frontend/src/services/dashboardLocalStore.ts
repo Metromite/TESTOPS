@@ -820,17 +820,33 @@ export function buildLocalDriverPerformance(rows: LocalSapRow[], routeCards: Rou
     // Safe fallback: same vehicle + same calendar month only. This handles
     // dispatch-vs-route day differences while still making August GPS
     // impossible to appear in a September selection.
-    const month = routeMonth(date);
-    const monthOwners = new Map<string, Owner>();
+    // SAP dispatch and GPS route dates can differ by a small calendar offset.
+    // Do not fall back to the whole month: when a vehicle has Driver A on one
+    // day and Driver B on another, a month-wide owner set becomes ambiguous and
+    // the old code dropped the route card entirely. Prefer the nearest SAP day
+    // (within +/- 2 days) and only accept a driver when that nearest day is
+    // unambiguous. This keeps the driver's real daily ownership intact.
+    const targetMs = Date.parse(`${date}T00:00:00Z`);
+    let bestDistance = Infinity;
+    const nearest = new Map<string, Owner>();
     for (const alias of aliases) {
       const byDate = ownership.get(alias);
       if (!byDate) continue;
       for (const [ownerDate, dayOwners] of byDate) {
-        if (routeMonth(ownerDate) !== month) continue;
-        for (const [id, owner] of dayOwners) monthOwners.set(id, owner);
+        const ownerMs = Date.parse(`${ownerDate}T00:00:00Z`);
+        if (!Number.isFinite(ownerMs) || !Number.isFinite(targetMs)) continue;
+        const distance = Math.abs(ownerMs - targetMs) / 86400000;
+        if (distance > 2) continue;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          nearest.clear();
+          for (const [id, owner] of dayOwners) nearest.set(id, owner);
+        } else if (distance === bestDistance) {
+          for (const [id, owner] of dayOwners) nearest.set(id, owner);
+        }
       }
     }
-    return monthOwners;
+    return nearest;
   };
 
   const driverMatches = (a: string, b: string) => {
