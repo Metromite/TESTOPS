@@ -679,6 +679,26 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
   const globalDrivers = new Map<string, { display: string }>();
   const sapByVehicleDayDriver = new Map<string, { invoices: number; boxes: number; freezer: number }>();
 
+  // Keep the Fleet master roster in the identity index as well as SAP.
+  // Some Landmark drivers are abbreviated (for example "Jamseer") while the
+  // Fleet/SAP identity is the full name ("Jamseer PV Ibrahim"). Using the
+  // canonical driver directory here prevents a real GPS driver from being
+  // dropped merely because his SAP rows were excluded by another dashboard
+  // dimension. This is read-only and scoped to Driver Performance matching.
+  try {
+    const { data: fleetDrivers, error: fleetDriverError } = await getPrimarySupabaseClient()
+      .from("drivers").select("code,name").order("name");
+    if (!fleetDriverError) {
+      for (const driver of fleetDrivers || []) {
+        const display = String(driver?.name || "").trim();
+        const identity = normalizeDriverIdentity(display);
+        if (identity) globalDrivers.set(identity, { display });
+      }
+    }
+  } catch {
+    // SAP remains the fallback identity roster if Fleet master data is unavailable.
+  }
+
   for (const row of dataset.rows) {
     const date = String(row.dispatch_date || "").slice(0, 10);
     const vehicle = normalizeMatchKey(row.vehicle_key || row.vehicle_num);
@@ -1005,8 +1025,16 @@ export function buildLocalDriverPerformance(rows: LocalSapRow[], routeCards: Rou
       const allowedDrivers = getOwners(aliases, date);
       const gpsDriver = String(card.display_driver || "").trim();
 
-      // Exact/fuzzy daily ownership wins. This keeps a shared vehicle tied to
-      // the driver who actually owned that route day.
+      // Cards produced by the Landmark hydration pass already carry an
+      // evidence-backed GPS identity. Never remap those cards back to a
+      // different SAP owner just because the same vehicle had another driver
+      // on another day. That re-mapping was one of the paths that turned real
+      // drivers into zero after the shared-vehicle reconstruction.
+      if (card.match_confidence === "daily-driver" || card.match_confidence === "gps-driver") {
+        return { ...card };
+      }
+
+      // Exact/fuzzy daily ownership wins for the original vehicle-level cards.
       const direct = [...allowedDrivers.entries()]
         .map(([id, owner]) => ({ id, owner, score: driverNameSimilarity(gpsDriver, owner.display) }))
         .sort((a, b) => b.score - a.score)[0];
