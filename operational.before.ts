@@ -212,66 +212,26 @@ export async function getExperienceSummary<T>(division:ExperienceDivision="Pharm
 
 function detailCacheKey(code:string,type:string,division:ExperienceDivision){return `${division}|${type}|${code}`;}
 
-async function fetchExperienceDetailFromClient(client:any,code:string,type:string,division:ExperienceDivision,offset:number,limit:number):Promise<any[]> {
-  let q=client.from("experience_history").select(EXPERIENCE_SELECT).eq("person_code",code).eq("person_type",type);
-  q=experienceDivisionFilter(q,division).order("date",{ascending:false}).range(0,offset+limit-1);
-  const {data,error}=await q;
-  if(error) throw error;
-  return data||[];
-}
-
-function mergeExperienceDetailRows(results:any[][]): any[] {
-  const seen=new Map<string,any>();
-  for(const rows of results) for(const r of rows){
-    const key=`${String(r.person_code||"").toUpperCase()}|${String(r.person_type||"")}|${String(r.date||"").slice(0,10)}|${String(r.area_code||r.area||"").toUpperCase()}|${String(r.vehicle_number||"").toUpperCase().replace(/[^A-Z0-9]/g,"")}|${String(r.experience_division||r.experience_type||r.sector||"").toUpperCase()}`;
-    if(!seen.has(key)) seen.set(key,r);
-  }
-  return [...seen.values()].sort((a,b)=>String(b.date||"").localeCompare(String(a.date||"")));
-}
-
 async function fetchExperienceDetailPage(code:string,type:string,division:ExperienceDivision,offset:number,limit:number):Promise<{rows:any[];hasMore:boolean}> {
-  // All configured federated projects remain in the read path. The important
-  // change is delivery timing: do not wait for the slowest project before the
-  // first useful rows can be shown. This keeps Primary -> Secondary -> Tertiary
-  // federation intact while eliminating the "click once, close, click again"
-  // cache-warming symptom.
-  const clients=getFederatedSupabaseClients();
-  const requests=clients.map(client=>fetchExperienceDetailFromClient(client,code,type,division,offset,limit));
-
-  if(offset>0){
-    const results=await Promise.allSettled(requests);
-    const fulfilled=results.filter((r): r is PromiseFulfilledResult<any[]>=>r.status==="fulfilled").map(r=>r.value);
-    const rows=mergeExperienceDetailRows(fulfilled);
-    return {rows:rows.slice(offset,offset+limit),hasMore:rows.length>offset+limit};
-  }
-
-  const firstUsefulRows = await new Promise<any[]>((resolve) => {
-    let settled=0;
-    let resolved=false;
-    for(const request of requests){
-      request.then(rows=>{
-        settled += 1;
-        if(!resolved && rows.length){ resolved=true; resolve(rows); }
-        else if(!resolved && settled===requests.length){ resolved=true; resolve([]); }
-      }).catch(()=>{
-        settled += 1;
-        if(!resolved && settled===requests.length){ resolved=true; resolve([]); }
-      });
+  // Experience history is a federated fact table owned by Primary + Secondary.
+  // Tertiary is not an Experience source; excluding it prevents a slow/empty
+  // third client from delaying the first popup. allSettled also lets valid data
+  // from the healthy project render immediately if the other project is slow.
+  const clients=getFederatedSupabaseClients().slice(0,2);
+  const results=await Promise.allSettled(clients.map(async c=>{
+    let q=c.from("experience_history").select(EXPERIENCE_SELECT).eq("person_code",code).eq("person_type",type);
+    q=experienceDivisionFilter(q,division).order("date",{ascending:false}).range(0,offset+limit-1);
+    const {data,error}=await q;if(error)throw error;return data||[];
+  }));
+  const seen=new Map<string,any>();
+  for(const result of results){
+    if(result.status!=="fulfilled") continue;
+    for(const r of result.value){
+      const key=`${String(r.person_code||"").toUpperCase()}|${String(r.person_type||"")}|${String(r.date||"").slice(0,10)}|${String(r.area_code||r.area||"").toUpperCase()}|${String(r.vehicle_number||"").toUpperCase().replace(/[^A-Z0-9]/g,"")}|${String(r.experience_division||r.experience_type||r.sector||"").toUpperCase()}`;
+      if(!seen.has(key)) seen.set(key,r);
     }
-    if(!requests.length) resolve([]);
-  });
-
-  // Merge all three sources in the background. The first click already has
-  // useful data; later opens use the complete federated cache.
-  void Promise.allSettled(requests).then(results=>{
-    const fulfilled=results.filter((r): r is PromiseFulfilledResult<any[]>=>r.status==="fulfilled").map(r=>r.value);
-    if(!fulfilled.length) return;
-    const merged=mergeExperienceDetailRows(fulfilled);
-    const key=detailCacheKey(code,type,division);
-    experienceDetailMemory.set(key,{rows:merged.slice(0,100),hasMore:merged.length>100});
-  });
-
-  const rows=mergeExperienceDetailRows([firstUsefulRows]);
+  }
+  const rows=[...seen.values()].sort((a,b)=>String(b.date||"").localeCompare(String(a.date||"")));
   return {rows:rows.slice(offset,offset+limit),hasMore:rows.length>offset+limit};
 }
 
@@ -282,7 +242,7 @@ export async function prefetchExperienceDetail(code:string,type:string,division:
   if(existing){ await existing; return; }
   const promise=fetchExperienceDetailPage(code,type,division,0,100).then(page=>{
     experienceDetailMemory.set(key,page);
-  }).finally(()=>experienceDetailRefresh.delete(key));
+  }).finally(()=>experienceDetailRefresh.set(key,null));
   experienceDetailRefresh.set(key,promise);
   await promise;
 }

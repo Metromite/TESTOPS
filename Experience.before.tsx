@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getRole } from "../api/client";
 import { getExperienceDetailPage, getExperienceSuggestions, getExperienceSummary, getCachedExperienceSummary, refreshExperienceSummary, prefetchExperienceDetail } from "../services/operational";
 import { processExperienceExport, importExperienceDataExport, exportExperienceData, resetExperiencePeriod, resetAllExperienceData, type ImportProgress } from "../services/importEngine";
@@ -20,7 +20,6 @@ export default function Experience() {
   const [typeFilter,setTypeFilter]=useState(""); const [search,setSearch]=useState(""); const [suggestions,setSuggestions]=useState<Suggestion[]>([]); const [showSuggestions,setShowSuggestions]=useState(false);
   const [error,setError]=useState(""); const [uploadProgress,setUploadProgress]=useState<ImportProgress|null>(null); const [exporting,setExporting]=useState(false);
   const [experienceLoadProgress,setExperienceLoadProgress]=useState(0);
-  const detailRequestId=useRef(0);
   const isAdmin = getRole() === "admin"; const [uploading,setUploading]=useState(false); const [uploadMode,setUploadMode]=useState<"sap"|"backup">("sap");
 
   async function loadSummary(nextDivision:Division=division, forceRefresh=false){
@@ -72,19 +71,12 @@ export default function Experience() {
   }
 
   async function openDetail(code:string,type:string,name:string){
-    const requestId=++detailRequestId.current;
     setSelected({code,type,name}); setDetail([]); setDetailRaw([]); setDetailOffset(0); setDetailHasMore(false); setDetailLoading(true); setError("");
     try{
       const page=await getExperienceDetailPage<DetailRow>(code,type,division,0,DETAIL_PAGE_SIZE);
-      // Only the latest click may commit async data to the visible popup.
-      // This prevents a slower earlier request from winning a race after the
-      // user switches between people quickly.
-      if(requestId!==detailRequestId.current) return;
       setDetailRaw(page.rows); setDetail(shapeDetailRows(page.rows)); setDetailOffset(page.rows.length); setDetailHasMore(page.hasMore);
-    }catch(e:any){
-      if(requestId===detailRequestId.current) setError(e?.message||String(e));
-    }
-    finally{if(requestId===detailRequestId.current) setDetailLoading(false)}
+    }catch(e:any){setError(e?.message||String(e));}
+    finally{setDetailLoading(false)}
   }
 
   async function loadMoreDetail(){
