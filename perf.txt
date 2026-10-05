@@ -1,0 +1,421 @@
+    let diagonal = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const above = prev[j];
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diagonal + cost);
+      diagonal = above;
+    }
+  }
+  return 1 - prev[b.length] / Math.max(a.length, b.length);
+}
+
+function driverNameSimilarity(a: string, b: string): number {
+  const left = normalizeDriverIdentity(a);
+  const right = normalizeDriverIdentity(b);
+  if (!left || !right) return 0;
+  if (left === right) return 1;
+  const lt = left.split(/[^a-z0-9]+/i).filter(Boolean);
+  const rt = right.split(/[^a-z0-9]+/i).filter(Boolean);
+  if (!lt.length || !rt.length) return 0;
+  const source = lt.length <= rt.length ? lt : rt;
+  const target = lt.length <= rt.length ? rt : lt;
+  const scores = source.map(token => Math.max(...target.map(other => tokenEditSimilarity(token, other))));
+  const score = scores.reduce((sum, value) => sum + value, 0) / scores.length;
+  const compactLeft = normalizeMatchKey(left);
+  const compactRight = normalizeMatchKey(right);
+  if (compactLeft && compactRight && (compactLeft.startsWith(compactRight) || compactRight.startsWith(compactLeft))) {
+    return Math.max(0.92, score);
+  }
+  return score;
+}
+
+function resolveDriverName(candidate: string, preferred: Map<string, { display: string }>, global: Map<string, { display: string }>): { display: string; score: number } | null {
+  const normalized = normalizeDriverIdentity(candidate);
+  if (!normalized || normalized === "unknown" || normalized === "[ unknown ]") return null;
+  const exact = preferred.get(normalized);
+  if (exact) return { display: exact.display, score: 1 };
+
+  const pickBest = (items: { display: string }[]) => {
+    let best: { display: string; score: number } | null = null;
+    let second = 0;
+    for (const item of items) {
+      const score = driverNameSimilarity(candidate, item.display);
+      if (score > (best?.score || 0)) {
+        second = best?.score || 0;
+        best = { display: item.display, score };
+      } else if (score > second) {
+        second = score;
+      }
+    }
+    const singleToken = normalized.split(/[^a-z0-9]+/i).filter(Boolean).length === 1;
+    const threshold = singleToken ? 0.78 : 0.82;
+    return best && best.score >= threshold && (best.score - second >= 0.12 || best.score >= 0.92) ? best : null;
+  };
+
+  // When SAP has exactly one owner for this vehicle/day, that owner is the
+  // authoritative delivery driver even if Landmark's text contains a short or
+  // stale name. This is what prevents a real SAP driver from becoming zero.
+  if (preferred.size === 1) return { display: [...preferred.values()][0].display, score: 1 };
+  // With multiple SAP owners on the same day, require GPS to distinguish them;
+  // never let a different-day/global driver steal the route.
+  if (preferred.size > 1) return pickBest([...preferred.values()]);
+  return pickBest([...global.values()]);
+}
+
+let sharedVehicleHydrationKey = "";
+let sharedVehicleHydrationPromise: Promise<void> | null = null;
+
+async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, start: string, end: string): Promise<void> {
+  const periodStart = String(start || "");
+  const periodEnd = String(end || "");
+  if (!periodStart && !periodEnd) return;
+  const key = `${periodStart}::${periodEnd}`;
+  if (sharedVehicleHydrationKey === key || sharedVehicleHydrationPromise) return;
+
+  // SAP is the order/driver roster and Landmark is the actual GPS route stream.
+  // Build ownership by vehicle + day, but never collapse a vehicle to one driver.
+  type Owner = { display: string; identity: string; invoices: number; boxes: number; freezer: number };
+  const ownersByVehicleDay = new Map<string, Map<string, Map<string, Owner>>>();
+  const globalDrivers = new Map<string, { display: string }>();
+  const sapByVehicleDayDriver = new Map<string, { invoices: number; boxes: number; freezer: number }>();
+
+  for (const row of dataset.rows) {
+    const date = String(row.dispatch_date || "").slice(0, 10);
+    const vehicle = normalizeMatchKey(row.vehicle_key || row.vehicle_num);
+    const identity = normalizeDriverIdentity(row.driver_name);
+    if (!date || !vehicle || !identity || (periodStart && date < periodStart) || (periodEnd && date > periodEnd)) continue;
+    const display = String(row.driver_name || identity).trim() || identity;
+    globalDrivers.set(identity, { display });
+    const byDate = ownersByVehicleDay.get(vehicle) || new Map<string, Map<string, Owner>>();
+    const byDriver = byDate.get(date) || new Map<string, Owner>();
+    const owner = byDriver.get(identity) || { display, identity, invoices: 0, boxes: 0, freezer: 0 };
+    owner.invoices += 1;
+    owner.boxes += Number(row.boxes || 0);
+    owner.freezer += Number(row.freezer_boxes || 0);
+    byDriver.set(identity, owner);
+    byDate.set(date, byDriver);
+    ownersByVehicleDay.set(vehicle, byDate);
+
+    const sapKey = `${vehicle}::${date}::${identity}`;
+    const sap = sapByVehicleDayDriver.get(sapKey) || { invoices: 0, boxes: 0, freezer: 0 };
+    sap.invoices += 1;
+    sap.boxes += Number(row.boxes || 0);
+    sap.freezer += Number(row.freezer_boxes || 0);
+    sapByVehicleDayDriver.set(sapKey, sap);
+  }
+
+  const sharedVehicles = [...ownersByVehicleDay.entries()]
+    .filter(([, byDate]) => [...byDate.values()].some((drivers) => drivers.size > 1) || byDate.size > 1)
+    .map(([vehicle]) => vehicle);
+  if (!sharedVehicles.length) { sharedVehicleHydrationKey = key; return; }
+
+  sharedVehicleHydrationPromise = (async () => {
+    try {
+      const clients = getFederatedSupabaseClients();
+      const lmRows: any[] = [];
+      const chunks: string[][] = [];
+      for (let i = 0; i < sharedVehicles.length; i += 80) chunks.push(sharedVehicles.slice(i, i + 80));
+
+      // Read all federated GPS sources. No database/schema changes are involved.
+      for (const client of clients) {
+        for (const chunk of chunks) {
+          let q = client.from("landmark_visit_facts")
+            .select("vehicle_key,vehicle_raw,driver_name,visit_date,arrival,departure,minutes,is_passthrough,is_depot")
+            .in("vehicle_key", chunk);
+          if (periodStart) q = q.gte("visit_date", periodStart);
+          if (periodEnd) q = q.lte("visit_date", periodEnd);
+          const { data, error } = await q;
+          if (error) throw new Error(error.message);
+          lmRows.push(...(data || []));
+        }
+      }
+
+      const parseTime = (value: unknown) => {
+        const t = Date.parse(String(value || ""));
+        return Number.isFinite(t) ? t : null;
+      };
+      type GpsBucket = {
+        vehicle: string; date: string; rawDriver: string; vehicle_raw: string;
+        stops: number; passthru: number; stopMinutes: number;
+        routeStart: number | null; routeEnd: number | null;
+      };
+      const gps = new Map<string, GpsBucket>();
+      for (const row of lmRows) {
+        const vehicle = normalizeMatchKey(row.vehicle_key);
+        const date = String(row.visit_date || "").slice(0, 10);
+        if (!vehicle || !date) continue;
+        const rawDriver = normalizeDriverIdentity(row.driver_name) || "unknown";
+        const k = `${vehicle}::${date}::${rawDriver}`;
+        const item = gps.get(k) || {
+          vehicle, date, rawDriver, vehicle_raw: String(row.vehicle_raw || ""),
+          stops: 0, passthru: 0, stopMinutes: 0, routeStart: null, routeEnd: null,
+        };
+        const isPass = Boolean(row.is_passthrough);
+        const isDepot = Boolean(row.is_depot);
+        const minutes = Number(row.minutes || 0);
+        if (isPass) item.passthru += 1;
+        if (!isPass && !isDepot) {
+          item.stops += 1;
+          item.stopMinutes += Number.isFinite(minutes) ? minutes : 0;
+        }
+        const ts = parseTime(row.departure || row.arrival);
+        if (ts !== null && isDepot) item.routeStart = item.routeStart === null ? ts : Math.min(item.routeStart, ts);
+        if (ts !== null && !isPass && !isDepot) item.routeEnd = item.routeEnd === null ? ts : Math.max(item.routeEnd, ts);
+        gps.set(k, item);
+      }
+
+      // Resolve every GPS driver/day independently. This is the key fix:
+      // vehicle identity is no longer the driver identity. A shared vehicle can
+      // therefore produce multiple route cards on the same day when GPS names
+      // identify different drivers/times.
+      const resolved = new Map<string, RouteCard>();
+      for (const item of gps.values()) {
+        const owners = ownersByVehicleDay.get(item.vehicle)?.get(item.date) || new Map<string, Owner>();
+        const preferred = new Map<string, { display: string }>();
+        for (const owner of owners.values()) preferred.set(owner.identity, { display: owner.display });
+        const match = resolveDriverName(item.rawDriver, preferred, globalDrivers);
+        let displayDriver = match?.display || "";
+        if (!displayDriver && owners.size === 1 && (item.rawDriver === "unknown" || item.rawDriver === "[ unknown ]")) {
+          displayDriver = [...owners.values()][0].display;
+        }
+        if (!displayDriver) continue;
+
+        const displayIdentity = normalizeDriverIdentity(displayDriver);
+        const sap = sapByVehicleDayDriver.get(`${item.vehicle}::${item.date}::${displayIdentity}`) || { invoices: 0, boxes: 0, freezer: 0 };
+        const hours = item.routeStart !== null && item.routeEnd !== null && item.routeEnd >= item.routeStart
+          ? (item.routeEnd - item.routeStart) / 3600000 : 0;
+        const avgStop = item.stops ? item.stopMinutes / item.stops : 0;
+        const cardKey = `${item.vehicle}::${item.date}::${displayIdentity}`;
+        const existing = resolved.get(cardKey);
+        if (existing) {
+          const existingHours = (() => {
+            const m = String(existing.route_duration_hm || "").match(/(\d+)h\s+(\d+)m/);
+            return m ? Number(m[1]) + Number(m[2]) / 60 : 0;
+          })();
+          const mergedStops = Number(existing.stops || 0) + item.stops;
+          const mergedMinutes = Number(existing.avg_stop_hm?.match?.(/(\d+)h\s+(\d+)m/)?.[1] || 0) * 60 + Number(existing.avg_stop_hm?.match?.(/(\d+)h\s+(\d+)m/)?.[2] || 0);
+          const totalStopMinutes = mergedStops ? (mergedMinutes * Number(existing.stops || 0) + item.stopMinutes) / mergedStops : 0;
+          resolved.set(cardKey, {
+            ...existing,
+            route_start: existing.route_start && item.routeStart !== null ? new Date(Math.min(Date.parse(existing.route_start), item.routeStart)).toISOString() : existing.route_start,
+            route_end: existing.route_end && item.routeEnd !== null ? new Date(Math.max(Date.parse(existing.route_end), item.routeEnd)).toISOString() : existing.route_end,
+            route_duration_hm: `${Math.floor(Math.max(existingHours, hours))}h ${Math.floor((Math.max(existingHours, hours) * 60) % 60)}m`,
+            stops: mergedStops,
+            avg_stop_hm: `${Math.floor(totalStopMinutes / 60)}h ${Math.floor(totalStopMinutes % 60)}m`,
+            passthru_count: Number(existing.passthru_count || 0) + item.passthru,
+            sap_orders: sap,
+          });
+        } else {
+          resolved.set(cardKey, {
+            vehicle_key: item.vehicle,
+            vehicle_num: item.vehicle_raw || item.vehicle,
+            vehicle_model: "",
+            display_driver: displayDriver,
+            match_method: "vehicle",
+            match_confidence: match && match.score >= 0.9 ? "daily-driver" : "gps-driver",
+            route_start: item.routeStart !== null ? new Date(item.routeStart).toISOString() : `${item.date}T00:00:00.000Z`,
+            route_end: item.routeEnd !== null ? new Date(item.routeEnd).toISOString() : `${item.date}T00:00:00.000Z`,
+            route_duration_hm: `${Math.floor(hours)}h ${Math.floor((hours * 60) % 60)}m`,
+            stops: item.stops,
+            avg_stop_hm: `${Math.floor(avgStop / 60)}h ${Math.floor(avgStop % 60)}m`,
+            passthru_count: item.passthru,
+            sap_orders: sap,
+          });
+        }
+      }
+
+      // Replace vehicle-level cards only for shared vehicles/days for which we
+      // have a driver-aware GPS reconstruction. All unrelated cards stay intact.
+      const covered = new Set([...resolved.values()].map((card) => `${normalizeMatchKey(card.vehicle_key)}::${String(card.route_start || card.route_end).slice(0, 10)}`));
+      const next: RouteCard[] = [];
+      for (const base of dataset.routeCards) {
+        const vehicle = normalizeMatchKey(base.vehicle_key || base.vehicle_num);
+        const date = String(base.route_start || base.route_end || "").slice(0, 10);
+        if (vehicle && date && sharedVehicles.includes(vehicle) && covered.has(`${vehicle}::${date}`)) continue;
+        next.push(base);
+      }
+      next.push(...resolved.values());
+      next.sort((a, b) => String(b.route_start || "").localeCompare(String(a.route_start || "")));
+      dataset.routeCards = next;
+      baseRouteCards = [...next];
+      sharedVehicleHydrationKey = key;
+      emit();
+    } catch {
+      // Optional driver-aware enrichment must never break the working Dashboard.
+      sharedVehicleHydrationKey = key;
+    } finally {
+      sharedVehicleHydrationPromise = null;
+    }
+  })();
+  await sharedVehicleHydrationPromise;
+}
+
+export function buildLocalDriverPerformance(rows: LocalSapRow[], routeCards: RouteCard[], gf?: GlobalFilters, ownershipRows: LocalSapRow[] = rows): PerfData {
+  // Keep the important fix from V13.6.63: GPS is NEVER allowed to fall back
+  // into another month. The matching below is simply more tolerant INSIDE the
+  // selected period so SAP/Overview and GPS can still be joined when their
+  // vehicle_key, vehicle number, driver spelling, or exact route day differs.
+  //
+  // We index SAP ownership by both vehicle_key and vehicle_num, then by exact
+  // date and by month. Exact date is preferred; month is the safe fallback when
+  // the GPS route date and SAP dispatch date are not the same day.
+  type Owner = { identity: string; display: string };
+  // Simpler secondary index: vehicle alias -> date -> unique driver owners.
+  const ownership = new Map<string, Map<string, Map<string, Owner>>>();
+  const addOwnership = (vehicleAlias: string, date: string, owner: Owner) => {
+    const alias = normalizeMatchKey(vehicleAlias);
+    if (!alias || !date || !owner.identity) return;
+    const byDate = ownership.get(alias) || new Map<string, Map<string, Owner>>();
+    const byDriver = byDate.get(date) || new Map<string, Owner>();
+    byDriver.set(owner.identity, owner);
+    byDate.set(date, byDriver);
+    ownership.set(alias, byDate);
+  };
+
+  for (const row of ownershipRows) {
+    const date = String(row.dispatch_date || "").slice(0, 10);
+    const identity = normalizeDriverIdentity(row.driver_name);
+    if (!date || !identity) continue;
+    const owner = { identity, display: String(row.driver_name || "").trim() || identity };
+    addOwnership(row.vehicle_key, date, owner);
+    addOwnership(row.vehicle_num, date, owner);
+  }
+
+  const selectedStart = String(gf?.start_date || "");
+  const selectedEnd = String(gf?.end_date || "");
+
+  const inSelectedPeriod = (date: string) => {
+    if (!date) return false;
+    if (selectedStart && date < selectedStart) return false;
+    if (selectedEnd && date > selectedEnd) return false;
+    return true;
+  };
+
+  const getOwners = (aliases: string[], date: string): Map<string, Owner> => {
+    // First try the exact GPS route day across all known vehicle aliases.
+    const exact = new Map<string, Owner>();
+    for (const alias of aliases) {
+      const byDate = ownership.get(alias);
+      const dayOwners = byDate?.get(date);
+      if (dayOwners) for (const [id, owner] of dayOwners) exact.set(id, owner);
+    }
+    if (exact.size) return exact;
+
+    // Safe fallback: same vehicle + same calendar month only. This handles
+    // dispatch-vs-route day differences while still making August GPS
+    // impossible to appear in a September selection.
+    // SAP dispatch and GPS route dates can differ by a small calendar offset.
+    // Do not fall back to the whole month: when a vehicle has Driver A on one
+    // day and Driver B on another, a month-wide owner set becomes ambiguous and
+    // the old code dropped the route card entirely. Prefer the nearest SAP day
+    // (within +/- 2 days) and only accept a driver when that nearest day is
+    // unambiguous. This keeps the driver's real daily ownership intact.
+    const targetMs = Date.parse(`${date}T00:00:00Z`);
+    let bestDistance = Infinity;
+    const nearest = new Map<string, Owner>();
+    for (const alias of aliases) {
+      const byDate = ownership.get(alias);
+      if (!byDate) continue;
+      for (const [ownerDate, dayOwners] of byDate) {
+        const ownerMs = Date.parse(`${ownerDate}T00:00:00Z`);
+        if (!Number.isFinite(ownerMs) || !Number.isFinite(targetMs)) continue;
+        const distance = Math.abs(ownerMs - targetMs) / 86400000;
+        if (distance > 2) continue;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          nearest.clear();
+          for (const [id, owner] of dayOwners) nearest.set(id, owner);
+        } else if (distance === bestDistance) {
+          for (const [id, owner] of dayOwners) nearest.set(id, owner);
+        }
+      }
+    }
+    return nearest;
+  };
+
+  const driverMatches = (a: string, b: string) => {
+    const left = normalizeDriverIdentity(a);
+    const right = normalizeDriverIdentity(b);
+    if (!left || !right) return false;
+    if (left === right) return true;
+    const compactLeft = normalizeMatchKey(left);
+    const compactRight = normalizeMatchKey(right);
+    return !!compactLeft && !!compactRight && compactLeft === compactRight;
+  };
+
+  const selectedDrivers = new Set(
+    String(gf?.drivers || "")
+      .split(",")
+      .map((value) => normalizeDriverIdentity(value))
+      .filter(Boolean)
+  );
+
+  const cards = routeCards
+    .filter((card) => {
+      const date = String(card.route_start || card.route_end || "").slice(0, 10);
+      return inSelectedPeriod(date);
+    })
+    .map((card) => {
+      const date = String(card.route_start || card.route_end || "").slice(0, 10);
+      const aliases = [card.vehicle_key, card.vehicle_num]
+        .map(normalizeMatchKey)
+        .filter(Boolean);
+      if (!date || !aliases.length) return null;
+
+      const allowedDrivers = getOwners(aliases, date);
+      const gpsDriver = String(card.display_driver || "").trim();
+
+      // Exact/fuzzy daily ownership wins. This keeps a shared vehicle tied to
+      // the driver who actually owned that route day.
+      const direct = [...allowedDrivers.entries()]
+        .map(([id, owner]) => ({ id, owner, score: driverNameSimilarity(gpsDriver, owner.display) }))
+        .sort((a, b) => b.score - a.score)[0];
+      if (direct && direct.score >= 0.5) return { ...card, display_driver: direct.owner.display };
+
+      // If GPS carries a short/variant name, resolve it against the complete
+      // SAP roster rather than dropping the card just because the spelling is
+      // different (e.g. "Shabeer Ali" vs "Shabeer Ali A.Rahman").
+      if (gpsDriver) {
+        const roster = new Map<string, Owner>();
+        for (const row of ownershipRows) {
+          const id = normalizeDriverIdentity(row.driver_name);
+          if (!id || roster.has(id)) continue;
+          roster.set(id, { identity: id, display: String(row.driver_name || id).trim() || id });
+        }
+        const resolved = resolveDriverName(gpsDriver, new Map(), new Map([...roster.entries()].map(([id, owner]) => [id, { display: owner.display }])));
+        if (resolved) return { ...card, display_driver: resolved.display };
+      }
+
+      // A single daily SAP owner is still a safe fallback for GPS rows whose
+      // driver field is blank/unknown. Never borrow a driver from another day.
+      if (allowedDrivers.size === 1) {
+        const owner = [...allowedDrivers.values()][0];
+        return { ...card, display_driver: owner.display };
+      }
+
+      // Do not throw away a real GPS route card. Keeping it visible is safer
+      // than turning a real driver's performance into a false zero.
+      return { ...card };
+    })
+    .filter((card): card is RouteCard => Boolean(card))
+    // Apply the Driver slicer only after the GPS/SAP driver identity has been
+    // resolved. Otherwise a valid GPS alias can be filtered out before it gets
+    // mapped to the selected SAP driver name.
+    .filter((card) => !selectedDrivers.size || selectedDrivers.has(normalizeDriverIdentity(card.display_driver)));
+
+  const stops=cards.reduce((n,r)=>n+Number(r.stops||0),0);
+  const hours=cards.map(r=>{const m=String(r.route_duration_hm||"").match(/(\d+)h\s+(\d+)m/);return m?Number(m[1])+Number(m[2])/60:0;}).filter(n=>n>0);
+  const driverMap=new Map<string,{stops:number;hours:number}>();
+  for(const r of cards){const d=String(r.display_driver||"Unknown").trim()||"Unknown";const x=driverMap.get(d)||{stops:0,hours:0};x.stops+=Number(r.stops||0);const m=String(r.route_duration_hm||"").match(/(\d+)h\s+(\d+)m/);if(m)x.hours+=Number(m[1])+Number(m[2])/60;driverMap.set(d,x);}
+  const chart=[...driverMap.entries()].map(([driver,v])=>({driver,stops:v.stops,hours:round(v.hours)})).sort((a,b)=>b.stops-a.stops);
+  return {standalone_mode:false,validation_results:[],kpis:{gps_vehicles:cards.length,total_gps_stops:stops,avg_stops_per_vehicle:cards.length?round(stops/cards.length):0,avg_route_duration_hrs:hours.length?round(hours.reduce((a,b)=>a+b,0)/hours.length):null,avg_stop_duration:"",sap_orders:rows.length,sap_total_boxes:rows.reduce((n,r)=>n+r.boxes,0)},chart_stops:{labels:chart.map(x=>x.driver),values:chart.map(x=>x.stops)},chart_route_hours:{labels:chart.map(x=>x.driver),values:chart.map(x=>x.hours)},route_cards:cards};
+}
+
+export function buildLocalForEndpoint(endpoint: string, dataset: DashboardLocalDataset, gf?: GlobalFilters): any {
+  const rows=filterDashboardRows(dataset,gf); const e=endpoint.replace(/^\//,"");
+  if(e.includes("driver-performance")) return buildLocalDriverPerformance(rows,dataset.routeCards,gf,dataset.rows);
+  if(e.includes("lead-time")) return buildLocalLeadTime(rows, gf);
+  if(e.includes("order-summary")) return buildLocalOrderSummary(rows);
+  if(e.includes("area-analytics")) return buildLocalArea(rows);
+  if(e.includes("not-supplied")) return buildLocalNotSupplied(rows);

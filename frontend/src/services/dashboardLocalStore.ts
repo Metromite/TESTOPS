@@ -709,24 +709,44 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
     .map(([vehicle]) => vehicle);
   if (!sharedVehicles.length) { sharedVehicleHydrationKey = key; return; }
 
+  // IMPORTANT: `sharedVehicles` is an internal normalized key (lowercase,
+  // punctuation removed). Supabase equality on vehicle_key is case-sensitive.
+  // The previous implementation sent those normalized keys directly to `.in`,
+  // so values such as `o72506` did not match the stored `O72506` rows. That
+  // silently left the app with the old 25-driver vehicle snapshot. Keep the
+  // normalized key for maps, but query the original database values.
+  const sharedVehicleDbKeys = [...new Set(
+    dataset.rows
+      .filter(row => sharedVehicles.includes(normalizeMatchKey(row.vehicle_key || row.vehicle_num)))
+      .map(row => String(row.vehicle_key || row.vehicle_num || '').trim())
+      .filter(Boolean)
+  )];
+
   sharedVehicleHydrationPromise = (async () => {
     try {
       const clients = getFederatedSupabaseClients();
       const lmRows: any[] = [];
       const chunks: string[][] = [];
-      for (let i = 0; i < sharedVehicles.length; i += 80) chunks.push(sharedVehicles.slice(i, i + 80));
+      for (let i = 0; i < sharedVehicleDbKeys.length; i += 80) chunks.push(sharedVehicleDbKeys.slice(i, i + 80));
 
-      // Read all federated GPS sources. No database/schema changes are involved.
+      // Read all federated GPS sources. A single project/chunk must never
+      // abort the driver reconstruction for the other projects. This is
+      // especially important for the Primary -> Secondary -> Tertiary model:
+      // one empty/slow/unavailable overflow project must not erase valid GPS
+      // cards that already exist in another project.
       for (const client of clients) {
         for (const chunk of chunks) {
           let q = client.from("landmark_visit_facts")
-            .select("vehicle_key,vehicle_raw,driver_name,visit_date,arrival,departure,minutes,is_passthrough,is_depot")
+            .select("vehicle_key,vehicle_raw,driver_name,customer_name,visit_date,arrival,departure,minutes,is_passthrough,is_depot")
             .in("vehicle_key", chunk);
           if (periodStart) q = q.gte("visit_date", periodStart);
           if (periodEnd) q = q.lte("visit_date", periodEnd);
-          const { data, error } = await q;
-          if (error) throw new Error(error.message);
-          lmRows.push(...(data || []));
+          try {
+            const { data, error } = await q;
+            if (!error) lmRows.push(...(data || []));
+          } catch {
+            // Keep the successful federated sources.
+          }
         }
       }
 
@@ -821,6 +841,47 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
             passthru_count: item.passthru,
             sap_orders: sap,
           });
+        }
+      }
+
+      // Recovery layer: the old dashboard legitimately showed GPS performance
+      // for a SAP driver when the vehicle-level GPS card existed, even if the
+      // GPS driver label could not be matched to that SAP name. Do not lose that
+      // driver completely just because a shared-vehicle day is ambiguous.
+      // Prefer the reconstructed driver-aware card above; only create this
+      // fallback for SAP drivers that have no reconstructed card at all. This
+      // preserves the previous non-zero behavior while still using day-level
+      // ownership whenever we have enough evidence to split the route.
+      const representedDrivers = new Set([...resolved.values()]
+        .map(card => normalizeDriverIdentity(card.display_driver))
+        .filter(Boolean));
+      const fallbackDrivers = new Set<string>();
+      for (const [vehicle, byDate] of ownersByVehicleDay) {
+        for (const [date, owners] of byDate) {
+          for (const owner of owners.values()) {
+            if (representedDrivers.has(owner.identity) || fallbackDrivers.has(owner.identity)) continue;
+            const candidates = dataset.routeCards.filter(card => {
+              const cardVehicle = normalizeMatchKey(card.vehicle_key || card.vehicle_num);
+              return cardVehicle === vehicle;
+            });
+            if (!candidates.length) continue;
+            // The base RPC card is period-level vehicle GPS performance, so it
+            // is still a valid recovery source when the exact shared day could
+            // not be split by GPS driver identity. Prefer the strongest card.
+            const base = [...candidates].sort((a,b) => Number(b.stops||0) - Number(a.stops||0))[0];
+            resolved.set(`${vehicle}::${date}::${owner.identity}::fallback`, {
+              ...base,
+              display_driver: owner.display,
+              match_method: "vehicle",
+              match_confidence: "sap-vehicle-fallback",
+              sap_orders: {
+                invoices: owner.invoices,
+                boxes: owner.boxes,
+                freezer: owner.freezer,
+              },
+            });
+            fallbackDrivers.add(owner.identity);
+          }
         }
       }
 
