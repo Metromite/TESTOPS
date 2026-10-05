@@ -67,7 +67,7 @@ const LOCAL_DB_NAME = "dispatchops-dashboard-local-v3";
 const LOCAL_DB_STORE = "dataset";
 const LOCAL_DB_KEY = "all-history";
 const LOCAL_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
-const LOCAL_DATASET_VERSION = 2;
+const LOCAL_DATASET_VERSION = 3;
 
 function openLocalDb(): Promise<IDBDatabase | null> {
   if (typeof indexedDB === "undefined") return Promise.resolve(null);
@@ -794,7 +794,16 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
         const owners = ownersByVehicleDay.get(item.vehicle)?.get(item.date) || new Map<string, Owner>();
         const preferred = new Map<string, { display: string }>();
         for (const owner of owners.values()) preferred.set(owner.identity, { display: owner.display });
-        const match = resolveDriverName(item.rawDriver, preferred, globalDrivers);
+        // Landmark's driver name is a direct GPS identity signal. When it
+        // matches a known SAP/Fleet driver (including shortened names such as
+        // "Jamseer" -> "Jamseer PV Ibrahim"), prefer that identity even if
+        // the same vehicle has a different SAP owner on that calendar day.
+        // This is important for real shared-vehicle cases: GPS must not be
+        // discarded merely because SAP assignment was stale or delayed.
+        const globalMatch = resolveDriverName(item.rawDriver, new Map(), globalDrivers);
+        const match = globalMatch && globalMatch.score >= 0.9
+          ? globalMatch
+          : resolveDriverName(item.rawDriver, preferred, globalDrivers);
         let displayDriver = match?.display || "";
         if (!displayDriver && owners.size === 1 && (item.rawDriver === "unknown" || item.rawDriver === "[ unknown ]")) {
           displayDriver = [...owners.values()][0].display;
@@ -863,8 +872,12 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
       }
       next.push(...resolved.values());
       next.sort((a, b) => String(b.route_start || "").localeCompare(String(a.route_start || "")));
-      dataset.routeCards = next;
-      baseRouteCards = [...next];
+      // IMPORTANT: useSyncExternalStore compares snapshots by identity. The
+      // previous code mutated `dataset.routeCards` in place and emitted the
+      // same object, so React could keep rendering the old zero-result snapshot
+      // even though GPS hydration had already produced the correct cards.
+      // Publish a NEW dataset object and keep baseRouteCards immutable.
+      current = { ...dataset, routeCards: next };
       sharedVehicleHydrationKey = key;
       emit();
     } catch {

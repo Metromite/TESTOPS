@@ -282,7 +282,11 @@ export async function prefetchExperienceDetail(code:string,type:string,division:
   if(existing){ await existing; return; }
 
   const promise=fetchExperienceDetailPage(code,type,division,0,100).then(page=>{
-    experienceDetailMemory.set(key,page);
+    // Never turn a transient/failed empty response into an authoritative
+    // cache entry. An empty cache was the reason some Experience people
+    // stayed blank on the 2nd/3rd click even though the summary said data
+    // existed. Only a non-empty page is allowed to warm the detail cache.
+    if(page.rows.length) experienceDetailMemory.set(key,page);
   }).finally(()=>experienceDetailRefresh.delete(key));
   experienceDetailRefresh.set(key,promise);
   await promise;
@@ -292,10 +296,11 @@ export async function getExperienceDetailPage<T>(code:string,type:string,divisio
   const key=detailCacheKey(code,type,division);
   if(offset===0){
     const cached=experienceDetailMemory.get(key);
-    if(cached) return cached as unknown as {rows:T[];hasMore:boolean};
+    if(cached?.rows?.length) return cached as unknown as {rows:T[];hasMore:boolean};
+    if(cached && !cached.rows.length) experienceDetailMemory.delete(key);
     await prefetchExperienceDetail(code,type,division);
     const ready=experienceDetailMemory.get(key);
-    if(ready) return ready as unknown as {rows:T[];hasMore:boolean};
+    if(ready?.rows?.length) return ready as unknown as {rows:T[];hasMore:boolean};
   }
   const page=await fetchExperienceDetailPage(code,type,division,offset,limit);
   if(offset===0) experienceDetailMemory.set(key,page);
