@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { EMPTY_GLOBAL_FILTERS, type GlobalFilters } from "../types/dashboardFilters";
 import {
   buildLocalForEndpoint,
+  getLocalFilterOptions,
   getDashboardLocalDataset,
   preloadDashboardLocalDataset,
   subscribeDashboardLocal,
@@ -56,14 +57,45 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
     // chart drivers while the same drivers are available individually through
     // the endpoint.
     if (!selectedDriverKey) {
-      if (!data) {
+      if (!data || !dataset || dataset.key !== "ALL") {
         setDriverFallback(null);
         return;
       }
-      const loadAllCharts = async () => {
+
+      // IMPORTANT: the two charts need the complete driver roster by default.
+      // The unfiltered Driver Performance endpoint can intentionally return a
+      // limited chart list, while the Driver slicer already knows the complete
+      // roster. Hydrate only the missing chart labels one-by-one, and merge
+      // them into the chart arrays. Nothing else in Driver Performance is
+      // changed: slicer state, KPI values, route cards, and Route Detail remain
+      // exactly on the existing local path.
+      const localStops = Array.isArray((data as any)?.chart_stops?.labels)
+        ? (data as any).chart_stops
+        : { labels: [], values: [] };
+      const localHours = Array.isArray((data as any)?.chart_route_hours?.labels)
+        ? (data as any).chart_route_hours
+        : { labels: [], values: [] };
+      const normalize = (value: unknown) =>
+        String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+
+      const roster = getLocalFilterOptions(dataset, gf).drivers || [];
+      const present = new Set(
+        [...(localStops.labels || []), ...(localHours.labels || [])]
+          .map((label: unknown) => normalize(label))
+          .filter(Boolean)
+      );
+      const missingDrivers = roster.filter((driverName) => !present.has(normalize(driverName)));
+
+      if (!missingDrivers.length) {
+        setDriverFallback(null);
+        return;
+      }
+
+      const loadOne = async (wanted: string) => {
         const params = new URLSearchParams();
         params.set("start_date", gf.start_date || "");
         params.set("end_date", gf.end_date || "");
+        params.set("drivers", wanted);
         params.set("areas", gf.areas || "");
         params.set("division", gf.division || "");
         params.set("route_type", gf.route_type || "");
@@ -78,13 +110,24 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
         }
       };
 
-      void loadAllCharts().then((remote) => {
-        if (seq !== driverFallbackSeq.current || !remote) return;
-        const localStops = Array.isArray((data as any)?.chart_stops?.labels) ? (data as any).chart_stops : { labels: [], values: [] };
-        const localHours = Array.isArray((data as any)?.chart_route_hours?.labels) ? (data as any).chart_route_hours : { labels: [], values: [] };
-        const remoteStops = Array.isArray((remote as any)?.chart_stops?.labels) ? (remote as any).chart_stops : { labels: [], values: [] };
-        const remoteHours = Array.isArray((remote as any)?.chart_route_hours?.labels) ? (remote as any).chart_route_hours : { labels: [], values: [] };
-        const normalize = (value: unknown) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+      void Promise.all(missingDrivers.map(loadOne)).then((remotes) => {
+        if (seq !== driverFallbackSeq.current) return;
+
+        const remoteStops: { labels: string[]; values: number[] } = { labels: [], values: [] };
+        const remoteHours: { labels: string[]; values: number[] } = { labels: [], values: [] };
+        for (const remote of remotes) {
+          if (!remote) continue;
+          const stops = (remote as any)?.chart_stops;
+          const hours = (remote as any)?.chart_route_hours;
+          if (Array.isArray(stops?.labels)) {
+            remoteStops.labels.push(...stops.labels);
+            remoteStops.values.push(...(Array.isArray(stops.values) ? stops.values : []));
+          }
+          if (Array.isArray(hours?.labels)) {
+            remoteHours.labels.push(...hours.labels);
+            remoteHours.values.push(...(Array.isArray(hours.values) ? hours.values : []));
+          }
+        }
 
         const mergeChart = (local: any, remoteChart: any) => {
           const labels = [...(local.labels || [])];
@@ -107,7 +150,12 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
           setDriverFallback(null);
           return;
         }
-        setDriverFallback({ ...(data as any), chart_stops: mergedStops, chart_route_hours: mergedHours } as T);
+
+        setDriverFallback({
+          ...(data as any),
+          chart_stops: mergedStops,
+          chart_route_hours: mergedHours,
+        } as T);
       });
       return () => {
         if (seq === driverFallbackSeq.current) driverFallbackSeq.current += 1;
