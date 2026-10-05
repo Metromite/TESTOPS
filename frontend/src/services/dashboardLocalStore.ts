@@ -704,20 +704,21 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
     sapByVehicleDayDriver.set(sapKey, sap);
   }
 
-  const sharedVehicles = [...ownersByVehicleDay.entries()]
-    .filter(([, byDate]) => [...byDate.values()].some((drivers) => drivers.size > 1) || byDate.size > 1)
-    .map(([vehicle]) => vehicle);
-  if (!sharedVehicles.length) { sharedVehicleHydrationKey = key; return; }
+  // Rebuild driver-aware GPS for EVERY SAP vehicle in the selected period.
+  // The old version only hydrated vehicles it classified as shared. That left
+  // a driver such as Jamseer with zero whenever the vehicle had been aggregated
+  // into one period-level RPC card and his particular route day was not the
+  // card's representative date. This is application-side only: no database
+  // query/function/schema is changed.
+  const hydratedVehicles = [...ownersByVehicleDay.keys()];
+  if (!hydratedVehicles.length) { sharedVehicleHydrationKey = key; return; }
 
-  // IMPORTANT: `sharedVehicles` is an internal normalized key (lowercase,
+  // IMPORTANT: `hydratedVehicles` is an internal normalized key (lowercase,
   // punctuation removed). Supabase equality on vehicle_key is case-sensitive.
-  // The previous implementation sent those normalized keys directly to `.in`,
-  // so values such as `o72506` did not match the stored `O72506` rows. That
-  // silently left the app with the old 25-driver vehicle snapshot. Keep the
-  // normalized key for maps, but query the original database values.
-  const sharedVehicleDbKeys = [...new Set(
+  // Always query the original database values so `o72506` still matches `O72506`.
+  const hydratedVehicleDbKeys = [...new Set(
     dataset.rows
-      .filter(row => sharedVehicles.includes(normalizeMatchKey(row.vehicle_key || row.vehicle_num)))
+      .filter(row => hydratedVehicles.includes(normalizeMatchKey(row.vehicle_key || row.vehicle_num)))
       .map(row => String(row.vehicle_key || row.vehicle_num || '').trim())
       .filter(Boolean)
   )];
@@ -727,7 +728,7 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
       const clients = getFederatedSupabaseClients();
       const lmRows: any[] = [];
       const chunks: string[][] = [];
-      for (let i = 0; i < sharedVehicleDbKeys.length; i += 80) chunks.push(sharedVehicleDbKeys.slice(i, i + 80));
+      for (let i = 0; i < hydratedVehicleDbKeys.length; i += 80) chunks.push(hydratedVehicleDbKeys.slice(i, i + 80));
 
       // Read all federated GPS sources. A single project/chunk must never
       // abort the driver reconstruction for the other projects. This is
@@ -819,7 +820,7 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
             ...existing,
             route_start: existing.route_start && item.routeStart !== null ? new Date(Math.min(Date.parse(existing.route_start), item.routeStart)).toISOString() : existing.route_start,
             route_end: existing.route_end && item.routeEnd !== null ? new Date(Math.max(Date.parse(existing.route_end), item.routeEnd)).toISOString() : existing.route_end,
-            route_duration_hm: `${Math.floor(Math.max(existingHours, hours))}h ${Math.floor((Math.max(existingHours, hours) * 60) % 60)}m`,
+            route_duration_hm: `${Math.floor(existingHours + hours)}h ${Math.floor(((existingHours + hours) * 60) % 60)}m`,
             stops: mergedStops,
             avg_stop_hm: `${Math.floor(totalStopMinutes / 60)}h ${Math.floor(totalStopMinutes % 60)}m`,
             passthru_count: Number(existing.passthru_count || 0) + item.passthru,
@@ -844,46 +845,11 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
         }
       }
 
-      // Recovery layer: the old dashboard legitimately showed GPS performance
-      // for a SAP driver when the vehicle-level GPS card existed, even if the
-      // GPS driver label could not be matched to that SAP name. Do not lose that
-      // driver completely just because a shared-vehicle day is ambiguous.
-      // Prefer the reconstructed driver-aware card above; only create this
-      // fallback for SAP drivers that have no reconstructed card at all. This
-      // preserves the previous non-zero behavior while still using day-level
-      // ownership whenever we have enough evidence to split the route.
-      const representedDrivers = new Set([...resolved.values()]
-        .map(card => normalizeDriverIdentity(card.display_driver))
-        .filter(Boolean));
-      const fallbackDrivers = new Set<string>();
-      for (const [vehicle, byDate] of ownersByVehicleDay) {
-        for (const [date, owners] of byDate) {
-          for (const owner of owners.values()) {
-            if (representedDrivers.has(owner.identity) || fallbackDrivers.has(owner.identity)) continue;
-            const candidates = dataset.routeCards.filter(card => {
-              const cardVehicle = normalizeMatchKey(card.vehicle_key || card.vehicle_num);
-              return cardVehicle === vehicle;
-            });
-            if (!candidates.length) continue;
-            // The base RPC card is period-level vehicle GPS performance, so it
-            // is still a valid recovery source when the exact shared day could
-            // not be split by GPS driver identity. Prefer the strongest card.
-            const base = [...candidates].sort((a,b) => Number(b.stops||0) - Number(a.stops||0))[0];
-            resolved.set(`${vehicle}::${date}::${owner.identity}::fallback`, {
-              ...base,
-              display_driver: owner.display,
-              match_method: "vehicle",
-              match_confidence: "sap-vehicle-fallback",
-              sap_orders: {
-                invoices: owner.invoices,
-                boxes: owner.boxes,
-                freezer: owner.freezer,
-              },
-            });
-            fallbackDrivers.add(owner.identity);
-          }
-        }
-      }
+      // Do not manufacture GPS cards for drivers that were not actually
+      // resolved from Landmark. A fabricated vehicle-level fallback was the
+      // reason the KPI rose from the real fleet count to 48 cards and it hid
+      // the underlying driver-matching problem. A zero now remains a truthful
+      // signal that still needs an evidence-backed match.
 
       // Replace vehicle-level cards only for shared vehicles/days for which we
       // have a driver-aware GPS reconstruction. All unrelated cards stay intact.
@@ -892,7 +858,7 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
       for (const base of dataset.routeCards) {
         const vehicle = normalizeMatchKey(base.vehicle_key || base.vehicle_num);
         const date = String(base.route_start || base.route_end || "").slice(0, 10);
-        if (vehicle && date && sharedVehicles.includes(vehicle) && covered.has(`${vehicle}::${date}`)) continue;
+        if (vehicle && date && hydratedVehicles.includes(vehicle) && covered.has(`${vehicle}::${date}`)) continue;
         next.push(base);
       }
       next.push(...resolved.values());
@@ -1066,10 +1032,11 @@ export function buildLocalDriverPerformance(rows: LocalSapRow[], routeCards: Rou
 
   const stops=cards.reduce((n,r)=>n+Number(r.stops||0),0);
   const hours=cards.map(r=>{const m=String(r.route_duration_hm||"").match(/(\d+)h\s+(\d+)m/);return m?Number(m[1])+Number(m[2])/60:0;}).filter(n=>n>0);
+  const gpsVehicleCount=new Set(cards.map(r=>normalizeMatchKey(r.vehicle_key||r.vehicle_num)).filter(Boolean)).size;
   const driverMap=new Map<string,{stops:number;hours:number}>();
   for(const r of cards){const d=String(r.display_driver||"Unknown").trim()||"Unknown";const x=driverMap.get(d)||{stops:0,hours:0};x.stops+=Number(r.stops||0);const m=String(r.route_duration_hm||"").match(/(\d+)h\s+(\d+)m/);if(m)x.hours+=Number(m[1])+Number(m[2])/60;driverMap.set(d,x);}
   const chart=[...driverMap.entries()].map(([driver,v])=>({driver,stops:v.stops,hours:round(v.hours)})).sort((a,b)=>b.stops-a.stops);
-  return {standalone_mode:false,validation_results:[],kpis:{gps_vehicles:cards.length,total_gps_stops:stops,avg_stops_per_vehicle:cards.length?round(stops/cards.length):0,avg_route_duration_hrs:hours.length?round(hours.reduce((a,b)=>a+b,0)/hours.length):null,avg_stop_duration:"",sap_orders:rows.length,sap_total_boxes:rows.reduce((n,r)=>n+r.boxes,0)},chart_stops:{labels:chart.map(x=>x.driver),values:chart.map(x=>x.stops)},chart_route_hours:{labels:chart.map(x=>x.driver),values:chart.map(x=>x.hours)},route_cards:cards};
+  return {standalone_mode:false,validation_results:[],kpis:{gps_vehicles:gpsVehicleCount,total_gps_stops:stops,avg_stops_per_vehicle:gpsVehicleCount?round(stops/gpsVehicleCount):0,avg_route_duration_hrs:hours.length?round(hours.reduce((a,b)=>a+b,0)/hours.length):null,avg_stop_duration:"",sap_orders:rows.length,sap_total_boxes:rows.reduce((n,r)=>n+r.boxes,0)},chart_stops:{labels:chart.map(x=>x.driver),values:chart.map(x=>x.stops)},chart_route_hours:{labels:chart.map(x=>x.driver),values:chart.map(x=>x.hours)},route_cards:cards};
 }
 
 export function buildLocalForEndpoint(endpoint: string, dataset: DashboardLocalDataset, gf?: GlobalFilters): any {

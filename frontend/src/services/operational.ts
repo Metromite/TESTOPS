@@ -281,18 +281,9 @@ export async function prefetchExperienceDetail(code:string,type:string,division:
   const existing=experienceDetailRefresh.get(key);
   if(existing){ await existing; return; }
 
-  // Do not turn the first partial project response into the authoritative cache.
-  // A hover can start this request before the click; caching that partial result
-  // was the source of an intermittent first-open/second-open symptom because
-  // the click could consume a cache entry before the remaining projects merged.
-  const promise=fetchExperienceDetailPage(code,type,division,0,100)
-    .then(page=>{
-      // The page returned here is the first useful response, so the caller can
-      // render it immediately. The fetcher separately upgrades the cache when
-      // all configured federated projects finish.
-      if(page.rows.length) experienceDetailMemory.set(key,page);
-    })
-    .finally(()=>experienceDetailRefresh.delete(key));
+  const promise=fetchExperienceDetailPage(code,type,division,0,100).then(page=>{
+    experienceDetailMemory.set(key,page);
+  }).finally(()=>experienceDetailRefresh.delete(key));
   experienceDetailRefresh.set(key,promise);
   await promise;
 }
