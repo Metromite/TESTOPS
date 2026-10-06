@@ -1502,7 +1502,12 @@ function BulkOrganizerPage() {
     try {
       const targetDate = canonicalInvoiceDate(next.scheduled_date);
       const currentDate = canonicalInvoiceDate(date);
-      const targetPlan = next.schedule_mode === "any_day" ? (await loadBulkOrganizerPlan(currentDate) || emptyPlan(currentDate)) : (targetDate ? (await loadBulkOrganizerPlan(targetDate) || emptyPlan(targetDate)) : null);
+      const targetPlanDate = targetDate;
+      const targetPlan = next.schedule_mode === "any_day"
+        ? (await loadBulkOrganizerPlan(currentDate) || emptyPlan(currentDate))
+        : (targetPlanDate
+          ? (await loadBulkOrganizerPlan(targetPlanDate) || emptyPlan(targetPlanDate))
+          : null);
 
       // Waiting invoices are not in plan.invoices on the currently selected day;
       // they live in the month-wide waiting collection. Always remove the old
