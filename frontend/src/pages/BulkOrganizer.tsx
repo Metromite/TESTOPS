@@ -1501,7 +1501,7 @@ function BulkOrganizerPage() {
     }
     try {
       const targetDate = canonicalInvoiceDate(next.scheduled_date);
-      const currentDate = canonicalInvoiceDate(date);
+      const currentDate = canonicalInvoiceDate(date) || date;
       const targetPlanDate = targetDate;
       const targetPlan = next.schedule_mode === "any_day"
         ? (await loadBulkOrganizerPlan(currentDate) || emptyPlan(currentDate))
