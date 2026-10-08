@@ -643,9 +643,18 @@ function AreasPanel({ meta }: { meta: MetaOptions }) {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault(); setError("");
     try {
+      // Areas exist in both the canonical (name/code) and legacy-compatible
+      // (area_name/area_code) columns in the live schema. Send both pairs so
+      // the database never receives a NULL area_name/area_code when creating
+      // a new area. No other Fleet behavior is changed.
+      const areaPayload = {
+        ...form,
+        area_name: form.name.trim(),
+        area_code: form.code.trim(),
+      };
       const saved = editingId
-        ? await areasService.update(editingId, form)
-        : await areasService.create(form);
+        ? await areasService.update(editingId, areaPayload as any)
+        : await areasService.create(areaPayload as any);
       await setAnchoredVehicles(saved.id, anchoredVehicles.map((v) => v.id));
       cancelEdit(); load();
     } catch (e: any) { setError(e.message); }
