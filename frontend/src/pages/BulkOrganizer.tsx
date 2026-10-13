@@ -363,8 +363,8 @@ export default function BulkOrganizer() {
   const assignments = plan.pallet_assignments || {};
   const totalPhysicalPallets = invoices.reduce((n, i) => n + invoicePhysicalQuantity(i), 0);
   const totalBigPallets = invoices.reduce((n, i) => n + invoiceEquivalentCapacity(i), 0);
-  const totalBigRaw = invoices.reduce((n, i) => n + Number(i.big_pallets ?? (Array.isArray(i.pallet_types) ? i.pallet_types.filter(t => t === "big").length : (invoicePhysicalQuantity(i) > 0 && invoicePalletSize(i) === "big" ? invoicePhysicalQuantity(i) : 0))), 0);
-  const totalSmallRaw = invoices.reduce((n, i) => n + Number(i.small_pallets ?? (Array.isArray(i.pallet_types) ? i.pallet_types.filter(t => t === "small").length : (invoicePhysicalQuantity(i) > 0 && invoicePalletSize(i) === "small" ? invoicePhysicalQuantity(i) : 0))), 0);
+  const totalBigRaw = invoices.reduce((n, i) => n + Number(i.big_pallets ?? (Array.isArray(i.pallet_types) ? i.pallet_types.filter((t: "big" | "small") => t === "big").length : (invoicePhysicalQuantity(i) > 0 && invoicePalletSize(i) === "big" ? invoicePhysicalQuantity(i) : 0))), 0);
+  const totalSmallRaw = invoices.reduce((n, i) => n + Number(i.small_pallets ?? (Array.isArray(i.pallet_types) ? i.pallet_types.filter((t: "big" | "small") => t === "small").length : (invoicePhysicalQuantity(i) > 0 && invoicePalletSize(i) === "small" ? invoicePhysicalQuantity(i) : 0))), 0);
   const totalBoxes = invoices.reduce((n, i) => n + Math.max(0, Number(i.box_count || 0)), 0);
   const loadedPallets = Object.entries(assignments).filter(([k,v]) => !!v && invoices.some(i => k.startsWith(`${i.id}::`))).reduce((sum,[k]) => {
     const [invoiceId, slot] = k.split("::");
