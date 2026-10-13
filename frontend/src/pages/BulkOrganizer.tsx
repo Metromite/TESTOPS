@@ -265,7 +265,7 @@ function BulkOrganizerPage() {
   const [showScheduleManager, setShowScheduleManager] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<InvoicePlan | null>(null);
   const [deleteInvoiceTarget, setDeleteInvoiceTarget] = useState<InvoicePlan | null>(null);
-  const [invoiceForm, setInvoiceForm] = useState({ invoice_no: "", customer_id: "", customer_name: "", area: "", division: "", pallets: 0, pallet_size: "big" as "big" | "small", pallet_quantity: 0, big_pallet_quantity: 0, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: "", remarks: "", can_share_vehicle: "store" as "store" | "yes" | "no", invoice_date: "", schedule_date: "", building_id: "", schedule_mode: "today" as "today" | "waiting" | "specific" | "any_day" });
+  const [invoiceForm, setInvoiceForm] = useState({ invoice_no: "", customer_id: "", customer_name: "", area: "", division: "", pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 1, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: "", remarks: "", can_share_vehicle: "store" as "store" | "yes" | "no", invoice_date: "", schedule_date: "", building_id: "", schedule_mode: "today" as "today" | "waiting" | "specific" | "any_day" });
   const [scheduleMode, setScheduleMode] = useState<"today" | "waiting" | "specific" | "any_day">("today");
   const [loadInvoiceTarget, setLoadInvoiceTarget] = useState<InvoicePlan | null>(null);
   const [showBatchLoadModal, setShowBatchLoadModal] = useState(false);
@@ -594,9 +594,10 @@ function BulkOrganizerPage() {
   const visibleInvoices = invoices.filter(i => !search || [i.invoice_no, i.customer_name, i.area, i.division].some(v => norm(v).includes(norm(search))));
 
   const capacityFor = (cfg: VehicleConfig, v: any) => Number(v?.pallet_capacity ?? v?.capacity_pallets ?? cfg.capacity ?? v?.capacity ?? defaultCapacity(v));
-  // Pallets are counted only when the user explicitly enters pallets.
-  // Box quantities are tracked separately and must never create pallet capacity.
   const invoicePalletEquivalentAt = (inv: any, index: number) => {
+    const dynamicBoxCalc = inv?.box_counts ? calculateBoxLoad(inv.box_counts, boxSettings) : null;
+    const dynamic = Array.isArray(dynamicBoxCalc?.palletEquivalents) ? Number(dynamicBoxCalc?.palletEquivalents[index]) : NaN;
+    if (Number.isFinite(dynamic)) return Math.max(0, dynamic);
     const stored = Array.isArray(inv?.pallet_equivalents) ? Number(inv.pallet_equivalents[index]) : NaN;
     if (Number.isFinite(stored)) return Math.max(0, stored);
     return palletEquivalent(invoicePalletSize(inv, index), 1, boxSettings.smallToBig);
@@ -611,17 +612,27 @@ function BulkOrganizerPage() {
     return inv?.pallet_size === "small" ? "small" : "big";
   };
   const invoicePhysicalQuantity = (inv: any) => {
-    const value = Number(inv?.pallets ?? inv?.pallet_quantity ?? 0);
-    return Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), MAX_UI_PALLETS) : 0;
+    if (inv?.box_counts) {
+      const dynamic = calculateBoxLoad(inv.box_counts, boxSettings);
+      return safePalletCount(dynamic.physicalPallets || inv?.pallets || 1);
+    }
+    return safePalletCount(inv?.pallets ?? inv?.pallet_quantity ?? 1);
   };
-  const invoiceStoredPhysicalQuantity = (inv: any) => { const value = Number(inv?.pallets ?? inv?.pallet_quantity ?? 0); return Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), MAX_UI_PALLETS) : 0; };
+  const invoiceStoredPhysicalQuantity = (inv: any) => rawPalletCount(inv?.pallets ?? inv?.pallet_quantity ?? 1);
   const invoiceBigCount = (inv:any) => Number(inv?.big_pallets ?? (invoicePalletSize(inv)==="big" ? invoicePhysicalQuantity(inv) : 0));
   const invoiceSmallCount = (inv:any) => Number(inv?.small_pallets ?? (invoicePalletSize(inv)==="small" ? invoicePhysicalQuantity(inv) : 0));
   const invoiceEquivalentCapacity = (inv: any, quantity?: number) => {
-    const totalPhysical = invoicePhysicalQuantity(inv);
-    if (totalPhysical <= 0) return 0;
-    const q = Math.min(totalPhysical, Math.max(0, Number(quantity ?? totalPhysical)));
-    if (q <= 0) return 0;
+    const dynamicBoxCalc = inv?.box_counts ? calculateBoxLoad(inv.box_counts, boxSettings) : null;
+    if (dynamicBoxCalc?.bigEquivalent != null) {
+      const totalPhysical = Math.max(1, Number(dynamicBoxCalc.physicalPallets || invoicePhysicalQuantity(inv)));
+      const q = Math.min(totalPhysical, Math.max(1, Number(quantity || totalPhysical)));
+      if (q >= totalPhysical) return Number(dynamicBoxCalc.bigEquivalent || 0);
+      const equivalents = Array.isArray(dynamicBoxCalc.palletEquivalents) ? dynamicBoxCalc.palletEquivalents : [];
+      if (equivalents.length) return equivalents.slice(0, q).reduce((sum, value) => sum + Number(value || 0), 0);
+      const types: Array<"big"|"small"> = Array.isArray(dynamicBoxCalc.palletTypes) ? dynamicBoxCalc.palletTypes : [];
+      return types.slice(0, q).reduce((sum, type) => sum + palletEquivalent(type, 1, boxSettings.smallToBig), 0);
+    }
+    const q=Math.min(invoicePhysicalQuantity(inv), Math.max(1, Number(quantity || invoicePhysicalQuantity(inv))));
     const types: Array<"big" | "small"> = Array.isArray(inv?.pallet_types) && inv.pallet_types.length
       ? (inv.pallet_types as Array<"big" | "small">)
       : mixedPalletTypes(invoiceBigCount(inv), invoiceSmallCount(inv));
@@ -1003,7 +1014,7 @@ function BulkOrganizerPage() {
     setInvoiceCustomerLocked(!others && linked.length === 0);
     setShowInvoiceManager(true);
     setScheduleMode(receivesToday ? "today" : "waiting");
-    setInvoiceForm(x => ({ ...x, invoice_no: "", customer_id: matched?.id || `manual:${store.id}`, customer_name: others ? "" : store.name, area: store.area || "", division: store.division || divisionView, pallets: 0, pallet_size: "big" as "big" | "small", pallet_quantity: 0, big_pallet_quantity: 0, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: store.timing || "", remarks: "", can_share_vehicle: "store", invoice_date: date, schedule_date: receivesToday ? date : "", building_id: store.id }));
+    setInvoiceForm(x => ({ ...x, invoice_no: "", customer_id: matched?.id || `manual:${store.id}`, customer_name: others ? "" : store.name, area: store.area || "", division: store.division || divisionView, pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 1, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: store.timing || "", remarks: "", can_share_vehicle: "store", invoice_date: date, schedule_date: receivesToday ? date : "", building_id: store.id }));
   }
 
   function openInvoiceForCustomer(customer: any, store: Building) {
@@ -1014,7 +1025,7 @@ function BulkOrganizerPage() {
     const others = isOthersStore(store);
     setEditingInvoice(null); setInvoiceBuildingLocked(true); setInvoiceCustomerLocked(!others);
     setShowInvoiceManager(true); setScheduleMode(receivesToday ? "today" : "waiting");
-    setInvoiceForm(x => ({ ...x, invoice_no: "", customer_id: matched?.id || customer.id || "", customer_name: others ? "" : customer.name, area: customer.area || store.area || matched?.area || "", division: customer.division || store.division || divisionView, pallets: 0, pallet_size: "big" as "big" | "small", pallet_quantity: 0, big_pallet_quantity: 0, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: store.timing || "", remarks: "", can_share_vehicle: "store", invoice_date: date, schedule_date: receivesToday ? date : "", building_id: store.id }));
+    setInvoiceForm(x => ({ ...x, invoice_no: "", customer_id: matched?.id || customer.id || "", customer_name: others ? "" : customer.name, area: customer.area || store.area || matched?.area || "", division: customer.division || store.division || divisionView, pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 1, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: store.timing || "", remarks: "", can_share_vehicle: "store", invoice_date: date, schedule_date: receivesToday ? date : "", building_id: store.id }));
   }
 
   function dropStoreOnVehicle(v: any, storeId: string) {
@@ -1392,18 +1403,17 @@ function BulkOrganizerPage() {
 
   function invoiceRowForStore(store: Building) {
     const others = isOthersStore(store);
-    return { invoice_no: "", customer_id: "", customer_name: others ? "" : store.name, area: store.area || "", division: store.division || divisionView, pallets: 0, pallet_size: "big" as "big" | "small", pallet_quantity: 0, big_pallet_quantity: 0, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, timing: "", remarks: "", can_share_vehicle: "store", invoice_date: date, schedule_date: date, building_id: store.id };
+    return { invoice_no: "", customer_id: "", customer_name: others ? "" : store.name, area: store.area || "", division: store.division || divisionView, pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 1, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, timing: "", remarks: "", can_share_vehicle: "store", invoice_date: date, schedule_date: date, building_id: store.id };
   }
 
   function buildInvoiceLoadData(form: any, buildingId: string | null, fallbackPallets = 1) {
     const boxCounts = normalizeBoxCounts({ small: form.box_small, medium: form.box_medium, big: form.box_big });
     const hasBoxes = boxCounts.small + boxCounts.medium + boxCounts.big > 0;
     const boxCalc = hasBoxes ? calculateBoxLoad(boxCounts, boxSettings) : null;
-    const bigPallets = Math.max(0, Number(form.big_pallet_quantity ?? 0));
-    const smallPallets = Math.max(0, Number(form.small_pallet_quantity ?? 0));
-    // Box counts remain descriptive inventory; they do not imply physical pallets.
-    const physicalPallets = Math.min(MAX_UI_PALLETS, Math.floor(bigPallets + smallPallets));
-    const palletTypes = mixedPalletTypes(bigPallets, smallPallets);
+    const bigPallets = boxCalc ? boxCalc.bigFull : Math.max(0, Number(form.big_pallet_quantity || 0));
+    const smallPallets = boxCalc ? boxCalc.physicalSmall : Math.max(0, Number(form.small_pallet_quantity || 0));
+    const physicalPallets = boxCalc ? Math.max(1, boxCalc.physicalPallets) : Math.max(1, bigPallets + smallPallets || Number(fallbackPallets || 1));
+    const palletTypes = boxCalc ? boxCalc.palletTypes : mixedPalletTypes(bigPallets, smallPallets);
     const store = (planRef.current.buildings || []).find(b => b.id === buildingId);
     const canShare = form.can_share_vehicle === "yes" ? true : form.can_share_vehicle === "no" ? false : store?.can_share_vehicle !== false;
     return {
@@ -1413,10 +1423,10 @@ function BulkOrganizerPage() {
       big_pallets: bigPallets,
       small_pallets: smallPallets,
       pallet_types: palletTypes,
-      pallet_equivalents: undefined,
+      pallet_equivalents: boxCalc ? boxCalc.palletEquivalents : undefined,
       box_counts: hasBoxes ? boxCounts : undefined,
       fridge_boxes: Math.max(0, Number(form.fridge_boxes || 0)),
-      box_pallet_calc: undefined,
+      box_pallet_calc: boxCalc || undefined,
       timing: String(form.timing || "").trim() || undefined,
       remarks: String(form.remarks || "").trim() || undefined,
       can_share_vehicle: canShare,
@@ -1496,7 +1506,7 @@ function BulkOrganizerPage() {
       } catch (e: any) { setError(e?.message || "Could not place the invoice on its scheduled date."); return; }
     }
     setScheduleMode("today");
-    setInvoiceForm({ invoice_no: "", customer_id: "", customer_name: "", area: "", division: "", pallets: 0, pallet_size: "big" as "big" | "small", pallet_quantity: 0, big_pallet_quantity: 0, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: "", remarks: "", can_share_vehicle: "store", invoice_date: "", schedule_date: "", building_id: "", schedule_mode: "today" });
+    setInvoiceForm({ invoice_no: "", customer_id: "", customer_name: "", area: "", division: "", pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 1, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: "", remarks: "", can_share_vehicle: "store", invoice_date: "", schedule_date: "", building_id: "", schedule_mode: "today" });
     setShowInvoiceManager(false);
   }
 
@@ -1739,7 +1749,7 @@ function BulkOrganizerPage() {
   return <div className={`page bulk-planner-page bulk-theme-${bulkTheme} ${loading ? "is-hydrating" : ""}`}>
     <style>{`
  .bulk-store-compact-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:10px;margin-top:10px;align-items:start}
-.bulk-store-compact-card{min-width:0;border:1px solid var(--border,rgba(148,163,184,.22));border-radius:14px;padding:10px 11px;background:var(--surface,rgba(255,255,255,.55));transition:box-shadow .18s ease,border-color .18s ease;overflow:hidden;cursor:pointer;will-change:height,transform}.bulk-store-compact-card .bulk-inline-expanded{cursor:default}.bulk-inline-expanded{margin-top:10px;display:grid;gap:10px}.bulk-inline-expanded > .bulk-store-customer-box,.bulk-inline-expanded > .bulk-vehicle-card{margin-top:0}
+.bulk-store-compact-card{font-size:14px;min-width:0;border:1px solid var(--border,rgba(148,163,184,.22));border-radius:14px;padding:10px 11px;background:var(--surface,rgba(255,255,255,.55));transition:box-shadow .18s ease,border-color .18s ease;overflow:hidden;cursor:pointer;will-change:height,transform}.bulk-store-compact-card .bulk-inline-expanded{cursor:default}.bulk-store-compact-card b,.bulk-vehicle-compact-card b{font-size:1.04em;font-weight:700}.bulk-store-compact-card small,.bulk-vehicle-compact-card small{font-size:12px;line-height:1.45}.bulk-inline-expanded{margin-top:10px;display:grid;gap:10px}.bulk-inline-expanded > .bulk-store-customer-box,.bulk-inline-expanded > .bulk-vehicle-card{margin-top:0}
 .bulk-store-compact-card:hover{box-shadow:0 5px 16px rgba(15,23,42,.07)}
 .bulk-store-compact-card.is-not-today{opacity:.78}
 .bulk-store-compact-card.is-expanded{grid-column:span 2;border-color:rgba(59,130,246,.4);box-shadow:0 10px 28px rgba(15,23,42,.10);z-index:2}
@@ -1909,7 +1919,7 @@ function BulkOrganizerPage() {
       <div className="bulk-batch-vehicle-grid">{selectedVehicles.map(cfg=>{const v=vehicleMap.get(cfg.vehicle_id);if(!v)return null;const used=loadedByVehicle(v.id),cap=capacityFor(cfg,v),free=Math.max(0,cap-used),active=batchVehicleIds.includes(v.id);return <button type="button" key={v.id} className={`bulk-load-vehicle-choice bulk-batch-vehicle-choice ${active?"selected":""}`} onClick={()=>setBatchVehicleIds(ids=>ids.includes(v.id)?ids.filter(x=>x!==v.id):[...ids,v.id])}>
         <img src={vehicleImage(v)} alt=""/><div><b>{v.number}</b><span>{v.type||"Vehicle"}</span><small>{formatOperationalEquivalent(free)} big-pallet space free · {formatOperationalEquivalent(used)}/{formatOperationalEquivalent(cap)} used</small><small>{(plan.vehicle_meta?.[v.id]?.driver||cfg.driver||"No driver")} · {(plan.vehicle_meta?.[v.id]?.helper||cfg.helper||"No helper")}</small><small style={{whiteSpace:"normal",overflowWrap:"anywhere",color:"var(--muted)"}}>Permitted: {vehiclePermittedLabel(v.id)}</small>{!vehicleAreaStatus(loadInvoiceTarget!,v).permitted&&<span title="Invoice area is outside this vehicle's permitted areas" style={{width:9,height:9,borderRadius:"50%",background:"#f59e0b",boxShadow:"0 0 0 2px rgba(245,158,11,.16)",flex:"0 0 auto"}}/>}</div>{active&&<Check size={15}/>}
       </button>})}</div>
-      <div className="bulk-batch-load-toolbar"><button type="button" className="bulk-batch-select-btn" onClick={()=>{const ids=allPlanInvoices.filter(i=>i.scheduled_date===date&&(!batchBuildingId||i.building_id===batchBuildingId)&&invoiceLoaded(i)<Number(i.pallets||0)).map(i=>i.id);setBatchSelectedIds(ids)}}>Select scheduled</button><button type="button" className="bulk-batch-select-btn" onClick={()=>setBatchSelectedIds([])}>Clear</button><label><input type="checkbox" checked={batchIncludeWaiting} onChange={e=>{setBatchIncludeWaiting(e.target.checked);if(e.target.checked){setBatchSelectedIds(ids=>Array.from(new Set([...ids,...waiting.filter(i=>(!batchBuildingId||i.building_id===batchBuildingId)&&invoiceLoaded(i)<Number(i.pallets||0)).map(i=>i.id)])))}}}/> Include waiting</label></div>
+      <div className="bulk-batch-load-toolbar"><button type="button" className="bulk-batch-select-btn" onClick={()=>{const ids=allPlanInvoices.filter(i=>canonicalInvoiceDate(i.scheduled_date)===canonicalInvoiceDate(date)&&(!batchBuildingId||i.building_id===batchBuildingId)&&invoiceLoaded(i)<Number(i.pallets||0)).map(i=>i.id);setBatchSelectedIds(ids)}}>Select scheduled</button><button type="button" className="bulk-batch-select-btn" onClick={()=>{const eligible=[...allPlanInvoices.filter(i=>canonicalInvoiceDate(i.scheduled_date)===canonicalInvoiceDate(date)&&(!batchBuildingId||i.building_id===batchBuildingId)),...(batchIncludeWaiting?waiting.filter(i=>!batchBuildingId||i.building_id===batchBuildingId):[])].filter((i,idx,arr)=>arr.findIndex(x=>x.id===i.id)===idx&&invoiceLoaded(i)<Number(i.pallets||0));setBatchSelectedIds(eligible.map(i=>i.id))}}>Select all</button><button type="button" className="bulk-batch-select-btn" onClick={()=>setBatchSelectedIds([])}>Clear</button><label><input type="checkbox" checked={batchIncludeWaiting} onChange={e=>{setBatchIncludeWaiting(e.target.checked);if(e.target.checked){setBatchSelectedIds(ids=>Array.from(new Set([...ids,...waiting.filter(i=>(!batchBuildingId||i.building_id===batchBuildingId)&&invoiceLoaded(i)<Number(i.pallets||0)).map(i=>i.id)])))}}}/> Include waiting</label></div>
       <div className="bulk-load-form bulk-batch-load-form">
         <div className="bulk-load-mode"><span>Load quantity</span><div><button type="button" className={batchLoadMode==="full"?"active":""} onClick={()=>setBatchLoadMode("full")}>Full load</button><button type="button" className={batchLoadMode==="partial"?"active":""} onClick={()=>setBatchLoadMode("partial")}>Partial</button></div></div>
       </div>
