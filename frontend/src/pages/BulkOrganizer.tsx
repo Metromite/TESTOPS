@@ -17,6 +17,9 @@ import {
 } from "../services/bulkOrganizer";
 
 const norm = (v: unknown) => String(v ?? "").trim().toUpperCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+const assignmentVehicleId = (value: unknown) => String(value ?? "").split("::TRIP::")[0];
+const assignmentTripNumber = (value: unknown) => { const m = String(value ?? "").match(/::TRIP::(\d+)$/); return m ? Math.max(1, Number(m[1])) : 1; };
+const assignmentForTrip = (vehicleId: string, trip = 1) => trip <= 1 ? vehicleId : `${vehicleId}::TRIP::${trip}`;
 const MAX_UI_PALLETS = 100;
 const safePalletCount = (value: unknown, fallback = 1) => { const n = Number(value); if (!Number.isFinite(n) || n <= 0) return fallback; return Math.min(Math.floor(n), MAX_UI_PALLETS); };
 const rawPalletCount = (value: unknown, fallback = 1) => { const n = Number(value); return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback; };
@@ -84,7 +87,6 @@ const calculateBoxLoad = (value: any, settings: BoxPalletSettings = DEFAULT_BOX_
   let bigFull = 0;
   let smallFull = 0;
   let smallFraction = 0;
-  let partialSmallPallets = 0;
   const remainder = emptyBoxCounts();
   const palletTypes: Array<"big" | "small"> = [];
   const palletEquivalents: number[] = [];
@@ -102,17 +104,27 @@ const calculateBoxLoad = (value: any, settings: BoxPalletSettings = DEFAULT_BOX_
     left -= fullSmall * smallCap;
     if (left > 0) {
       smallFraction += left / smallCap;
-      partialSmallPallets += 1;
-      palletTypes.push("small");
-      palletEquivalents.push((left / smallCap) * settings.smallToBig);
       remainder[type] = left;
     }
   });
-  const physicalSmall = smallFull + partialSmallPallets;
-  const bigEquivalent = bigFull + (smallFull + smallFraction) * settings.smallToBig;
+  // Leftover boxes remain boxes (never physical pallets), but are still loadable.
+  // They share fractional load units for capacity calculations; a full Small pallet
+  // is settings.smallToBig Big-equivalent.
+  const leftoverEquivalent = smallFraction * settings.smallToBig;
+  const leftoverLoadUnits = leftoverEquivalent > 0 ? Math.ceil((leftoverEquivalent - 1e-9) / Math.max(0.01, settings.smallToBig)) : 0;
+  let leftoverEq = leftoverEquivalent;
+  for (let i = 0; i < leftoverLoadUnits; i++) {
+    palletTypes.push("small");
+    const unitEq = Math.min(settings.smallToBig, leftoverEq);
+    palletEquivalents.push(unitEq);
+    leftoverEq -= unitEq;
+  }
+  const physicalSmall = smallFull;
+  const bigEquivalent = bigFull + smallFull * settings.smallToBig + leftoverEquivalent;
   const physicalPallets = bigFull + physicalSmall;
+  const loadUnits = palletTypes.length;
   return {
-    boxes, bigFull, smallFull, smallFraction, physicalSmall, physicalPallets, bigEquivalent, remainder, palletTypes, palletEquivalents,
+    boxes, bigFull, smallFull, smallFraction, physicalSmall, physicalPallets, loadUnits, leftoverEquivalent, bigEquivalent, remainder, palletTypes, palletEquivalents,
   };
 };
 const formatPreciseEquivalent = (value: number) => { const n = Math.max(0, Number(value || 0)); return n.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") || "0"; };
@@ -120,14 +132,14 @@ const formatInvoiceEquivalent = (inv: any, value?: number) => inv?.box_pallet_ca
 const formatOperationalEquivalent = (value: number) => { const n=Math.max(0,Number(value||0)); return Math.abs(n*2-Math.round(n*2))<1e-9 ? formatEquivalent(n) : formatPreciseEquivalent(n); };
 const boxSummaryText = (inv: any, settings: BoxPalletSettings = DEFAULT_BOX_PALLET_SETTINGS) => {
   const calc = inv?.box_pallet_calc || calculateBoxLoad(inv?.box_counts, settings);
-  if (!calc?.physicalPallets) return "";
+  if (!calc) return "";
   const parts: string[] = [];
   if (calc.bigFull) parts.push(`${calc.bigFull} Big`);
   if (calc.smallFull) parts.push(`${calc.smallFull} Small`);
-  if (calc.smallFraction > 0) parts.push(`${formatPreciseEquivalent(calc.smallFraction * settings.smallToBig)} Big-equiv partial Small`);
+  if (calc.leftoverEquivalent > 0) parts.push(`${formatPreciseEquivalent(calc.leftoverEquivalent)} Big-equiv in leftover boxes (not a physical pallet)`);
   const rem = calc.remainder || {};
   const left = Object.entries(rem).filter(([,v]) => Number(v) > 0).map(([k,v]) => `${v} ${k} box${Number(v)===1?"":"es"}`);
-  if (left.length) parts.push(`remaining: ${left.join(", ")}`);
+  if (left.length) parts.push(`boxes not converted to a full pallet: ${left.join(", ")}`);
   return parts.join(" · ");
 };
 const defaultCapacity = (typeOrVehicle: any) => {
@@ -164,6 +176,7 @@ type InvoicePlan = {
   fridge_boxes?: number;
   source?: string;
   box_pallet_calc?: ReturnType<typeof calculateBoxLoad>;
+  physical_pallets?: number;
   pallet_equivalents?: number[];
   timing?: string;
   remarks?: string;
@@ -171,10 +184,10 @@ type InvoicePlan = {
   invoice_date: string | null; scheduled_date: string | null; schedule_mode?: "today" | "waiting" | "specific" | "any_day"; vehicle_id: string | null; building_id?: string | null;
   source_entry_id?: string; source_department?: string; handover_status?: "ready" | "handed_over";
 };
-type VehicleConfig = { vehicle_id: string; capacity: number; driver?: string; helper?: string; building_id?: string | null };
+type VehicleConfig = { vehicle_id: string; capacity: number; driver?: string; helper?: string; building_id?: string | null; trip_count?: number };
 type PlanV3 = BulkOrganizerPlan & {
   buildings?: Building[];
-  vehicle_meta?: Record<string, { driver?: string; helper?: string; building_id?: string | null }>;
+  vehicle_meta?: Record<string, { driver?: string; helper?: string; building_id?: string | null; trip_count?: number }>;
   customer_schedules?: CustomerSchedule[];
 };
 type DefaultsV2 = BulkOrganizerDefaults & {
@@ -265,7 +278,7 @@ function BulkOrganizerPage() {
   const [showScheduleManager, setShowScheduleManager] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<InvoicePlan | null>(null);
   const [deleteInvoiceTarget, setDeleteInvoiceTarget] = useState<InvoicePlan | null>(null);
-  const [invoiceForm, setInvoiceForm] = useState({ invoice_no: "", customer_id: "", customer_name: "", area: "", division: "", pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 1, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: "", remarks: "", can_share_vehicle: "store" as "store" | "yes" | "no", invoice_date: "", schedule_date: "", building_id: "", schedule_mode: "today" as "today" | "waiting" | "specific" | "any_day" });
+  const [invoiceForm, setInvoiceForm] = useState({ invoice_no: "", customer_id: "", customer_name: "", area: "", division: "", pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 0, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: "", remarks: "", can_share_vehicle: "store" as "store" | "yes" | "no", invoice_date: "", schedule_date: "", building_id: "", schedule_mode: "today" as "today" | "waiting" | "specific" | "any_day" });
   const [scheduleMode, setScheduleMode] = useState<"today" | "waiting" | "specific" | "any_day">("today");
   const [loadInvoiceTarget, setLoadInvoiceTarget] = useState<InvoicePlan | null>(null);
   const [showBatchLoadModal, setShowBatchLoadModal] = useState(false);
@@ -280,6 +293,8 @@ function BulkOrganizerPage() {
   const [batchPartialQuantities, setBatchPartialQuantities] = useState<Record<string, number>>({});
   const [loadVehicleId, setLoadVehicleId] = useState("");
   const [loadQuantity, setLoadQuantity] = useState(1);
+  const [loadTripNumber, setLoadTripNumber] = useState(1);
+  const [batchTripNumber, setBatchTripNumber] = useState(1);
   const [manageVehicleId, setManageVehicleId] = useState<string | null>(null);
   const [buildingForm, setBuildingForm] = useState<Building>({ id: "", name: "", type: "warehouse", area: "", enabled: true });
   const [customerForm, setCustomerForm] = useState({ name: "", area: "", division: "" });
@@ -383,7 +398,29 @@ function BulkOrganizerPage() {
         ...(Array.isArray((old as any).invoices) ? (old as any).invoices : []),
         ...(Array.isArray((old as any).pallets) ? (old as any).pallets : []),
       ];
-      const storedInvoices = Array.from(new Map(storedInvoicesRaw.map((x: any) => [String(x?.id || x?.invoice_no || crypto.randomUUID()), canonicalizeInvoice(x)])).values());
+      const customerAliases = [
+        ...(planBuildings || []).map((b: any) => ({ name: b.name })),
+        ...(planSchedules || []).map((c: any) => ({ name: c.customer_name })),
+        ...(loadedDefaults.customer_schedules || []).map((c: any) => ({ name: c.customer_name })),
+      ].filter((x: any) => String(x.name || "").trim());
+      const canonicalCustomerName = (value: unknown) => {
+        const key = norm(value);
+        return customerAliases.find((x: any) => norm(x.name) === key)?.name || String(value ?? "").trim().replace(/\s+/g, " ");
+      };
+      const storedInvoices = Array.from(new Map(storedInvoicesRaw.map((x: any) => {
+        const invoice = canonicalizeInvoice(x);
+        invoice.customer_name = canonicalCustomerName(invoice.customer_name);
+        // Upgrade legacy box-only invoices to distinct physical-pallet and load-unit counts in memory.
+        if (invoice.box_counts && invoice.physical_pallets == null) {
+          const boxCalc = calculateBoxLoad(invoice.box_counts, boxSettings);
+          invoice.physical_pallets = Number(invoice.big_pallets || 0) + Number(invoice.small_pallets || 0) || boxCalc.physicalPallets;
+          invoice.pallets = boxCalc.loadUnits;
+          invoice.pallet_types = boxCalc.palletTypes;
+          invoice.pallet_equivalents = boxCalc.palletEquivalents;
+          invoice.box_pallet_calc = boxCalc;
+        }
+        return [String(invoice?.id || invoice?.invoice_no || crypto.randomUUID()), invoice];
+      })).values());
       const storedAssignments: Record<string, string | null> = { ...(old.pallet_assignments || {}) };
       const isPhysicallyLoaded = (invoice: any) => Boolean(invoice?.vehicle_id) || Object.entries(storedAssignments).some(([key, value]) => Boolean(value) && key.startsWith(`${invoice?.id}::`));
       // A legacy waiting invoice can already have a vehicle assignment while its
@@ -412,7 +449,7 @@ function BulkOrganizerPage() {
       (old.customers || []).forEach(c => customerMap.set(c.id, c));
       planSchedules.forEach(s => { const id = s.id || `schedule:${norm(s.customer_name)}`; if (!customerMap.has(`schedule:${norm(s.customer_name)}`)) customerMap.set(`schedule:${norm(s.customer_name)}`, { id, name: s.customer_name, area: s.area, division: s.division, enabled: true }); });
       const assignments: Record<string, string | null> = { ...(old.pallet_assignments || {}) };
-      savedInvoices.forEach(i => { for (let k = 0; k < safePalletCount(i.pallets); k++) { const key = `${i.id}::${k}`; if (!(key in assignments)) assignments[key] = i.vehicle_id || null; } });
+      savedInvoices.forEach(i => { for (let k = 0; k < safePalletCount(i.pallets); k++) { const key = `${i.id}::${k}`; if (!(key in assignments)) assignments[key] = i.vehicle_id ? assignmentForTrip(assignmentVehicleId(i.vehicle_id), assignmentTripNumber(i.vehicle_id)) : null; } });
       const defaultVehicles = loadedDefaults.vehicles.filter(x => active.some(vh => vh.id === x.vehicle_id));
       const savedVehicles = (old.vehicles || []).filter(x => active.some(vh => vh.id === x.vehicle_id));
       // A daily plan can intentionally override the monthly default, including
@@ -426,7 +463,7 @@ function BulkOrganizerPage() {
           ? defaultVehicles
           : savedVehicles;
       const vehicleMeta = { ...(old.vehicle_meta || {}) };
-      defaultVehicles.forEach(vh => { vehicleMeta[vh.vehicle_id] = { ...(vehicleMeta[vh.vehicle_id] || {}), driver: vehicleMeta[vh.vehicle_id]?.driver || vh.driver || "", helper: vehicleMeta[vh.vehicle_id]?.helper || vh.helper || "" }; });
+      defaultVehicles.forEach(vh => { vehicleMeta[vh.vehicle_id] = { ...(vehicleMeta[vh.vehicle_id] || {}), driver: vehicleMeta[vh.vehicle_id]?.driver || vh.driver || "", helper: vehicleMeta[vh.vehicle_id]?.helper || vh.helper || "", trip_count: vehicleMeta[vh.vehicle_id]?.trip_count || (vh as any).trip_count || 1 }; });
 
       const waitingMap = new Map<string, InvoicePlan>();
       for (const row of (((waitingRowsResult as any)?.data || []) as any[])) {
@@ -587,19 +624,22 @@ function BulkOrganizerPage() {
   const customers = plan.customers || [];
   const selectedVehicles = plan.vehicles || [];
   const assignments = plan.pallet_assignments || {};
-  const totalPallets = invoices.reduce((n, i) => n + Number(i.pallets || 0), 0);
+  const totalPallets = invoices.reduce((n, i) => n + Number(i.physical_pallets ?? (i.box_counts ? calculateBoxLoad(i.box_counts, boxSettings).physicalPallets : i.pallets) ?? 0), 0);
   const loadedPallets = Object.entries(assignments).filter(([k,v]) => !!v && invoices.some(i => k.startsWith(`${i.id}::`))).length;
-  const pendingPallets = Math.max(0, totalPallets - loadedPallets);
+  const totalLoadUnits = invoices.reduce((n, i) => n + Number(i.box_counts && i.physical_pallets == null ? calculateBoxLoad(i.box_counts, boxSettings).loadUnits : i.pallets || 0), 0);
+  const pendingPallets = Math.max(0, totalLoadUnits - loadedPallets);
   const todayDow = new Date(`${date}T12:00:00`).getDay();
   const visibleInvoices = invoices.filter(i => !search || [i.invoice_no, i.customer_name, i.area, i.division].some(v => norm(v).includes(norm(search))));
 
-  const capacityFor = (cfg: VehicleConfig, v: any) => Number(v?.pallet_capacity ?? v?.capacity_pallets ?? cfg.capacity ?? v?.capacity ?? defaultCapacity(v));
+  const tripCountFor = (vehicleId: string) => Math.min(3, Math.max(1, Number(plan.vehicle_meta?.[vehicleId]?.trip_count || (selectedVehicles.find(x => x.vehicle_id === vehicleId) as any)?.trip_count || 1)));
+  const capacityForTrip = (cfg: VehicleConfig, v: any) => Number(v?.pallet_capacity ?? v?.capacity_pallets ?? cfg.capacity ?? v?.capacity ?? defaultCapacity(v));
+  const capacityFor = (cfg: VehicleConfig, v: any) => capacityForTrip(cfg, v) * tripCountFor(cfg.vehicle_id);
   const invoicePalletEquivalentAt = (inv: any, index: number) => {
+    const stored = Array.isArray(inv?.pallet_equivalents) ? Number(inv.pallet_equivalents[index]) : NaN;
+    if (Number.isFinite(stored)) return Math.max(0, stored);
     const dynamicBoxCalc = inv?.box_counts ? calculateBoxLoad(inv.box_counts, boxSettings) : null;
     const dynamic = Array.isArray(dynamicBoxCalc?.palletEquivalents) ? Number(dynamicBoxCalc?.palletEquivalents[index]) : NaN;
     if (Number.isFinite(dynamic)) return Math.max(0, dynamic);
-    const stored = Array.isArray(inv?.pallet_equivalents) ? Number(inv.pallet_equivalents[index]) : NaN;
-    if (Number.isFinite(stored)) return Math.max(0, stored);
     return palletEquivalent(invoicePalletSize(inv, index), 1, boxSettings.smallToBig);
   };
   const invoicePalletSize = (inv: any, index?: number): "big" | "small" => {
@@ -612,35 +652,37 @@ function BulkOrganizerPage() {
     return inv?.pallet_size === "small" ? "small" : "big";
   };
   const invoicePhysicalQuantity = (inv: any) => {
-    if (inv?.box_counts) {
-      const dynamic = calculateBoxLoad(inv.box_counts, boxSettings);
-      return safePalletCount(dynamic.physicalPallets || inv?.pallets || 1);
-    }
+    if (inv?.physical_pallets != null) return Math.max(0, Number(inv.physical_pallets || 0));
+    if (inv?.box_counts) return Math.max(0, Number(calculateBoxLoad(inv.box_counts, boxSettings).physicalPallets || 0));
     return safePalletCount(inv?.pallets ?? inv?.pallet_quantity ?? 1);
+  };
+  const invoiceLoadUnitCount = (inv: any) => {
+    if (inv?.box_counts && inv?.physical_pallets == null) return Math.max(0, Number(calculateBoxLoad(inv.box_counts, boxSettings).loadUnits || 0));
+    if (inv?.pallets != null) return Math.max(0, Number(inv.pallets || 0));
+    if (inv?.box_counts) return Math.max(0, Number(calculateBoxLoad(inv.box_counts, boxSettings).loadUnits || 0));
+    return safePalletCount(inv?.pallet_quantity ?? 1);
   };
   const invoiceStoredPhysicalQuantity = (inv: any) => rawPalletCount(inv?.pallets ?? inv?.pallet_quantity ?? 1);
   const invoiceBigCount = (inv:any) => Number(inv?.big_pallets ?? (invoicePalletSize(inv)==="big" ? invoicePhysicalQuantity(inv) : 0));
   const invoiceSmallCount = (inv:any) => Number(inv?.small_pallets ?? (invoicePalletSize(inv)==="small" ? invoicePhysicalQuantity(inv) : 0));
   const invoiceEquivalentCapacity = (inv: any, quantity?: number) => {
+    const totalUnits = invoiceLoadUnitCount(inv);
+    const q = Math.min(totalUnits, Math.max(0, Number(quantity ?? totalUnits)));
+    if (Array.isArray(inv?.pallet_equivalents) && inv.pallet_equivalents.length) {
+      return inv.pallet_equivalents.slice(0, q).reduce((sum: number, value: number) => sum + Math.max(0, Number(value || 0)), 0);
+    }
     const dynamicBoxCalc = inv?.box_counts ? calculateBoxLoad(inv.box_counts, boxSettings) : null;
     if (dynamicBoxCalc?.bigEquivalent != null) {
-      const totalPhysical = Math.max(1, Number(dynamicBoxCalc.physicalPallets || invoicePhysicalQuantity(inv)));
-      const q = Math.min(totalPhysical, Math.max(1, Number(quantity || totalPhysical)));
-      if (q >= totalPhysical) return Number(dynamicBoxCalc.bigEquivalent || 0);
       const equivalents = Array.isArray(dynamicBoxCalc.palletEquivalents) ? dynamicBoxCalc.palletEquivalents : [];
       if (equivalents.length) return equivalents.slice(0, q).reduce((sum, value) => sum + Number(value || 0), 0);
-      const types: Array<"big"|"small"> = Array.isArray(dynamicBoxCalc.palletTypes) ? dynamicBoxCalc.palletTypes : [];
-      return types.slice(0, q).reduce((sum, type) => sum + palletEquivalent(type, 1, boxSettings.smallToBig), 0);
+      return Number(dynamicBoxCalc.bigEquivalent || 0);
     }
-    const q=Math.min(invoicePhysicalQuantity(inv), Math.max(1, Number(quantity || invoicePhysicalQuantity(inv))));
     const types: Array<"big" | "small"> = Array.isArray(inv?.pallet_types) && inv.pallet_types.length
       ? (inv.pallet_types as Array<"big" | "small">)
       : mixedPalletTypes(invoiceBigCount(inv), invoiceSmallCount(inv));
-    let total = 0;
-    for (const type of types.slice(0, q)) total += palletEquivalent(type, 1);
-    return total;
+    return types.slice(0, q).reduce((sum, type) => sum + palletEquivalent(type, 1), 0);
   };
-  const invoiceEquivalentTotal = (inv: any) => invoiceEquivalentCapacity(inv, invoicePhysicalQuantity(inv));
+  const invoiceEquivalentTotal = (inv: any) => invoiceEquivalentCapacity(inv, invoiceLoadUnitCount(inv));
   const alertGroups = useMemo(() => {
     const groups: { id:string; title:string; items:{id:string; title:string; text:string; tone:"blue"|"amber"|"green"}[] }[] = [];
     const byBuilding = (buildingId: string | null | undefined) => (plan.buildings || []).find(b => b.id === buildingId);
@@ -650,7 +692,7 @@ function BulkOrganizerPage() {
       const today = invoices.filter(i=>i.building_id===b.id);
       const wait = waiting.filter(i=>i.building_id===b.id);
       const items = [
-        ...(today.length ? [{ id:`today-${b.id}`, title:"Schedule for today", text:`${today.length} invoice${today.length===1?"":"s"} · ${today.reduce((n,i)=>n+Number(i.pallets||0),0)} physical pallets · ${formatEquivalent(today.reduce((n,i)=>n+invoiceEquivalentTotal(i),0))} big-equiv`, tone:"green" as const }] : []),
+        ...(today.length ? [{ id:`today-${b.id}`, title:"Schedule for today", text:`${today.length} invoice${today.length===1?"":"s"} · ${today.reduce((n,i)=>n+Number(i.physical_pallets ?? (i.box_counts ? calculateBoxLoad(i.box_counts, boxSettings).physicalPallets : i.pallets) ?? 0),0)} physical pallets · ${formatEquivalent(today.reduce((n,i)=>n+invoiceEquivalentTotal(i),0))} big-equiv`, tone:"green" as const }] : []),
         ...(wait.length ? [{ id:`waiting-${b.id}`, title:"Waiting for schedule", text:`${wait.length} invoice${wait.length===1?"":"s"} waiting`, tone:"amber" as const }] : []),
       ];
       if (items.length) groups.push({ id:b.id, title:b.name, items });
@@ -681,14 +723,14 @@ function BulkOrganizerPage() {
   // Loading is restricted only by the store receiving-day rule, the optional
   // no-sharing rule, and the vehicle's real capacity. Area permission is a
   // warning only: dispatch can still load a non-permitted vehicle deliberately.
-  function vehiclePermission(invoice: InvoicePlan, vehicle: any) {
+  function vehiclePermission(invoice: InvoicePlan, vehicle: any, tripNumber?: number) {
     const store = (plan.buildings || []).find(b => b.id === invoice.building_id);
     const canShare = invoice.can_share_vehicle ?? store?.can_share_vehicle ?? true;
     if (!canShare) {
-      const others = invoicesInVehicle(vehicle.id).filter(i => norm(i.customer_name) !== norm(invoice.customer_name));
+      const others = invoicesInVehicle(vehicle.id, tripNumber).filter(i => norm(i.customer_name) !== norm(invoice.customer_name));
       if (others.length) return { ok: false, text: `${invoice.customer_name} must use a vehicle without another customer.` };
     }
-    const existingExclusive = invoicesInVehicle(vehicle.id).find(i => i.can_share_vehicle === false || ((plan.buildings || []).find(b => b.id === i.building_id)?.can_share_vehicle === false));
+    const existingExclusive = invoicesInVehicle(vehicle.id, tripNumber).find(i => i.can_share_vehicle === false || ((plan.buildings || []).find(b => b.id === i.building_id)?.can_share_vehicle === false));
     if (existingExclusive && norm(existingExclusive.customer_name) !== norm(invoice.customer_name)) {
       return { ok: false, text: `${vehicle.number} is reserved for ${existingExclusive.customer_name} because sharing is disabled.` };
     }
@@ -699,14 +741,17 @@ function BulkOrganizerPage() {
     void saveBulkOrganizerPlan({ ...next, pallets: next.invoices || [] }).catch((e: any) => setError(e?.message || "Automatic save failed"));
   };
 
-  const assignedCountOnVehicle = (inv: InvoicePlan, vehicleId: string) =>
-    Array.from({ length: safePalletCount(inv.pallets) }).filter((_, k) => assignments[`${inv.id}::${k}`] === vehicleId).length;
+  const assignedCountOnVehicle = (inv: InvoicePlan, vehicleId: string, tripNumber?: number) =>
+    Array.from({ length: invoiceLoadUnitCount(inv) }).filter((_, k) => {
+      const value = assignments[`${inv.id}::${k}`];
+      return assignmentVehicleId(value) === vehicleId && (tripNumber == null || assignmentTripNumber(value) === tripNumber);
+    }).length;
 
   const invoiceEquivalentForNextUnassigned = (inv: any, quantity: number, assignmentMap: Record<string,string|null> = assignments) => {
     const types: Array<"big"|"small"> = Array.isArray(inv?.pallet_types) && inv.pallet_types.length ? inv.pallet_types : mixedPalletTypes(invoiceBigCount(inv), invoiceSmallCount(inv));
     let remaining = Math.max(0, Number(quantity || 0));
     let total = 0;
-    for (let k = 0; k < safePalletCount(inv?.pallets || types.length || 1) && remaining > 0; k++) {
+    for (let k = 0; k < invoiceLoadUnitCount(inv) && remaining > 0; k++) {
       if (assignmentMap[`${inv.id}::${k}`]) continue;
       total += invoicePalletEquivalentAt(inv, k);
       remaining--;
@@ -719,10 +764,10 @@ function BulkOrganizerPage() {
     let left = Math.max(0, Math.min(qty, assignedCountOnVehicle(inv, vehicleId)));
     for (let k = safePalletCount(inv.pallets) - 1; k >= 0 && left > 0; k--) {
       const key = `${inv.id}::${k}`;
-      if (nextAssignments[key] === vehicleId) { delete nextAssignments[key]; left--; }
+      if (assignmentVehicleId(nextAssignments[key]) === vehicleId) { delete nextAssignments[key]; left--; }
     }
     const remainingLoaded = Array.from({ length: safePalletCount(inv.pallets) }, (_, k) => nextAssignments[`${inv.id}::${k}`]).filter(Boolean);
-    const uniqueVehicles = Array.from(new Set(remainingLoaded));
+    const uniqueVehicles = Array.from(new Set(remainingLoaded.map(assignmentVehicleId)));
     const next = { ...planRef.current, pallet_assignments: nextAssignments,
       invoices: (planRef.current.invoices || []).map(i => i.id === inv.id ? { ...i, vehicle_id: remainingLoaded.length === Number(i.pallets || 0) && uniqueVehicles.length === 1 ? String(uniqueVehicles[0]) : null } : i) };
     setPlan(next); persistPlanNow(next); setError("");
@@ -737,18 +782,18 @@ function BulkOrganizerPage() {
     if (!cfg || !vehicle) return;
     const permission = vehiclePermission(inv, vehicle);
     if (!permission.ok) { setError(`${vehicle.number}: ${permission.text}`); return; }
-    const free = Math.max(0, capacityFor(cfg, vehicle) - loadedByVehicle(toVehicleId));
+    const free = Math.max(0, capacityForTrip(cfg, vehicle) - loadedByVehicle(toVehicleId, 1));
     const requestedEquivalent = invoiceEquivalentForNextUnassigned(inv, amount);
     if (requestedEquivalent > free) { setError(`${vehicle.number}: only ${formatEquivalent(free)} big-pallet space left.`); return; }
-    if (!canFitInvoice(inv, cfg, vehicle, amount)) { setError(`${vehicle.number}: the big/small pallet capacity would be exceeded.`); return; }
+    if (!canFitInvoice(inv, cfg, vehicle, amount, 1)) { setError(`${vehicle.number}: the big/small pallet capacity would be exceeded.`); return; }
     const nextAssignments = { ...(planRef.current.pallet_assignments || {}) };
     const sourceKeys: string[] = [];
     for (let k = safePalletCount(inv.pallets) - 1; k >= 0 && sourceKeys.length < amount; k--) {
-      if (nextAssignments[`${inv.id}::${k}`] === fromVehicleId) sourceKeys.push(`${inv.id}::${k}`);
+      if (assignmentVehicleId(nextAssignments[`${inv.id}::${k}`]) === fromVehicleId) sourceKeys.push(`${inv.id}::${k}`);
     }
     sourceKeys.forEach(k => { nextAssignments[k] = toVehicleId; });
     const loadedNow = Array.from({ length: safePalletCount(inv.pallets) }, (_, k) => nextAssignments[`${inv.id}::${k}`]).filter(Boolean);
-    const uniqueVehicles = Array.from(new Set(loadedNow));
+    const uniqueVehicles = Array.from(new Set(loadedNow.map(assignmentVehicleId)));
     const next = { ...planRef.current, pallet_assignments: nextAssignments,
       invoices: (planRef.current.invoices || []).map(i => i.id === inv.id ? { ...i, vehicle_id: loadedNow.length === Number(i.pallets || 0) && uniqueVehicles.length === 1 ? String(uniqueVehicles[0]) : null } : i) };
     setPlan(next); persistPlanNow(next); setError(""); setManageVehicleId(null); closeInvoiceLoadModal();
@@ -800,6 +845,7 @@ function BulkOrganizerPage() {
     setBatchBuildingId(null);
     setBatchVehicleIds([]);
     setBatchLoadMode("full");
+    setBatchTripNumber(1);
     setBatchPartialQuantities({});
   }
 
@@ -819,7 +865,7 @@ function BulkOrganizerPage() {
 
     const nextAssignments = { ...(planRef.current.pallet_assignments || {}) };
     const usedByVehicle = new Map<string, number>();
-    batchVehicles.forEach(cfg => usedByVehicle.set(cfg.vehicle_id, loadedByVehicle(cfg.vehicle_id)));
+    batchVehicles.forEach(cfg => usedByVehicle.set(cfg.vehicle_id, loadedByVehicle(cfg.vehicle_id, batchTripNumber)));
     const loaded: string[] = [];
     const skipped: string[] = [];
 
@@ -834,34 +880,40 @@ function BulkOrganizerPage() {
       for (const cfg of batchVehicles) {
         const vehicle = vehicleMap.get(cfg.vehicle_id);
         if (!vehicle || remaining <= 0) continue;
-        const permission = vehiclePermission(inv, vehicle);
+        const permission = vehiclePermission(inv, vehicle, batchTripNumber);
         if (!permission.ok) continue;
         const store = (plan.buildings || []).find(b => b.id === inv.building_id);
         const canShare = inv.can_share_vehicle ?? store?.can_share_vehicle ?? true;
         if (!canShare) {
           const existingCustomers = new Set<string>();
           Object.entries(nextAssignments).forEach(([key, assignedVehicle]) => {
-            if (assignedVehicle !== vehicle.id) return;
+            if (assignmentVehicleId(assignedVehicle) !== vehicle.id || assignmentTripNumber(assignedVehicle) !== batchTripNumber) return;
             const [invoiceId] = key.split("::");
             const existing = allPlanInvoices.find(x => x.id === invoiceId);
             if (existing) existingCustomers.add(norm(existing.customer_name));
           });
           if (Array.from(existingCustomers).some(name => name && name !== norm(inv.customer_name))) continue;
         }
-        const cap = capacityFor(cfg, vehicle);
+        if (batchTripNumber > tripCountFor(vehicle.id)) continue;
+        const cap = capacityForTrip(cfg, vehicle);
         const used = usedByVehicle.get(vehicle.id) || 0;
         const room = Math.max(0, cap - used);
         const perPallet = invoiceEquivalentForNextUnassigned(inv, 1, nextAssignments);
         let qty = Math.min(remaining, Math.floor((room + 1e-9) / Math.max(perPallet, 1e-9)));
-        while (qty > 0 && !canFitInvoice(inv, cfg, vehicle, qty)) qty--;
+        while (qty > 0 && !canFitInvoice(inv, cfg, vehicle, qty, batchTripNumber)) qty--;
         if (qty <= 0) continue;
         const beforeVehicle = placed;
+        let placedEquivalent = 0;
         for (let k = 0; k < safePalletCount(inv.pallets) && placed < requested; k++) {
           const key = `${inv.id}::${k}`;
-          if (!nextAssignments[key] && placed - beforeVehicle < qty) { nextAssignments[key] = vehicle.id; placed++; }
+          if (!nextAssignments[key] && placed - beforeVehicle < qty) {
+            nextAssignments[key] = assignmentForTrip(vehicle.id, batchTripNumber);
+            placedEquivalent += invoicePalletEquivalentAt(inv, k);
+            placed++;
+          }
         }
         const placedOnVehicle = placed - beforeVehicle;
-        usedByVehicle.set(vehicle.id, used + invoiceEquivalentForNextUnassigned(inv, placedOnVehicle, nextAssignments));
+        usedByVehicle.set(vehicle.id, used + placedEquivalent);
         remaining -= placedOnVehicle;
       }
       if (remaining === 0) loaded.push(inv.invoice_no);
@@ -875,7 +927,7 @@ function BulkOrganizerPage() {
         invoices: (planRef.current.invoices || []).map(i => {
           const total = safePalletCount(i.pallets);
           const assigned = Array.from({ length: total }, (_, k) => nextAssignments[`${i.id}::${k}`]).filter(Boolean);
-          const vehicles = Array.from(new Set(assigned));
+          const vehicles = Array.from(new Set(assigned.map(assignmentVehicleId)));
           return selected.some(x => x.id === i.id)
             ? { ...i, vehicle_id: vehicles.length === 1 && assigned.length >= total ? String(vehicles[0]) : null }
             : i;
@@ -898,6 +950,7 @@ function BulkOrganizerPage() {
     setLoadInvoiceTarget(inv);
     setLoadVehicleId(selectedVehicles[0]?.vehicle_id || "");
     setLoadQuantity(remaining);
+    setLoadTripNumber(1);
     setError("");
   }
 
@@ -931,18 +984,19 @@ function BulkOrganizerPage() {
     const vehicle = vehicleMap.get(loadVehicleId);
     const cfg = selectedVehicles.find(x => x.vehicle_id === loadVehicleId);
     if (!vehicle || !cfg) { setError("Select a vehicle first."); return; }
-    const permission = vehiclePermission(workingInv, vehicle);
+    const permission = vehiclePermission(workingInv, vehicle, loadTripNumber);
     if (!permission.ok) { setError(`${vehicle.number}: ${permission.text}`); return; }
     const remaining = Math.max(0, Number(inv.pallets || 0) - invoiceLoaded(workingInv));
     const qty = Math.max(1, Math.min(remaining, Number(loadQuantity || 0)));
-    const used = loadedByVehicle(loadVehicleId);
-    const capacity = capacityFor(cfg, vehicle);
+    if (loadTripNumber > tripCountFor(vehicle.id)) { setError(`${vehicle.number} is configured for ${tripCountFor(vehicle.id)} trip(s) today.`); return; }
+    const used = loadedByVehicle(loadVehicleId, loadTripNumber);
+    const capacity = capacityForTrip(cfg, vehicle);
     const requestedEquivalent = invoiceEquivalentForNextUnassigned(workingInv, qty);
     if (used + requestedEquivalent > capacity) {
       setError(`${vehicle.number}: only ${formatEquivalent(Math.max(0, capacity - used))} big-pallet space left.`);
       return;
     }
-    if (!canFitInvoice(workingInv, cfg, vehicle, qty)) {
+    if (!canFitInvoice(workingInv, cfg, vehicle, qty, loadTripNumber)) {
       setError(`${vehicle.number}: the big/small pallet capacity would be exceeded.`);
       return;
     }
@@ -950,10 +1004,10 @@ function BulkOrganizerPage() {
     let left = qty;
     for (let k = 0; k < safePalletCount(workingInv.pallets) && left > 0; k++) {
       const key = `${inv.id}::${k}`;
-      if (!nextAssignments[key]) { nextAssignments[key] = loadVehicleId; left--; }
+      if (!nextAssignments[key]) { nextAssignments[key] = assignmentForTrip(loadVehicleId, loadTripNumber); left--; }
     }
     const loadedNow = Array.from({ length: safePalletCount(workingInv.pallets) }, (_, k) => nextAssignments[`${inv.id}::${k}`]).filter(Boolean);
-    const uniqueVehicles = Array.from(new Set(loadedNow));
+    const uniqueVehicles = Array.from(new Set(loadedNow.map(assignmentVehicleId)));
     const sourceInvoices = planInvoice
       ? (planRef.current.invoices || []).map(i => i.id === inv.id || i.invoice_no === inv.invoice_no
         ? { ...i, scheduled_date: i.scheduled_date || date, vehicle_id: uniqueVehicles.length === 1 && loadedNow.length >= Number(i.pallets || 0) ? String(uniqueVehicles[0]) : null }
@@ -1014,7 +1068,7 @@ function BulkOrganizerPage() {
     setInvoiceCustomerLocked(!others && linked.length === 0);
     setShowInvoiceManager(true);
     setScheduleMode(receivesToday ? "today" : "waiting");
-    setInvoiceForm(x => ({ ...x, invoice_no: "", customer_id: matched?.id || `manual:${store.id}`, customer_name: others ? "" : store.name, area: store.area || "", division: store.division || divisionView, pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 1, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: store.timing || "", remarks: "", can_share_vehicle: "store", invoice_date: date, schedule_date: receivesToday ? date : "", building_id: store.id }));
+    setInvoiceForm(x => ({ ...x, invoice_no: "", customer_id: matched?.id || `manual:${store.id}`, customer_name: others ? "" : store.name, area: store.area || "", division: store.division || divisionView, pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 0, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: store.timing || "", remarks: "", can_share_vehicle: "store", invoice_date: date, schedule_date: receivesToday ? date : "", building_id: store.id }));
   }
 
   function openInvoiceForCustomer(customer: any, store: Building) {
@@ -1025,7 +1079,7 @@ function BulkOrganizerPage() {
     const others = isOthersStore(store);
     setEditingInvoice(null); setInvoiceBuildingLocked(true); setInvoiceCustomerLocked(!others);
     setShowInvoiceManager(true); setScheduleMode(receivesToday ? "today" : "waiting");
-    setInvoiceForm(x => ({ ...x, invoice_no: "", customer_id: matched?.id || customer.id || "", customer_name: others ? "" : customer.name, area: customer.area || store.area || matched?.area || "", division: customer.division || store.division || divisionView, pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 1, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: store.timing || "", remarks: "", can_share_vehicle: "store", invoice_date: date, schedule_date: receivesToday ? date : "", building_id: store.id }));
+    setInvoiceForm(x => ({ ...x, invoice_no: "", customer_id: matched?.id || customer.id || "", customer_name: others ? "" : customer.name, area: customer.area || store.area || matched?.area || "", division: customer.division || store.division || divisionView, pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 0, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: store.timing || "", remarks: "", can_share_vehicle: "store", invoice_date: date, schedule_date: receivesToday ? date : "", building_id: store.id }));
   }
 
   function dropStoreOnVehicle(v: any, storeId: string) {
@@ -1079,7 +1133,7 @@ function BulkOrganizerPage() {
         ? x.vehicles.filter(z => z.vehicle_id !== v.id)
         : [...x.vehicles, { vehicle_id: v.id, capacity: defaultCapacity(v) }];
       const nextMeta = { ...(x.vehicle_meta || {}), __selection_mode: "daily" } as any;
-      const nextAssignments = Object.fromEntries(Object.entries(x.pallet_assignments || {}).map(([k, val]) => [k, val === v.id ? null : val]));
+      const nextAssignments = Object.fromEntries(Object.entries(x.pallet_assignments || {}).map(([k, val]) => [k, assignmentVehicleId(val) === v.id ? null : val]));
       return { ...x, vehicles: nextVehicles, vehicle_meta: nextMeta, pallet_assignments: nextAssignments };
     });
     void listKey;
@@ -1403,27 +1457,36 @@ function BulkOrganizerPage() {
 
   function invoiceRowForStore(store: Building) {
     const others = isOthersStore(store);
-    return { invoice_no: "", customer_id: "", customer_name: others ? "" : store.name, area: store.area || "", division: store.division || divisionView, pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 1, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, timing: "", remarks: "", can_share_vehicle: "store", invoice_date: date, schedule_date: date, building_id: store.id };
+    return { invoice_no: "", customer_id: "", customer_name: others ? "" : store.name, area: store.area || "", division: store.division || divisionView, pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 0, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, timing: "", remarks: "", can_share_vehicle: "store", invoice_date: date, schedule_date: date, building_id: store.id };
   }
 
   function buildInvoiceLoadData(form: any, buildingId: string | null, fallbackPallets = 1) {
     const boxCounts = normalizeBoxCounts({ small: form.box_small, medium: form.box_medium, big: form.box_big });
     const hasBoxes = boxCounts.small + boxCounts.medium + boxCounts.big > 0;
     const boxCalc = hasBoxes ? calculateBoxLoad(boxCounts, boxSettings) : null;
-    const bigPallets = boxCalc ? boxCalc.bigFull : Math.max(0, Number(form.big_pallet_quantity || 0));
-    const smallPallets = boxCalc ? boxCalc.physicalSmall : Math.max(0, Number(form.small_pallet_quantity || 0));
-    const physicalPallets = boxCalc ? Math.max(1, boxCalc.physicalPallets) : Math.max(1, bigPallets + smallPallets || Number(fallbackPallets || 1));
-    const palletTypes = boxCalc ? boxCalc.palletTypes : mixedPalletTypes(bigPallets, smallPallets);
+    const enteredBigPallets = Math.max(0, Number(form.big_pallet_quantity || 0));
+    const enteredSmallPallets = Math.max(0, Number(form.small_pallet_quantity || 0));
+    const bigPallets = enteredBigPallets + (boxCalc?.bigFull || 0);
+    const smallPallets = enteredSmallPallets + (boxCalc?.physicalSmall || 0);
+    const enteredPhysicalPallets = enteredBigPallets + enteredSmallPallets;
+    const physicalPallets = enteredPhysicalPallets + (boxCalc?.physicalPallets || 0) || (!hasBoxes ? Math.max(1, Number(fallbackPallets || 1)) : 0);
+    const loadUnits = enteredPhysicalPallets + (boxCalc?.loadUnits || 0) || (!hasBoxes ? Math.max(1, Number(fallbackPallets || 1)) : 0);
+    const enteredTypes = mixedPalletTypes(enteredBigPallets, enteredSmallPallets);
+    const palletTypes = [...enteredTypes, ...(boxCalc?.palletTypes || [])];
+    const palletEquivalents = [...enteredTypes.map(type => palletEquivalent(type, 1, boxSettings.smallToBig)), ...(boxCalc?.palletEquivalents || [])];
     const store = (planRef.current.buildings || []).find(b => b.id === buildingId);
     const canShare = form.can_share_vehicle === "yes" ? true : form.can_share_vehicle === "no" ? false : store?.can_share_vehicle !== false;
     return {
-      pallets: physicalPallets,
+      // `pallets` remains the number of assignable loading units for backwards-compatible assignments.
+      // For box-only/partial-box loads these units are not physical pallets.
+      pallets: loadUnits,
+      physical_pallets: physicalPallets,
       pallet_size: (smallPallets > 0 && bigPallets === 0 ? "small" : "big") as "big" | "small",
       pallet_quantity: physicalPallets,
       big_pallets: bigPallets,
       small_pallets: smallPallets,
       pallet_types: palletTypes,
-      pallet_equivalents: boxCalc ? boxCalc.palletEquivalents : undefined,
+      pallet_equivalents: palletEquivalents,
       box_counts: hasBoxes ? boxCounts : undefined,
       fridge_boxes: Math.max(0, Number(form.fridge_boxes || 0)),
       box_pallet_calc: boxCalc || undefined,
@@ -1445,7 +1508,7 @@ function BulkOrganizerPage() {
       if (!buildingId) { setError(`Select a Store / destination for ${r.invoice_no}.`); return; }
       if (r.schedule_date && !buildingAllowsDate(buildingId, r.schedule_date) && canonicalInvoiceDate(r.schedule_date) !== canonicalInvoiceDate(date)) { setError(`The selected schedule date is not allowed for ${r.customer_name}.`); return; }
       const loadData = buildInvoiceLoadData(r, buildingId, Number(r.pallet_quantity || r.pallets || 1));
-      newInvoices.push({ id:`manual-invoice:${crypto.randomUUID()}`, invoice_no:r.invoice_no, customer_id:customerId, customer_name:customer?.name || r.customer_name, area:r.area || customer?.area || "", division:r.division || customer?.division || "Unknown", ...loadData, invoice_date:r.invoice_date || null, scheduled_date:r.schedule_date || null, schedule_mode:r.schedule_mode || (r.schedule_date ? "specific" : "waiting"), vehicle_id:null, building_id:buildingId });
+      newInvoices.push({ id:`manual-invoice:${crypto.randomUUID()}`, invoice_no:r.invoice_no, customer_id:customerId, customer_name:customer?.name || (plan.buildings||[]).find(b=>norm(b.name)===norm(r.customer_name))?.name || (plan.customer_schedules||[]).find(c=>norm(c.customer_name)===norm(r.customer_name))?.customer_name || r.customer_name.trim().replace(/\s+/g," "), area:r.area || customer?.area || "", division:r.division || customer?.division || "Unknown", ...loadData, invoice_date:r.invoice_date || null, scheduled_date:r.schedule_date || null, schedule_mode:r.schedule_mode || (r.schedule_date ? "specific" : "waiting"), vehicle_id:null, building_id:buildingId });
     }
     const sameDay = newInvoices.filter(i => !i.scheduled_date || canonicalInvoiceDate(i.scheduled_date) === canonicalInvoiceDate(date));
     const future = newInvoices.filter(i => i.scheduled_date && canonicalInvoiceDate(i.scheduled_date) !== canonicalInvoiceDate(date));
@@ -1506,7 +1569,7 @@ function BulkOrganizerPage() {
       } catch (e: any) { setError(e?.message || "Could not place the invoice on its scheduled date."); return; }
     }
     setScheduleMode("today");
-    setInvoiceForm({ invoice_no: "", customer_id: "", customer_name: "", area: "", division: "", pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 1, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: "", remarks: "", can_share_vehicle: "store", invoice_date: "", schedule_date: "", building_id: "", schedule_mode: "today" });
+    setInvoiceForm({ invoice_no: "", customer_id: "", customer_name: "", area: "", division: "", pallets: 1, pallet_size: "big" as "big" | "small", pallet_quantity: 1, big_pallet_quantity: 0, small_pallet_quantity: 0, box_small: 0, box_medium: 0, box_big: 0, fridge_boxes: 0, timing: "", remarks: "", can_share_vehicle: "store", invoice_date: "", schedule_date: "", building_id: "", schedule_mode: "today" });
     setShowInvoiceManager(false);
   }
 
@@ -1618,6 +1681,18 @@ function BulkOrganizerPage() {
     const hit = library.find(p => norm(p.code) === q || norm(p.name) === q);
     return hit?.name || value;
   }
+  function updateVehicleTripCount(vehicleId: string, value: number) {
+    const trip_count = Math.min(3, Math.max(1, Math.floor(Number(value) || 1)));
+    const usedHigherTrip = Object.values(planRef.current.pallet_assignments || {}).some(v => assignmentVehicleId(v) === vehicleId && assignmentTripNumber(v) > trip_count);
+    if (usedHigherTrip) { setError("Move or remove the invoices assigned to the higher trip before reducing this vehicle's trip count."); return; }
+    setPlan(x => ({ ...x, vehicle_meta: { ...(x.vehicle_meta || {}), [vehicleId]: { ...(x.vehicle_meta?.[vehicleId] || {}), trip_count } } }));
+    const existingDefaults = defaultsRef.current.vehicles || [];
+    const cfg = selectedVehicles.find(v => v.vehicle_id === vehicleId) || { vehicle_id: vehicleId, capacity: 10 };
+    const nextDefaults = { ...defaultsRef.current, month_key: monthKey(date), vehicles: existingDefaults.some(v => v.vehicle_id === vehicleId)
+      ? existingDefaults.map(v => v.vehicle_id === vehicleId ? { ...v, trip_count } : v)
+      : [...existingDefaults, { ...cfg, trip_count }] };
+    void saveBulkOrganizerDefaults(nextDefaults).then(saved => setDefaults(saved as DefaultsV2)).catch((e:any) => setError(e?.message || "Could not save the vehicle's default trip count."));
+  }
   function updateVehicleMeta(vehicleId: string, field: "driver" | "helper", value: string) {
     const library = field === "driver" ? driverLibrary : helperLibrary;
     const canonical = personCanonical(value, library);
@@ -1644,11 +1719,11 @@ function BulkOrganizerPage() {
     return hasSchedule || hasInvoice || !b.division;
   });
   const dayName = new Date(`${date}T12:00:00`).toLocaleDateString("en-GB", { weekday: "long" });
-  const loadedByVehicle = (vehicleId: string) => assignedCapacityOnVehicle(vehicleId);
-  const loadedByVehicleByDivision = (vehicleId: string, div: string) => { let used = 0; Object.entries(assignments).forEach(([key,value]) => { if (value !== vehicleId) return; const [invoiceId] = key.split("::"); const inv = allPlanInvoices.find(i => i.id === invoiceId && canonicalInvoiceDate(i.scheduled_date) === canonicalInvoiceDate(date) && norm(i.division) === norm(div)); if (inv) { const idx=Number(key.split("::")[1]||0);
+  const loadedByVehicle = (vehicleId: string, tripNumber?: number) => assignedCapacityOnVehicle(vehicleId, tripNumber);
+  const loadedByVehicleByDivision = (vehicleId: string, div: string) => { let used = 0; Object.entries(assignments).forEach(([key,value]) => { if (assignmentVehicleId(value) !== vehicleId) return; const [invoiceId] = key.split("::"); const inv = allPlanInvoices.find(i => i.id === invoiceId && canonicalInvoiceDate(i.scheduled_date) === canonicalInvoiceDate(date) && norm(i.division) === norm(div)); if (inv) { const idx=Number(key.split("::")[1]||0);
       used += invoicePalletEquivalentAt(inv, idx); } }); return used; };
-  const invoicesInVehicle = (vehicleId: string) => invoices.filter(i => Object.values(assignments).some(v => v === vehicleId && Object.keys(assignments).some(k => k.startsWith(`${i.id}::`) && assignments[k] === vehicleId)));
-  const invoiceLoaded = (i: InvoicePlan) => Array.from({ length: safePalletCount(i.pallets) }).filter((_, k) => !!assignments[`${i.id}::${k}`]).length;
+  const invoicesInVehicle = (vehicleId: string, tripNumber?: number) => invoices.filter(i => Object.entries(assignments).some(([k,v]) => k.startsWith(`${i.id}::`) && assignmentVehicleId(v) === vehicleId && (tripNumber == null || assignmentTripNumber(v) === tripNumber)));
+  const invoiceLoaded = (i: InvoicePlan) => Array.from({ length: invoiceLoadUnitCount(i) }).filter((_, k) => !!assignments[`${i.id}::${k}`]).length;
   const vehicleImage = (v: any) => {
     const t = norm(v.type);
     if (isVan(t)) return "/vehicle-images/VAN 1.PNG";
@@ -1659,22 +1734,23 @@ function BulkOrganizerPage() {
   };
   const invoiceEquivalentLoaded = (inv: any) => {
     let total = 0;
-    for (let idx=0; idx<invoicePhysicalQuantity(inv); idx++) {
+    for (let idx=0; idx<invoiceLoadUnitCount(inv); idx++) {
       if (assignments[`${inv.id}::${idx}`]) total += invoicePalletEquivalentAt(inv, idx);
     }
     return total;
   };
-  const invoiceEquivalentLoadedOnVehicle = (inv: any, vehicleId: string) => {
+  const invoiceEquivalentLoadedOnVehicle = (inv: any, vehicleId: string, tripNumber?: number) => {
     let total = 0;
-    for (let idx=0; idx<invoicePhysicalQuantity(inv); idx++) {
-      if (assignments[`${inv.id}::${idx}`] === vehicleId) total += invoicePalletEquivalentAt(inv, idx);
+    for (let idx=0; idx<invoiceLoadUnitCount(inv); idx++) {
+      const value = assignments[`${inv.id}::${idx}`];
+      if (assignmentVehicleId(value) === vehicleId && (tripNumber == null || assignmentTripNumber(value) === tripNumber)) total += invoicePalletEquivalentAt(inv, idx);
     }
     return total;
   };
-  const assignedCapacityOnVehicle = (vehicleId: string) => {
+  const assignedCapacityOnVehicle = (vehicleId: string, tripNumber?: number) => {
     let used = 0;
     Object.entries(assignments).forEach(([key, value]) => {
-      if (value !== vehicleId) return;
+      if (assignmentVehicleId(value) !== vehicleId || (tripNumber != null && assignmentTripNumber(value) !== tripNumber)) return;
       const [invoiceId] = key.split("::");
       const inv = allPlanInvoices.find(i => i.id === invoiceId);
       if (inv) { const idx=Number(key.split("::")[1]||0);
@@ -1682,9 +1758,9 @@ function BulkOrganizerPage() {
     });
     return used;
   };
-  const canFitInvoice = (inv: any, cfg: VehicleConfig, v: any, quantity?: number) => {
-    const capacity = capacityFor(cfg, v);
-    const used = assignedCapacityOnVehicle(v.id);
+  const canFitInvoice = (inv: any, cfg: VehicleConfig, v: any, quantity?: number, tripNumber?: number) => {
+    const capacity = capacityForTrip(cfg, v);
+    const used = assignedCapacityOnVehicle(v.id, tripNumber);
     return used + invoiceEquivalentCapacity(inv, quantity) <= capacity + 1e-9;
   };
   const customersForDay = useMemo(() => {
@@ -1749,18 +1825,18 @@ function BulkOrganizerPage() {
   return <div className={`page bulk-planner-page bulk-theme-${bulkTheme} ${loading ? "is-hydrating" : ""}`}>
     <style>{`
  .bulk-store-compact-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:10px;margin-top:10px;align-items:start}
-.bulk-store-compact-card{font-size:14px;min-width:0;border:1px solid var(--border,rgba(148,163,184,.22));border-radius:14px;padding:10px 11px;background:var(--surface,rgba(255,255,255,.55));transition:box-shadow .18s ease,border-color .18s ease;overflow:hidden;cursor:pointer;will-change:height,transform}.bulk-store-compact-card .bulk-inline-expanded{cursor:default}.bulk-store-compact-card b,.bulk-vehicle-compact-card b{font-size:1.04em;font-weight:700}.bulk-store-compact-card small,.bulk-vehicle-compact-card small{font-size:12px;line-height:1.45}.bulk-inline-expanded{margin-top:10px;display:grid;gap:10px}.bulk-inline-expanded > .bulk-store-customer-box,.bulk-inline-expanded > .bulk-vehicle-card{margin-top:0}
+.bulk-store-compact-card{font-size:14px;min-width:0;border:1px solid var(--border,rgba(148,163,184,.22));border-radius:14px;padding:10px 11px;background:var(--surface,rgba(255,255,255,.55));transition:box-shadow .18s ease,border-color .18s ease;overflow:hidden;cursor:pointer;will-change:height,transform}.bulk-store-compact-card .bulk-inline-expanded{cursor:default}.bulk-inline-expanded{margin-top:10px;display:grid;gap:10px}.bulk-inline-expanded > .bulk-store-customer-box,.bulk-inline-expanded > .bulk-vehicle-card{margin-top:0}
 .bulk-store-compact-card:hover{box-shadow:0 5px 16px rgba(15,23,42,.07)}
 .bulk-store-compact-card.is-not-today{opacity:.78}
 .bulk-store-compact-card.is-expanded{grid-column:span 2;border-color:rgba(59,130,246,.4);box-shadow:0 10px 28px rgba(15,23,42,.10);z-index:2}
 .bulk-store-compact-top{display:flex;align-items:center;gap:9px;min-width:0}
 .bulk-store-compact-icon{width:34px;height:34px;display:grid;place-items:center;flex:0 0 34px;border-radius:10px;background:rgba(59,130,246,.09);border:1px solid rgba(59,130,246,.16)}
 .bulk-store-compact-main{min-width:0;flex:1 1 auto}
-.bulk-store-compact-main b{display:block;overflow-wrap:anywhere;word-break:break-word;font-size:12px;line-height:1.25}.bulk-store-compact-main>span{display:block;color:var(--muted);font-size:10px;margin-top:2px;overflow-wrap:anywhere}
-.bulk-store-compact-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto}.bulk-store-compact-actions .btn{width:28px;height:28px;padding:0}.bulk-store-compact-count{font-size:9px;font-weight:800;white-space:normal;text-align:right;color:var(--muted);line-height:1.25;max-width:92px}
-.bulk-store-compact-status{display:inline-flex;align-items:center;gap:4px;margin-top:8px;padding:4px 7px;border-radius:8px;font-size:9px;font-weight:900;letter-spacing:.02em}.bulk-store-compact-status.green{background:rgba(34,197,94,.11);color:#16a34a;border:1px solid rgba(34,197,94,.24)}.bulk-store-compact-status.amber{background:rgba(245,158,11,.12);color:#d97706;border:1px solid rgba(245,158,11,.25)}.bulk-store-compact-status.muted{background:rgba(148,163,184,.10);color:var(--muted);border:1px solid rgba(148,163,184,.2)}
-.bulk-store-compact-meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;min-width:0}.bulk-store-compact-meta span{display:inline-flex;align-items:center;gap:4px;min-width:0;max-width:100%;padding:4px 6px;border-radius:7px;background:rgba(148,163,184,.08);font-size:9px;font-weight:800;color:var(--muted);overflow-wrap:anywhere}.bulk-store-compact-days{display:flex;flex-wrap:wrap;gap:3px;margin-top:8px}.bulk-store-compact-days span{font-size:8px;font-weight:900;padding:3px 5px;border-radius:6px;border:1px solid rgba(148,163,184,.28);background:rgba(148,163,184,.06);color:#ef4444}.bulk-store-compact-days span.on{background:rgba(34,197,94,.11);border-color:rgba(34,197,94,.25);color:#16a34a}.bulk-store-compact-buttons{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.bulk-store-compact-buttons .btn{font-size:10px;min-height:28px}.bulk-store-compact-expanded-hint{margin-top:7px;font-size:9px;color:var(--muted);font-weight:700}
-.bulk-vehicle-compact-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:10px;margin-top:10px;align-items:start}.bulk-vehicle-compact-card{min-width:0;border:1px solid var(--border,rgba(148,163,184,.22));border-radius:14px;padding:10px;background:var(--surface,rgba(255,255,255,.55));overflow:hidden;cursor:pointer;will-change:height,transform}.bulk-vehicle-compact-card.is-expanded{grid-column:span 2;z-index:2;box-shadow:0 10px 28px rgba(15,23,42,.10)}.bulk-vehicle-compact-card.green{border-color:rgba(34,197,94,.28)}.bulk-vehicle-compact-card.amber{border-color:rgba(245,158,11,.32)}.bulk-vehicle-compact-top{display:flex;align-items:center;gap:9px;min-width:0}.bulk-vehicle-compact-top img{width:48px;height:34px;object-fit:contain;flex:0 0 48px}.bulk-vehicle-compact-main{min-width:0;flex:1}.bulk-vehicle-compact-main b{display:block;font-size:12px;overflow-wrap:anywhere}.bulk-vehicle-compact-main span,.bulk-vehicle-compact-main small{display:block;color:var(--muted);font-size:9px;margin-top:2px;overflow-wrap:anywhere}.bulk-vehicle-compact-actions{display:flex;gap:5px;align-items:center;flex:0 0 auto}.bulk-vehicle-compact-actions .btn{width:28px;height:28px;padding:0}.bulk-vehicle-compact-status{font-size:9px;font-weight:900;padding:4px 7px;border-radius:8px;display:inline-flex;margin-top:7px}.bulk-vehicle-compact-status.green{background:rgba(34,197,94,.11);color:#16a34a}.bulk-vehicle-compact-status.amber{background:rgba(245,158,11,.12);color:#d97706}.bulk-vehicle-compact-cap{display:flex;justify-content:space-between;gap:8px;font-size:9px;font-weight:800;color:var(--muted);margin-top:7px}.bulk-vehicle-compact-card .bulk-capacity-bar{margin-top:6px}.bulk-vehicle-compact-meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}.bulk-vehicle-compact-meta span{font-size:9px;font-weight:800;padding:4px 6px;border-radius:7px;background:rgba(148,163,184,.08);color:var(--muted);overflow-wrap:anywhere}.bulk-vehicle-expanded-list{margin-top:10px;display:grid;gap:10px}
+.bulk-store-compact-main b{display:block;overflow-wrap:anywhere;word-break:break-word;font-size:14px;line-height:1.3;font-weight:750}.bulk-store-compact-main>span{display:block;color:var(--muted);font-size:12px;line-height:1.4;margin-top:2px;overflow-wrap:anywhere}
+.bulk-store-compact-actions{display:flex;align-items:center;gap:5px;flex:0 0 auto}.bulk-store-compact-actions .btn{width:28px;height:28px;padding:0}.bulk-store-compact-count{font-size:11px;font-weight:800;white-space:normal;text-align:right;color:var(--muted);line-height:1.25;max-width:92px}
+.bulk-store-compact-status{display:inline-flex;align-items:center;gap:4px;margin-top:8px;padding:4px 7px;border-radius:8px;font-size:11px;font-weight:900;letter-spacing:.02em}.bulk-store-compact-status.green{background:rgba(34,197,94,.11);color:#16a34a;border:1px solid rgba(34,197,94,.24)}.bulk-store-compact-status.amber{background:rgba(245,158,11,.12);color:#d97706;border:1px solid rgba(245,158,11,.25)}.bulk-store-compact-status.muted{background:rgba(148,163,184,.10);color:var(--muted);border:1px solid rgba(148,163,184,.2)}
+.bulk-store-compact-meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;min-width:0}.bulk-store-compact-meta span{display:inline-flex;align-items:center;gap:4px;min-width:0;max-width:100%;padding:4px 6px;border-radius:7px;background:rgba(148,163,184,.08);font-size:11px;font-weight:800;color:var(--muted);overflow-wrap:anywhere}.bulk-store-compact-days{display:flex;flex-wrap:wrap;gap:3px;margin-top:8px}.bulk-store-compact-days span{font-size:8px;font-weight:900;padding:3px 5px;border-radius:6px;border:1px solid rgba(148,163,184,.28);background:rgba(148,163,184,.06);color:#ef4444}.bulk-store-compact-days span.on{background:rgba(34,197,94,.11);border-color:rgba(34,197,94,.25);color:#16a34a}.bulk-store-compact-buttons{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}.bulk-store-compact-buttons .btn{font-size:10px;min-height:28px}.bulk-store-compact-expanded-hint{margin-top:7px;font-size:9px;color:var(--muted);font-weight:700}
+.bulk-vehicle-compact-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:10px;margin-top:10px;align-items:start}.bulk-vehicle-compact-card{min-width:0;border:1px solid var(--border,rgba(148,163,184,.22));border-radius:14px;padding:10px;background:var(--surface,rgba(255,255,255,.55));overflow:hidden;cursor:pointer;will-change:height,transform}.bulk-vehicle-compact-card.is-expanded{grid-column:span 2;z-index:2;box-shadow:0 10px 28px rgba(15,23,42,.10)}.bulk-vehicle-compact-card.green{border-color:rgba(34,197,94,.28)}.bulk-vehicle-compact-card.amber{border-color:rgba(245,158,11,.32)}.bulk-vehicle-compact-top{display:flex;align-items:center;gap:9px;min-width:0}.bulk-vehicle-compact-top img{width:48px;height:34px;object-fit:contain;flex:0 0 48px}.bulk-vehicle-compact-main{min-width:0;flex:1}.bulk-vehicle-compact-main b{display:block;font-size:14px;font-weight:750;overflow-wrap:anywhere}.bulk-vehicle-compact-main span,.bulk-vehicle-compact-main small{display:block;color:var(--muted);font-size:12px;line-height:1.4;margin-top:2px;overflow-wrap:anywhere}.bulk-vehicle-compact-actions{display:flex;gap:5px;align-items:center;flex:0 0 auto}.bulk-vehicle-compact-actions .btn{width:28px;height:28px;padding:0}.bulk-vehicle-compact-status{font-size:11px;font-weight:900;padding:4px 7px;border-radius:8px;display:inline-flex;margin-top:7px}.bulk-vehicle-compact-status.green{background:rgba(34,197,94,.11);color:#16a34a}.bulk-vehicle-compact-status.amber{background:rgba(245,158,11,.12);color:#d97706}.bulk-vehicle-compact-cap{display:flex;justify-content:space-between;gap:8px;font-size:11px;font-weight:800;color:var(--muted);margin-top:7px}.bulk-vehicle-compact-card .bulk-capacity-bar{margin-top:6px}.bulk-vehicle-compact-meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}.bulk-vehicle-compact-meta span{font-size:11px;font-weight:800;padding:4px 6px;border-radius:7px;background:rgba(148,163,184,.08);color:var(--muted);overflow-wrap:anywhere}.bulk-vehicle-expanded-list{margin-top:10px;display:grid;gap:10px}
 @media(max-width:620px){.bulk-store-compact-grid,.bulk-vehicle-compact-grid{grid-template-columns:1fr}.bulk-store-compact-card.is-expanded,.bulk-vehicle-compact-card.is-expanded{grid-column:span 1}.bulk-store-compact-count{max-width:82px}}
 `}</style><style>{`
       .bulk-planner-page .bulk-vehicle-card,
@@ -1829,14 +1905,14 @@ function BulkOrganizerPage() {
               {(expanded || vehiclesExpanded)&&<div className="bulk-inline-expanded" onClick={e=>e.stopPropagation()}>
                 <div className={`bulk-vehicle-card ${pct>=100?"is-full":pct>=80?"is-near-full":""}`} onDragOver={e=>{e.preventDefault();e.currentTarget.classList.add("drop-ready")}} onDragLeave={e=>e.currentTarget.classList.remove("drop-ready")} onDrop={e=>{e.preventDefault();e.currentTarget.classList.remove("drop-ready");const raw=e.dataTransfer.getData("text/plain");const d=dragged||(raw?{type:"customer" as const,id:raw}:null);if(d?.type==="customer")dropCustomerOnVehicle(v,d.id);else if(d?.type==="invoice")dropOnVehicle(v,d);else if(d?.type==="store")dropStoreOnVehicle(v,d.id);setDragged(null)}}>
                   <div className="bulk-vehicle-image-wrap"><img src={vehicleImage(v)} alt={v.type||"Vehicle"}/><span className="bulk-vehicle-ton">{String(v.type||"").toUpperCase()}</span></div>
-                  <div className="bulk-vehicle-main"><div className="bulk-vehicle-top"><div style={{minWidth:0,display:"flex",flexDirection:"column",gap:3}}><b>{v.number}</b><small style={{fontSize:10,color:"var(--muted)",whiteSpace:"normal",overflowWrap:"anywhere"}}>{Number(v.capacity_tons ?? v.tonnage ?? v.tons ?? 0) > 0 ? ` · ${Number(v.capacity_tons ?? v.tonnage ?? v.tons).toString()} tons` : ""}</small><small style={{fontSize:10,color:"var(--muted)",whiteSpace:"normal",overflowWrap:"anywhere"}}><MapPin size={10} style={{verticalAlign:"-1px",marginRight:4}}/>Permitted: {vehiclePermittedLabel(v.id)}</small></div><button className="btn icon-btn" title="Remove from day" onClick={e=>{e.stopPropagation();toggleVehicle(v)}}><X size={12}/></button></div><div className="bulk-capacity-row"><span>{formatOperationalEquivalent(used)} / {formatOperationalEquivalent(cap)} big-pallet space</span><strong>{formatOperationalEquivalent(Math.max(0,cap-used))} free</strong></div><div className="bulk-vehicle-type-capacity"><span>Capacity {formatOperationalEquivalent(cap)} big</span><span>Small equivalent: {formatOperationalEquivalent(cap / Math.max(0.01, boxSettings.smallToBig))} small</span></div>{(()=>{const other=divisionView==="Pharma"?"Consumer":"Pharma";const otherUsed=loadedByVehicleByDivision(v.id,other);return otherUsed?<div className="bulk-cross-division-load"><span>{other} already loaded</span><b>{formatOperationalEquivalent(otherUsed)} big-equiv</b></div>:null})()}<div className="bulk-capacity-bar"><i style={{width:`${pct}%`}}/></div><div className="bulk-vehicle-meta"><label>Driver<input list="bulk-driver-library" value={meta.driver||""} placeholder="Driver name or code" onChange={e=>updateVehicleMeta(v.id,"driver",e.target.value)} onBlur={e=>updateVehicleMeta(v.id,"driver",e.target.value)}/></label><label>Helper<input list="bulk-helper-library" value={meta.helper||""} placeholder="Helper name or code" onChange={e=>updateVehicleMeta(v.id,"helper",e.target.value)} onBlur={e=>updateVehicleMeta(v.id,"helper",e.target.value)}/></label></div></div><div className="bulk-vehicle-load-list">{invoicesInVehicle(v.id).map((i,invoiceIndex)=><div key={i.id} className="bulk-loaded-invoice" draggable onDragStart={e=>{e.stopPropagation();e.dataTransfer.setData("text/plain",i.id);setDragged({type:"invoice",id:i.id})}} onDragEnd={()=>setDragged(null)}><div className="bulk-loaded-pallet"><Package size={12}/><b>{formatInvoiceEquivalent(i,invoiceEquivalentLoadedOnVehicle(i,v.id))}</b><span>BIG EQ</span></div><span className="bulk-invoice-sequence" title={`Invoice ${invoiceIndex+1}`}>{invoiceIndex+1}</span><div className="bulk-loaded-invoice-info"><b>{i.invoice_no} {invoiceLoaded(i)>=Number(i.pallets||0)&&<span className="bulk-invoice-complete" title="Invoice fully loaded"><Check size={10}/></span>}</b><span style={{display:"flex",alignItems:"center",gap:5,minWidth:0}}>{i.customer_name}{!vehicleAreaStatus(i,v).permitted&&<span title="Invoice area is outside this vehicle's permitted areas" style={{width:8,height:8,borderRadius:"50%",background:"#f59e0b",boxShadow:"0 0 0 2px rgba(245,158,11,.16)",flex:"0 0 auto"}}/>}</span><small>{formatInvoiceEquivalent(i,invoiceEquivalentLoadedOnVehicle(i,v.id))} / {formatInvoiceEquivalent(i,invoiceEquivalentTotal(i))} big-equiv · {assignedCountOnVehicle(i,v.id)} / {i.pallets} physical pallets · {i.area||"Area not set"} · {i.division||"Division not set"}</small><small>{i.schedule_mode==="any_day"?"Any day":`Scheduled ${i.scheduled_date||"Waiting"}`}{Number(i.fridge_boxes||0)>0?` · ${i.fridge_boxes} fridge box${Number(i.fridge_boxes)===1?"":"es"}`:""}</small></div><div className="bulk-loaded-invoice-actions"><button className="btn icon-btn" title="Edit invoice" onClick={e=>{e.stopPropagation();editInvoice(i)}}><Pencil size={11}/></button><button className="btn icon-btn" title="Remove only this vehicle's loaded pallets" onClick={e=>{e.stopPropagation();removeInvoicePallets(i,v.id,assignedCountOnVehicle(i,v.id))}}><X size={12}/></button></div></div>)}{!invoicesInVehicle(v.id).length&&<span className="bulk-vehicle-empty">Drop invoice or customer here</span>}</div>
+                  <div className="bulk-vehicle-main"><div className="bulk-vehicle-top"><div style={{minWidth:0,display:"flex",flexDirection:"column",gap:3}}><b>{v.number}</b><small style={{fontSize:10,color:"var(--muted)",whiteSpace:"normal",overflowWrap:"anywhere"}}>{Number(v.capacity_tons ?? v.tonnage ?? v.tons ?? 0) > 0 ? ` · ${Number(v.capacity_tons ?? v.tonnage ?? v.tons).toString()} tons` : ""}</small><small style={{fontSize:10,color:"var(--muted)",whiteSpace:"normal",overflowWrap:"anywhere"}}><MapPin size={10} style={{verticalAlign:"-1px",marginRight:4}}/>Permitted: {vehiclePermittedLabel(v.id)}</small></div><button className="btn icon-btn" title="Remove from day" onClick={e=>{e.stopPropagation();toggleVehicle(v)}}><X size={12}/></button></div><div className="bulk-capacity-row"><span>{formatOperationalEquivalent(used)} / {formatOperationalEquivalent(cap)} big-pallet space</span><strong>{formatOperationalEquivalent(Math.max(0,cap-used))} free</strong></div><div className="bulk-vehicle-type-capacity"><span>Capacity {formatOperationalEquivalent(cap)} big</span><span>Small equivalent: {formatOperationalEquivalent(cap / Math.max(0.01, boxSettings.smallToBig))} small</span></div>{(()=>{const other=divisionView==="Pharma"?"Consumer":"Pharma";const otherUsed=loadedByVehicleByDivision(v.id,other);return otherUsed?<div className="bulk-cross-division-load"><span>{other} already loaded</span><b>{formatOperationalEquivalent(otherUsed)} big-equiv</b></div>:null})()}<div className="bulk-capacity-bar"><i style={{width:`${pct}%`}}/></div><div className="bulk-vehicle-meta"><label>Driver<input list="bulk-driver-library" value={meta.driver||""} placeholder="Driver name or code" onChange={e=>updateVehicleMeta(v.id,"driver",e.target.value)} onBlur={e=>updateVehicleMeta(v.id,"driver",e.target.value)}/></label><label>Helper<input list="bulk-helper-library" value={meta.helper||""} placeholder="Helper name or code" onChange={e=>updateVehicleMeta(v.id,"helper",e.target.value)} onBlur={e=>updateVehicleMeta(v.id,"helper",e.target.value)}/></label><label>Trips today<select value={tripCountFor(v.id)} onChange={e=>updateVehicleTripCount(v.id,Number(e.target.value))}><option value={1}>1 trip (default)</option><option value={2}>2 trips</option><option value={3}>3 trips</option></select></label></div></div><div className="bulk-vehicle-load-list">{invoicesInVehicle(v.id).map((i,invoiceIndex)=><div key={i.id} className="bulk-loaded-invoice" draggable onDragStart={e=>{e.stopPropagation();e.dataTransfer.setData("text/plain",i.id);setDragged({type:"invoice",id:i.id})}} onDragEnd={()=>setDragged(null)}><div className="bulk-loaded-pallet"><Package size={12}/><b>{formatInvoiceEquivalent(i,invoiceEquivalentLoadedOnVehicle(i,v.id))}</b><span>BIG EQ</span></div><span className="bulk-invoice-sequence" title={`Invoice ${invoiceIndex+1}`}>{invoiceIndex+1}</span><div className="bulk-loaded-invoice-info"><b>{i.invoice_no} {invoiceLoaded(i)>=Number(i.pallets||0)&&<span className="bulk-invoice-complete" title="Invoice fully loaded"><Check size={10}/></span>}</b><span style={{display:"flex",alignItems:"center",gap:5,minWidth:0}}>{i.customer_name}{!vehicleAreaStatus(i,v).permitted&&<span title="Invoice area is outside this vehicle's permitted areas" style={{width:8,height:8,borderRadius:"50%",background:"#f59e0b",boxShadow:"0 0 0 2px rgba(245,158,11,.16)",flex:"0 0 auto"}}/>}</span><small>{formatInvoiceEquivalent(i,invoiceEquivalentLoadedOnVehicle(i,v.id))} / {formatInvoiceEquivalent(i,invoiceEquivalentTotal(i))} big-equiv · {assignedCountOnVehicle(i,v.id)} / {i.pallets} load units · {invoicePhysicalQuantity(i)} physical pallets · {i.area||"Area not set"} · {i.division||"Division not set"}</small><small>{Array.from(new Set(Object.entries(assignments).filter(([k,val])=>k.startsWith(`${i.id}::`)&&assignmentVehicleId(val)===v.id).map(([,val])=>assignmentTripNumber(val)))).map(t=>`Trip ${t}`).join(" · ")} · {i.schedule_mode==="any_day"?"Any day":`Scheduled ${i.scheduled_date||"Waiting"}`}{Number(i.fridge_boxes||0)>0?` · ${i.fridge_boxes} fridge box${Number(i.fridge_boxes)===1?"":"es"}`:""}</small></div><div className="bulk-loaded-invoice-actions"><button className="btn icon-btn" title="Edit invoice" onClick={e=>{e.stopPropagation();editInvoice(i)}}><Pencil size={11}/></button><button className="btn icon-btn" title="Remove only this vehicle's loaded pallets" onClick={e=>{e.stopPropagation();removeInvoicePallets(i,v.id,assignedCountOnVehicle(i,v.id))}}><X size={12}/></button></div></div>)}{!invoicesInVehicle(v.id).length&&<span className="bulk-vehicle-empty">Drop invoice or customer here</span>}</div>
                 </div>
               </div>}
             </div>})}</div>}
           {vehiclesExpanded&&<div className={`bulk-vehicle-strip expanded`}>
             {selectedVehicles.filter(cfg=>vehiclesExpanded||expandedVehicleIds.has(cfg.vehicle_id)).map(cfg=>{const v=vehicleMap.get(cfg.vehicle_id);if(!v)return null;const cap=capacityFor(cfg,v),used=loadedByVehicle(v.id),pct=Math.min(100,Math.round(used/Math.max(1,cap)*100)),meta=plan.vehicle_meta?.[v.id]||{};return <div key={v.id} className={`bulk-vehicle-card ${pct>=100?"is-full":pct>=80?"is-near-full":""}`} onDragOver={e=>{e.preventDefault();e.currentTarget.classList.add("drop-ready")}} onDragLeave={e=>e.currentTarget.classList.remove("drop-ready")} onDrop={e=>{e.preventDefault();e.currentTarget.classList.remove("drop-ready");const raw=e.dataTransfer.getData("text/plain");const d=dragged||(raw?{type:"customer" as const,id:raw}:null);if(d?.type==="customer")dropCustomerOnVehicle(v,d.id);else if(d?.type==="invoice")dropOnVehicle(v,d);else if(d?.type==="store")dropStoreOnVehicle(v,d.id);setDragged(null)}}>
               <div className="bulk-vehicle-image-wrap"><img src={vehicleImage(v)} alt={v.type||"Vehicle"}/><span className="bulk-vehicle-ton">{String(v.type||"").toUpperCase()}</span></div>
-              <div className="bulk-vehicle-main"><div className="bulk-vehicle-top"><div style={{minWidth:0,display:"flex",flexDirection:"column",gap:3}}><b>{v.number}</b><small style={{fontSize:10,color:"var(--muted)",whiteSpace:"normal",overflowWrap:"anywhere"}}>{Number(v.capacity_tons ?? v.tonnage ?? v.tons ?? 0) > 0 ? ` · ${Number(v.capacity_tons ?? v.tonnage ?? v.tons).toString()} tons` : ""}</small><small style={{fontSize:10,color:"var(--muted)",whiteSpace:"normal",overflowWrap:"anywhere"}}><MapPin size={10} style={{verticalAlign:"-1px",marginRight:4}}/>Permitted: {vehiclePermittedLabel(v.id)}</small></div><button className="btn icon-btn" title="Remove from day" onClick={(e)=>{e.stopPropagation();toggleVehicle(v)}}><X size={12}/></button></div><div className="bulk-capacity-row"><span>{formatOperationalEquivalent(used)} / {formatOperationalEquivalent(cap)} big-pallet space</span><strong>{formatOperationalEquivalent(Math.max(0,cap-used))} free</strong></div><div className="bulk-vehicle-type-capacity"><span>Capacity {formatOperationalEquivalent(cap)} big</span><span>Small equivalent: {formatOperationalEquivalent(cap / Math.max(0.01, boxSettings.smallToBig))} small</span></div>{(() => { const other = divisionView === "Pharma" ? "Consumer" : "Pharma"; const otherUsed = loadedByVehicleByDivision(v.id, other); return otherUsed ? <div className="bulk-cross-division-load"><span>{other} already loaded</span><b>{formatOperationalEquivalent(otherUsed)} big-equiv</b></div> : null; })()}<div className="bulk-capacity-bar"><i style={{width:`${pct}%`}}/></div><div className="bulk-vehicle-meta"><label>Driver<input list="bulk-driver-library" value={meta.driver||""} placeholder="Driver name or code" onChange={e=>updateVehicleMeta(v.id,"driver",e.target.value)} onBlur={e=>updateVehicleMeta(v.id,"driver",e.target.value)}/></label><label>Helper<input list="bulk-helper-library" value={meta.helper||""} placeholder="Helper name or code" onChange={e=>updateVehicleMeta(v.id,"helper",e.target.value)} onBlur={e=>updateVehicleMeta(v.id,"helper",e.target.value)}/></label></div></div><div className="bulk-vehicle-load-list">{invoicesInVehicle(v.id).map((i, invoiceIndex)=><div key={i.id} className="bulk-loaded-invoice" draggable onDragStart={e=>{e.stopPropagation();e.dataTransfer.setData("text/plain",i.id);setDragged({type:"invoice",id:i.id})}} onDragEnd={()=>setDragged(null)}><div className="bulk-loaded-pallet"><Package size={12}/><b>{formatInvoiceEquivalent(i, invoiceEquivalentLoadedOnVehicle(i,v.id))}</b><span>BIG EQ</span></div><span className="bulk-invoice-sequence" title={`Invoice ${invoiceIndex + 1}`}>{invoiceIndex + 1}</span><div className="bulk-loaded-invoice-info"><b>{i.invoice_no} {invoiceLoaded(i) >= Number(i.pallets || 0) && <span className="bulk-invoice-complete" title="Invoice fully loaded"><Check size={10}/></span>}</b><span style={{display:"flex",alignItems:"center",gap:5,minWidth:0}}>{i.customer_name}{!vehicleAreaStatus(i,v).permitted && <span title="Invoice area is outside this vehicle's permitted areas" style={{width:8,height:8,borderRadius:"50%",background:"#f59e0b",boxShadow:"0 0 0 2px rgba(245,158,11,.16)",flex:"0 0 auto"}}/>}</span><small>{formatInvoiceEquivalent(i, invoiceEquivalentLoadedOnVehicle(i,v.id))} / {formatInvoiceEquivalent(i, invoiceEquivalentTotal(i))} big-equiv · {assignedCountOnVehicle(i,v.id)} / {i.pallets} physical pallets · {i.area||"Area not set"} · {i.division||"Division not set"}</small><small>Scheduled {i.scheduled_date}</small></div><div className="bulk-loaded-invoice-actions"><button className="btn icon-btn" title="Edit invoice" onClick={(e)=>{e.stopPropagation();editInvoice(i)}}><Pencil size={11}/></button><button className="btn icon-btn" title="Remove only this vehicle's loaded pallets" onClick={(e)=>{e.stopPropagation();removeInvoicePallets(i,v.id,assignedCountOnVehicle(i,v.id))}}><X size={12}/></button></div></div>)}{!invoicesInVehicle(v.id).length&&<span className="bulk-vehicle-empty">Drop invoice or customer here</span>}</div>
+              <div className="bulk-vehicle-main"><div className="bulk-vehicle-top"><div style={{minWidth:0,display:"flex",flexDirection:"column",gap:3}}><b>{v.number}</b><small style={{fontSize:10,color:"var(--muted)",whiteSpace:"normal",overflowWrap:"anywhere"}}>{Number(v.capacity_tons ?? v.tonnage ?? v.tons ?? 0) > 0 ? ` · ${Number(v.capacity_tons ?? v.tonnage ?? v.tons).toString()} tons` : ""}</small><small style={{fontSize:10,color:"var(--muted)",whiteSpace:"normal",overflowWrap:"anywhere"}}><MapPin size={10} style={{verticalAlign:"-1px",marginRight:4}}/>Permitted: {vehiclePermittedLabel(v.id)}</small></div><button className="btn icon-btn" title="Remove from day" onClick={(e)=>{e.stopPropagation();toggleVehicle(v)}}><X size={12}/></button></div><div className="bulk-capacity-row"><span>{formatOperationalEquivalent(used)} / {formatOperationalEquivalent(cap)} big-pallet space</span><strong>{formatOperationalEquivalent(Math.max(0,cap-used))} free</strong></div><div className="bulk-vehicle-type-capacity"><span>Capacity {formatOperationalEquivalent(cap)} big</span><span>Small equivalent: {formatOperationalEquivalent(cap / Math.max(0.01, boxSettings.smallToBig))} small</span></div>{(() => { const other = divisionView === "Pharma" ? "Consumer" : "Pharma"; const otherUsed = loadedByVehicleByDivision(v.id, other); return otherUsed ? <div className="bulk-cross-division-load"><span>{other} already loaded</span><b>{formatOperationalEquivalent(otherUsed)} big-equiv</b></div> : null; })()}<div className="bulk-capacity-bar"><i style={{width:`${pct}%`}}/></div><div className="bulk-vehicle-meta"><label>Driver<input list="bulk-driver-library" value={meta.driver||""} placeholder="Driver name or code" onChange={e=>updateVehicleMeta(v.id,"driver",e.target.value)} onBlur={e=>updateVehicleMeta(v.id,"driver",e.target.value)}/></label><label>Helper<input list="bulk-helper-library" value={meta.helper||""} placeholder="Helper name or code" onChange={e=>updateVehicleMeta(v.id,"helper",e.target.value)} onBlur={e=>updateVehicleMeta(v.id,"helper",e.target.value)}/></label><label>Trips today<select value={tripCountFor(v.id)} onChange={e=>updateVehicleTripCount(v.id,Number(e.target.value))}><option value={1}>1 trip (default)</option><option value={2}>2 trips</option><option value={3}>3 trips</option></select></label></div></div><div className="bulk-vehicle-load-list">{invoicesInVehicle(v.id).map((i, invoiceIndex)=><div key={i.id} className="bulk-loaded-invoice" draggable onDragStart={e=>{e.stopPropagation();e.dataTransfer.setData("text/plain",i.id);setDragged({type:"invoice",id:i.id})}} onDragEnd={()=>setDragged(null)}><div className="bulk-loaded-pallet"><Package size={12}/><b>{formatInvoiceEquivalent(i, invoiceEquivalentLoadedOnVehicle(i,v.id))}</b><span>BIG EQ</span></div><span className="bulk-invoice-sequence" title={`Invoice ${invoiceIndex + 1}`}>{invoiceIndex + 1}</span><div className="bulk-loaded-invoice-info"><b>{i.invoice_no} {invoiceLoaded(i) >= Number(i.pallets || 0) && <span className="bulk-invoice-complete" title="Invoice fully loaded"><Check size={10}/></span>}</b><span style={{display:"flex",alignItems:"center",gap:5,minWidth:0}}>{i.customer_name}{!vehicleAreaStatus(i,v).permitted && <span title="Invoice area is outside this vehicle's permitted areas" style={{width:8,height:8,borderRadius:"50%",background:"#f59e0b",boxShadow:"0 0 0 2px rgba(245,158,11,.16)",flex:"0 0 auto"}}/>}</span><small>{formatInvoiceEquivalent(i, invoiceEquivalentLoadedOnVehicle(i,v.id))} / {formatInvoiceEquivalent(i, invoiceEquivalentTotal(i))} big-equiv · {assignedCountOnVehicle(i,v.id)} / {i.pallets} load units · {invoicePhysicalQuantity(i)} physical pallets · {i.area||"Area not set"} · {i.division||"Division not set"}</small><small>{Array.from(new Set(Object.entries(assignments).filter(([k,val])=>k.startsWith(`${i.id}::`)&&assignmentVehicleId(val)===v.id).map(([,val])=>assignmentTripNumber(val)))).map(t=>`Trip ${t}`).join(" · ")} · Scheduled {i.scheduled_date}</small></div><div className="bulk-loaded-invoice-actions"><button className="btn icon-btn" title="Edit invoice" onClick={(e)=>{e.stopPropagation();editInvoice(i)}}><Pencil size={11}/></button><button className="btn icon-btn" title="Remove only this vehicle's loaded pallets" onClick={(e)=>{e.stopPropagation();removeInvoicePallets(i,v.id,assignedCountOnVehicle(i,v.id))}}><X size={12}/></button></div></div>)}{!invoicesInVehicle(v.id).length&&<span className="bulk-vehicle-empty">Drop invoice or customer here</span>}</div>
             </div>})}
             {!selectedVehicles.length&&<div className="bulk-no-vehicles"><Truck size={24}/><b>No vehicles selected</b><span>Choose the Fleet vehicles you want as defaults or for this day.</span><button className="btn" onClick={()=>setShowFleet(true)}><Plus size={13}/> Choose vehicles</button></div>}
           </div>}
@@ -1849,16 +1925,16 @@ function BulkOrganizerPage() {
             <div><span>03 · CUSTOMER LOAD PLAN</span><h2>Scheduled customers</h2><p>Customers are grouped by their selected store or destination. Drag a customer or invoice onto a permitted vehicle.</p></div>
             <div className="bulk-section-head-actions"><div className="bulk-search"><Search size={14}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search customer / invoice…"/></div><GlassButton variant="secondary" size="sm" onClick={()=>{setCustomerSectionExpanded(x=>!x);if(customerSectionExpanded)setExpandedStoreIds(new Set())}}><ChevronDown size={14} className={customerSectionExpanded?"bulk-chevron-open":""}/>{customerSectionExpanded?"Minimize":"Expand"}</GlassButton></div>
           </div>
-          {!customerSectionExpanded&&<div className="bulk-store-compact-grid">{[...buildingCards].sort((a,b)=>(a.sort_order ?? 9999)-(b.sort_order ?? 9999)).map(store=>{const ci=invoices.filter(i=>i.building_id===store.id);const wi=waiting.filter(i=>i.building_id===store.id);const loaded=ci.reduce((n,i)=>n+invoiceLoaded(i),0);const pallets=ci.reduce((n,i)=>n+Number(i.pallets||0),0);const scheduledToday=ci.filter(i=>canonicalInvoiceDate(i.scheduled_date)===canonicalInvoiceDate(date));const todayComplete=scheduledToday.length>0&&scheduledToday.every(i=>invoiceLoaded(i)>=Number(i.pallets||0));const todayPending=scheduledToday.some(i=>invoiceLoaded(i)<Number(i.pallets||0));const status=todayComplete?"green":todayPending?"amber":"muted";const expanded=expandedStoreIds.has(store.id);const receiving=storeReceivesToday(store);return <div key={store.id} onClick={()=>setExpandedStoreIds(prev=>prev.has(store.id)?new Set():new Set([store.id]))} className={`bulk-store-compact-card ${!receiving?"is-not-today":""} ${expanded?"is-expanded":""}`}>
-            <div className="bulk-store-compact-top"><div className="bulk-store-compact-icon">{storeIcon(store.type)}</div><div className="bulk-store-compact-main"><b>{store.name}</b><span>{store.area||"Area not set"}{store.timing?` · Timing ${store.timing}`:""}</span></div><div className="bulk-store-compact-actions"><span className="bulk-store-compact-count">{ci.length} invoices · {pallets} pallets</span></div></div>
+          {!customerSectionExpanded&&<div className="bulk-store-compact-grid">{[...buildingCards].sort((a,b)=>(a.sort_order ?? 9999)-(b.sort_order ?? 9999)).map(store=>{const ci=invoices.filter(i=>i.building_id===store.id);const wi=waiting.filter(i=>i.building_id===store.id);const loaded=ci.reduce((n,i)=>n+invoiceLoaded(i),0);const pallets=ci.reduce((n,i)=>n+invoicePhysicalQuantity(i),0);const loadUnits=ci.reduce((n,i)=>n+invoiceLoadUnitCount(i),0);const equivalent=ci.reduce((n,i)=>n+invoiceEquivalentTotal(i),0);const leftoverBoxes=ci.reduce((n,i)=>n+Object.values(i.box_pallet_calc?.remainder || (i.box_counts ? calculateBoxLoad(i.box_counts,boxSettings).remainder : {})).reduce((sum,v)=>sum+Number(v||0),0),0);const scheduledToday=ci.filter(i=>canonicalInvoiceDate(i.scheduled_date)===canonicalInvoiceDate(date));const todayComplete=scheduledToday.length>0&&scheduledToday.every(i=>invoiceLoaded(i)>=Number(i.pallets||0));const todayPending=scheduledToday.some(i=>invoiceLoaded(i)<Number(i.pallets||0));const status=todayComplete?"green":todayPending?"amber":"muted";const expanded=expandedStoreIds.has(store.id);const receiving=storeReceivesToday(store);return <div key={store.id} onClick={()=>setExpandedStoreIds(prev=>prev.has(store.id)?new Set():new Set([store.id]))} className={`bulk-store-compact-card ${!receiving?"is-not-today":""} ${expanded?"is-expanded":""}`}>
+            <div className="bulk-store-compact-top"><div className="bulk-store-compact-icon">{storeIcon(store.type)}</div><div className="bulk-store-compact-main"><b>{store.name}</b><span>{store.area||"Area not set"}{store.timing?` · Timing ${store.timing}`:""}</span></div><div className="bulk-store-compact-actions"><span className="bulk-store-compact-count">{ci.length} invoices · {pallets} physical pallets</span></div></div>
             <span className={`bulk-store-compact-status ${status}`}>{status==="green"?<><Check size={10}/> Today fully loaded</>:status==="amber"?<><CircleAlert size={10}/> Scheduled today · loading pending</>:<><Clock3 size={10}/> No loading today</>}</span>
             <div className="bulk-store-compact-days">{scheduleDayNames.map((d,idx)=><span key={d} className={receivingDaysForStore(store).includes(idx)?"on":""}>{d}</span>)}</div>
-            <div className="bulk-store-compact-meta"><span><CalendarDays size={9}/> {receiving?`Receiving ${dayName}`:`Not receiving ${dayName}`}</span><span><Clock3 size={9}/> {store.timing||"No timing"}</span><span><Package size={9}/> {loaded} loaded · {wi.length} waiting</span><span>{ci.filter(i=>i.schedule_mode==="any_day").length} Any day</span><span>{ci.reduce((n,i)=>n+Number(i.fridge_boxes||0),0)} fridge boxes</span>{(store.linked_customers||[]).length>0&&<span><Users size={9}/> {(store.linked_customers||[]).slice(0,2).map((c: LinkedCustomer)=>c.name).join(" · ")}{(store.linked_customers||[]).length>2?` +${(store.linked_customers||[]).length-2}`:""}</span>}</div>
+            <div className="bulk-store-compact-meta"><span><Package size={9}/> {formatEquivalent(equivalent)} Big-equivalent</span><span>{loadUnits} load units</span>{leftoverBoxes>0&&<span>{leftoverBoxes} leftover boxes (not pallets)</span>}<span><CalendarDays size={9}/> {receiving?`Receiving ${dayName}`:`Not receiving ${dayName}`}</span><span><Clock3 size={9}/> {store.timing||"No timing"}</span><span><Package size={9}/> {loaded} loaded · {wi.length} waiting</span><span>{ci.filter(i=>i.schedule_mode==="any_day").length} Any day</span><span>{ci.reduce((n,i)=>n+Number(i.fridge_boxes||0),0)} fridge boxes</span>{(store.linked_customers||[]).length>0&&<span><Users size={9}/> {(store.linked_customers||[]).slice(0,2).map((c: LinkedCustomer)=>c.name).join(" · ")}{(store.linked_customers||[]).length>2?` +${(store.linked_customers||[]).length-2}`:""}</span>}</div>
             {expanded&&<div className="bulk-inline-expanded" onClick={e=>e.stopPropagation()}>{(()=>{
               const linkedCustomersInline=(store.linked_customers||[]).map((c: LinkedCustomer)=>({id:c.id,name:c.name,area:c.area||store.area,division:c.division||store.division||divisionView,enabled:true}));
               const storeCustomersInline=Array.from(new Map([...customersForDay.filter(c=>norm(buildingForCustomer(c.name)?.id||"")===norm(store.id)||invoices.some(i=>norm(i.customer_name)===norm(c.name)&&i.building_id===store.id)),...linkedCustomersInline].map(c=>[norm(c.name),c])).values());
               const storeInvoicesInline=invoices.filter(i=>i.building_id===store.id||storeCustomersInline.some(c=>norm(c.name)===norm(i.customer_name)));
-              const vehiclesForInvoiceInline=(inv: InvoicePlan)=>Array.from(new Set(Object.entries(assignments).filter(([k,v])=>v&&k.startsWith(`${inv.id}::`)).map(([,v])=>v as string))).map(id=>vehicleMap.get(id)).filter(Boolean);
+              const vehiclesForInvoiceInline=(inv: InvoicePlan)=>Array.from(new Set(Object.entries(assignments).filter(([k,v])=>v&&k.startsWith(`${inv.id}::`)).map(([,v])=>assignmentVehicleId(v as string)))).map(id=>vehicleMap.get(id)).filter(Boolean);
               return <section key={`inline-${store.id}`} className={`bulk-store-customer-box ${receiving ? "" : "bulk-store-not-receiving"}`} style={{opacity:receiving?1:0.52,filter:receiving?"none":"grayscale(.75)"}} draggable onDragOver={e=>{if(e.dataTransfer.types.includes("application/x-bulk-location")){e.preventDefault();e.currentTarget.classList.add("bulk-location-drop-target")}}} onDragLeave={e=>e.currentTarget.classList.remove("bulk-location-drop-target")} onDrop={e=>{const source=e.dataTransfer.getData("application/x-bulk-location");if(!source)return;e.preventDefault();e.stopPropagation();e.currentTarget.classList.remove("bulk-location-drop-target");void reorderBuildings(source,store.id);}} onDragStart={e=>{e.dataTransfer.setData("text/plain",store.id);setDragged({type:"store",id:store.id})}} onDragEnd={()=>setDragged(null)} title="Drag this location to a vehicle to load its scheduled invoices">
                 <div className="bulk-store-hero">
                   <button type="button" className="bulk-store-reorder-handle" title="Drag to reorder this location" draggable onClick={e=>e.stopPropagation()} onDragStart={e=>{e.stopPropagation();e.dataTransfer.setData("application/x-bulk-location",store.id)}} onDragEnd={()=>{}}><GripVertical size={16}/></button><div className={`bulk-store-picture ${storeInvoicesInline.filter(i=>i.scheduled_date===date).length && storeInvoicesInline.filter(i=>i.scheduled_date===date).every(i => invoiceLoaded(i) >= Number(i.pallets || 0)) ? "store-complete" : ""}`}>{storeIcon(store.type)}{storeInvoicesInline.filter(i=>i.scheduled_date===date).length > 0 && storeInvoicesInline.filter(i=>i.scheduled_date===date).every(i => invoiceLoaded(i) >= Number(i.pallets || 0)) && <span className="bulk-store-complete-check" title="Today's schedule is fully loaded into vehicles"><Check size={10}/></span>}</div>
@@ -1884,7 +1960,7 @@ function BulkOrganizerPage() {
               const linkedCustomers = (store.linked_customers || []).map((c: LinkedCustomer)=>({ id:c.id, name:c.name, area:c.area || store.area, division:c.division || store.division || divisionView, enabled:true }));
               const storeCustomers=Array.from(new Map([...customersForDay.filter(c=>norm(buildingForCustomer(c.name)?.id||"")===norm(store.id) || invoices.some(i=>norm(i.customer_name)===norm(c.name)&&i.building_id===store.id)), ...linkedCustomers].map(c=>[norm(c.name),c])).values());
               const storeInvoices=invoices.filter(i=>i.building_id===store.id || storeCustomers.some(c=>norm(c.name)===norm(i.customer_name)));
-              const vehiclesForInvoice = (inv: InvoicePlan) => Array.from(new Set(Object.entries(assignments).filter(([k,v]) => v && k.startsWith(`${inv.id}::`)).map(([,v]) => v as string))).map(id => vehicleMap.get(id)).filter(Boolean);
+              const vehiclesForInvoice = (inv: InvoicePlan) => Array.from(new Set(Object.entries(assignments).filter(([k,v]) => v && k.startsWith(`${inv.id}::`)).map(([,v]) => assignmentVehicleId(v as string)))).map(id => vehicleMap.get(id)).filter(Boolean);
               if(search && !store.name.toLowerCase().includes(search.toLowerCase()) && !storeCustomers.some(c=>norm(c.name).includes(norm(search)) || storeInvoices.some(i=>norm(i.invoice_no).includes(norm(search))))) return null;
               const receivingToday = storeReceivesToday(store);
               return <section key={store.id} className={`bulk-store-customer-box ${receivingToday ? "" : "bulk-store-not-receiving"}`} style={{opacity:receivingToday?1:0.52,filter:receivingToday?"none":"grayscale(.75)"}} draggable onDragOver={e=>{if(e.dataTransfer.types.includes("application/x-bulk-location")){e.preventDefault();e.currentTarget.classList.add("bulk-location-drop-target")}}} onDragLeave={e=>e.currentTarget.classList.remove("bulk-location-drop-target")} onDrop={e=>{const source=e.dataTransfer.getData("application/x-bulk-location");if(!source)return;e.preventDefault();e.stopPropagation();e.currentTarget.classList.remove("bulk-location-drop-target");void reorderBuildings(source,store.id);}} onDragStart={e=>{e.dataTransfer.setData("text/plain",store.id);setDragged({type:"store",id:store.id})}} onDragEnd={()=>setDragged(null)} title="Drag this location to a vehicle to load its scheduled invoices">
@@ -1899,7 +1975,7 @@ function BulkOrganizerPage() {
                     <div className="customer-card-top"><div className="customer-avatar">{storeIcon(store.type)}</div><div><b>{c.name}</b><span>{c.area||store.area||"Area not set"} · {c.division||"Unknown"}</span></div><GripVertical size={16}/></div>
                     <div className="customer-card-details"><span><strong>{ci.length}</strong> invoices</span><span><strong>{formatEquivalent(equivalent)}</strong> big-equiv</span><span><strong>{formatEquivalent(loadedEquivalent)}</strong> linked</span></div>
                     {scheduled&&<div className="customer-schedule-chip"><CalendarDays size={11}/> {scheduled.days.map((d:number)=>["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d]).join(" · ")}</div>}
-                    <div className="customer-card-invoices">{ci.map((i, invoiceIndex)=>{const l=invoiceLoaded(i);return <div key={i.id} className={`customer-invoice-row ${l>=Number(i.pallets||0) && l>0 ? "invoice-loaded invoice-fully-loaded" : l>0 ? "invoice-partial-loaded" : ""}`} draggable onDragStart={e=>{e.stopPropagation();e.dataTransfer.setData("text/plain",i.id);setDragged({type:"invoice",id:i.id})}} onDragEnd={()=>setDragged(null)}><span className="bulk-invoice-sequence" title={`Invoice ${invoiceIndex + 1}`}>{invoiceIndex + 1}</span><div className="invoice-pallet-icon"><span>{formatInvoiceEquivalent(i, invoiceEquivalentTotal(i))}</span></div><div><b>{i.invoice_no}</b><small>{i.scheduled_date} · {i.area||"No area"} · {i.division||"Division"}</small><small>{invoicePhysicalQuantity(i)} physical pallets · {formatInvoiceEquivalent(i, invoiceEquivalentTotal(i))} big-equiv</small>{l>0&&<span className="bulk-invoice-vehicle-tags"><span className="bulk-invoice-load-status">{l>=Number(i.pallets||0)?"FULLY LOADED":"PARTIAL LOAD"}</span>{vehiclesForInvoice(i).map((v:any)=><button type="button" key={v.id} className="bulk-invoice-vehicle-tag" title={`Manage ${i.invoice_no} on ${v.number}`} onClick={e=>{e.stopPropagation();openInvoiceVehicleManager(i,v.id)}}><Truck size={10}/>{v.number}</button>)}</span>}</div><em className={l>=Number(i.pallets||0)?"invoice-count-full":"invoice-count-partial"}>{formatInvoiceEquivalent(i, invoiceEquivalentLoaded(i))}/{formatInvoiceEquivalent(i, invoiceEquivalentTotal(i))}</em><button className="btn icon-btn invoice-load-btn" title={receivingToday?"Load invoice into a vehicle":"Load anyway — store is not receiving today"} onClick={e=>{e.stopPropagation();openInvoiceLoadModal(i)}} disabled={invoiceLoaded(i)>=Number(i.pallets||0)}><Truck size={11}/></button><button className="btn icon-btn invoice-edit-btn" title="Edit invoice" onClick={e=>{e.stopPropagation();editInvoice(i)}}><Pencil size={11}/></button><button className="btn icon-btn" title="Delete invoice" onClick={e=>{e.stopPropagation();setDeleteInvoiceTarget(i)}}><X size={11}/></button></div>})}</div>
+                    <div className="customer-card-invoices">{ci.map((i, invoiceIndex)=>{const l=invoiceLoaded(i);return <div key={i.id} className={`customer-invoice-row ${l>=Number(i.pallets||0) && l>0 ? "invoice-loaded invoice-fully-loaded" : l>0 ? "invoice-partial-loaded" : ""}`} draggable onDragStart={e=>{e.stopPropagation();e.dataTransfer.setData("text/plain",i.id);setDragged({type:"invoice",id:i.id})}} onDragEnd={()=>setDragged(null)}><span className="bulk-invoice-sequence" title={`Invoice ${invoiceIndex + 1}`}>{invoiceIndex + 1}</span><div className="invoice-pallet-icon"><span>{formatInvoiceEquivalent(i, invoiceEquivalentTotal(i))}</span></div><div><b>{i.invoice_no}</b><small>{i.scheduled_date} · {i.area||"No area"} · {i.division||"Division"}</small><small>{invoicePhysicalQuantity(i)} physical pallets · {formatInvoiceEquivalent(i, invoiceEquivalentTotal(i))} big-equiv{ i.box_counts ? ` · ${Object.entries(i.box_pallet_calc?.remainder || calculateBoxLoad(i.box_counts, boxSettings).remainder).filter(([,v])=>Number(v)>0).reduce((t,[k,v])=>t+`${v} ${k} box${Number(v)===1?"":"es"} · `,"").replace(/ · $/,"")}` : ""}</small>{l>0&&<span className="bulk-invoice-vehicle-tags"><span className="bulk-invoice-load-status">{l>=Number(i.pallets||0)?"FULLY LOADED":"PARTIAL LOAD"}</span>{vehiclesForInvoice(i).map((v:any)=><button type="button" key={v.id} className="bulk-invoice-vehicle-tag" title={`Manage ${i.invoice_no} on ${v.number}`} onClick={e=>{e.stopPropagation();openInvoiceVehicleManager(i,v.id)}}><Truck size={10}/>{v.number}</button>)}</span>}</div><em className={l>=Number(i.pallets||0)?"invoice-count-full":"invoice-count-partial"}>{formatInvoiceEquivalent(i, invoiceEquivalentLoaded(i))}/{formatInvoiceEquivalent(i, invoiceEquivalentTotal(i))}</em><button className="btn icon-btn invoice-load-btn" title={receivingToday?"Load invoice into a vehicle":"Load anyway — store is not receiving today"} onClick={e=>{e.stopPropagation();openInvoiceLoadModal(i)}} disabled={invoiceLoaded(i)>=Number(i.pallets||0)}><Truck size={11}/></button><button className="btn icon-btn invoice-edit-btn" title="Edit invoice" onClick={e=>{e.stopPropagation();editInvoice(i)}}><Pencil size={11}/></button><button className="btn icon-btn" title="Delete invoice" onClick={e=>{e.stopPropagation();setDeleteInvoiceTarget(i)}}><X size={11}/></button></div>})}</div>
                     <div className="customer-card-footer"><span>{!ci.length ? "No invoices yet" : loaded>=pallets&&pallets?"FULLY LINKED":"Drag to a permitted vehicle"}</span><div className="customer-card-footer-actions"><button type="button" className="btn icon-btn customer-add-invoice-btn" title={`Add invoice for ${c.name}`} onClick={e=>{e.stopPropagation();openInvoiceForCustomer(c,store)}}><Plus size={12}/></button>{loaded>=pallets&&pallets?<span className="bulk-customer-complete-check"><Check size={10}/></span>:<Route size={13}/>}</div></div>
                   </div>})}
                   {!storeCustomers.length&&<div className="bulk-empty-state">No customers linked to this location yet.</div>}
@@ -1916,27 +1992,29 @@ function BulkOrganizerPage() {
       <div className="bulk-panel-title"><ListChecks size={16}/> Load multiple{batchBuildingId ? ` · ${(plan.buildings||[]).find(b=>b.id===batchBuildingId)?.name || "Store"}` : " invoices"} <button onClick={closeBatchLoadModal}><X size={14}/></button></div>
       <div className="bulk-modal-intro">Choose the invoices and the vehicles for this store. Each vehicle shows the same capacity/readiness information used in the Fleet cards.</div>
       <div className="bulk-batch-vehicle-title"><b>Vehicles for this load</b><span>{batchVehicleIds.length} selected</span></div>
-      <div className="bulk-batch-vehicle-grid">{selectedVehicles.map(cfg=>{const v=vehicleMap.get(cfg.vehicle_id);if(!v)return null;const used=loadedByVehicle(v.id),cap=capacityFor(cfg,v),free=Math.max(0,cap-used),active=batchVehicleIds.includes(v.id);return <button type="button" key={v.id} className={`bulk-load-vehicle-choice bulk-batch-vehicle-choice ${active?"selected":""}`} onClick={()=>setBatchVehicleIds(ids=>ids.includes(v.id)?ids.filter(x=>x!==v.id):[...ids,v.id])}>
-        <img src={vehicleImage(v)} alt=""/><div><b>{v.number}</b><span>{v.type||"Vehicle"}</span><small>{formatOperationalEquivalent(free)} big-pallet space free · {formatOperationalEquivalent(used)}/{formatOperationalEquivalent(cap)} used</small><small>{(plan.vehicle_meta?.[v.id]?.driver||cfg.driver||"No driver")} · {(plan.vehicle_meta?.[v.id]?.helper||cfg.helper||"No helper")}</small><small style={{whiteSpace:"normal",overflowWrap:"anywhere",color:"var(--muted)"}}>Permitted: {vehiclePermittedLabel(v.id)}</small>{!vehicleAreaStatus(loadInvoiceTarget!,v).permitted&&<span title="Invoice area is outside this vehicle's permitted areas" style={{width:9,height:9,borderRadius:"50%",background:"#f59e0b",boxShadow:"0 0 0 2px rgba(245,158,11,.16)",flex:"0 0 auto"}}/>}</div>{active&&<Check size={15}/>}
+      <div className="bulk-batch-vehicle-grid">{selectedVehicles.map(cfg=>{const v=vehicleMap.get(cfg.vehicle_id);if(!v)return null;const used=loadedByVehicle(v.id,batchTripNumber),cap=capacityForTrip(cfg,v),free=Math.max(0,cap-used),active=batchVehicleIds.includes(v.id);return <button type="button" key={v.id} className={`bulk-load-vehicle-choice bulk-batch-vehicle-choice ${active?"selected":""}`} onClick={()=>setBatchVehicleIds(ids=>ids.includes(v.id)?ids.filter(x=>x!==v.id):[...ids,v.id])}>
+        <img src={vehicleImage(v)} alt=""/><div><b>{v.number}</b><span>{v.type||"Vehicle"}</span><small>{formatOperationalEquivalent(free)} big-pallet space free on Trip {batchTripNumber} · {formatOperationalEquivalent(used)}/{formatOperationalEquivalent(cap)} used</small><small>{tripCountFor(v.id)} trip(s) configured</small><small>{(plan.vehicle_meta?.[v.id]?.driver||cfg.driver||"No driver")} · {(plan.vehicle_meta?.[v.id]?.helper||cfg.helper||"No helper")}</small><small style={{whiteSpace:"normal",overflowWrap:"anywhere",color:"var(--muted)"}}>Permitted: {vehiclePermittedLabel(v.id)}</small>{!vehicleAreaStatus(loadInvoiceTarget!,v).permitted&&<span title="Invoice area is outside this vehicle's permitted areas" style={{width:9,height:9,borderRadius:"50%",background:"#f59e0b",boxShadow:"0 0 0 2px rgba(245,158,11,.16)",flex:"0 0 auto"}}/>}</div>{active&&<Check size={15}/>}
       </button>})}</div>
-      <div className="bulk-batch-load-toolbar"><button type="button" className="bulk-batch-select-btn" onClick={()=>{const ids=allPlanInvoices.filter(i=>canonicalInvoiceDate(i.scheduled_date)===canonicalInvoiceDate(date)&&(!batchBuildingId||i.building_id===batchBuildingId)&&invoiceLoaded(i)<Number(i.pallets||0)).map(i=>i.id);setBatchSelectedIds(ids)}}>Select scheduled</button><button type="button" className="bulk-batch-select-btn" onClick={()=>{const eligible=[...allPlanInvoices.filter(i=>canonicalInvoiceDate(i.scheduled_date)===canonicalInvoiceDate(date)&&(!batchBuildingId||i.building_id===batchBuildingId)),...(batchIncludeWaiting?waiting.filter(i=>!batchBuildingId||i.building_id===batchBuildingId):[])].filter((i,idx,arr)=>arr.findIndex(x=>x.id===i.id)===idx&&invoiceLoaded(i)<Number(i.pallets||0));setBatchSelectedIds(eligible.map(i=>i.id))}}>Select all</button><button type="button" className="bulk-batch-select-btn" onClick={()=>setBatchSelectedIds([])}>Clear</button><label><input type="checkbox" checked={batchIncludeWaiting} onChange={e=>{setBatchIncludeWaiting(e.target.checked);if(e.target.checked){setBatchSelectedIds(ids=>Array.from(new Set([...ids,...waiting.filter(i=>(!batchBuildingId||i.building_id===batchBuildingId)&&invoiceLoaded(i)<Number(i.pallets||0)).map(i=>i.id)])))}}}/> Include waiting</label></div>
+      <div className="bulk-batch-load-toolbar"><button type="button" className="bulk-batch-select-btn" onClick={()=>{const ids=allPlanInvoices.filter(i=>canonicalInvoiceDate(i.scheduled_date)===canonicalInvoiceDate(date)&&(!batchBuildingId||i.building_id===batchBuildingId)&&invoiceLoaded(i)<Number(i.pallets||0)).map(i=>i.id);setBatchSelectedIds(ids)}}>Select scheduled</button><button type="button" className="bulk-batch-select-btn" onClick={()=>{const eligible=[...allPlanInvoices.filter(i=>canonicalInvoiceDate(i.scheduled_date)===canonicalInvoiceDate(date)&&(!batchBuildingId||i.building_id===batchBuildingId)),...(batchIncludeWaiting?waiting.filter(i=>!batchBuildingId||i.building_id===batchBuildingId):[])].filter((i,idx,arr)=>arr.findIndex(x=>x.id===i.id)===idx&&invoiceLoaded(i)<Number(i.pallets||0));setBatchSelectedIds(eligible.map(i=>i.id))}}>Select all eligible</button><button type="button" className="bulk-batch-select-btn" onClick={()=>setBatchSelectedIds([])}>Clear</button><label><input type="checkbox" checked={batchIncludeWaiting} onChange={e=>{setBatchIncludeWaiting(e.target.checked);if(e.target.checked){setBatchSelectedIds(ids=>Array.from(new Set([...ids,...waiting.filter(i=>(!batchBuildingId||i.building_id===batchBuildingId)&&invoiceLoaded(i)<Number(i.pallets||0)).map(i=>i.id)])))}}}/> Include waiting</label></div>
       <div className="bulk-load-form bulk-batch-load-form">
+        <label className="bulk-load-qty"><span>Assign to trip</span><select value={batchTripNumber} onChange={e=>setBatchTripNumber(Math.max(1,Number(e.target.value)||1))}>{[1,2,3].filter(t=>batchVehicleIds.some(id=>t<=tripCountFor(id))).map(t=><option key={t} value={t}>{t===1?"First trip":t===2?"Second trip":"Third trip"}</option>)}</select></label>
         <div className="bulk-load-mode"><span>Load quantity</span><div><button type="button" className={batchLoadMode==="full"?"active":""} onClick={()=>setBatchLoadMode("full")}>Full load</button><button type="button" className={batchLoadMode==="partial"?"active":""} onClick={()=>setBatchLoadMode("partial")}>Partial</button></div></div>
       </div>
-      <div className="bulk-batch-invoice-list">{[...allPlanInvoices.filter(i=>i.scheduled_date===date&&(!batchBuildingId||i.building_id===batchBuildingId)),...(batchIncludeWaiting?waiting.filter(i=>!batchBuildingId||i.building_id===batchBuildingId):[])].filter((i,idx,arr)=>arr.findIndex(x=>x.id===i.id)===idx).map(i=>{const remaining=Math.max(0,Number(i.pallets||0)-invoiceLoaded(i));const qty=Math.min(remaining,Math.max(1,Number(batchPartialQuantities[i.id]||1)));return <label key={i.id} className={`bulk-batch-invoice-row ${batchSelectedIds.includes(i.id)?"selected":""}`}><input type="checkbox" checked={batchSelectedIds.includes(i.id)} disabled={!remaining} onChange={()=>{toggleBatchInvoice(i.id);setBatchPartialQuantities(q=>({...q,[i.id]:Math.max(1,remaining)}))}}/><span><b>{i.invoice_no}</b><small>{i.customer_name} · {i.area||"No area"} · {i.division||"Division"} · {i.scheduled_date ? `Scheduled · ${i.scheduled_date}` : "Waiting for schedule"}</small></span><em className="bulk-batch-invoice-status">{i.scheduled_date ? "SCHEDULED" : "WAITING"}</em><strong>{remaining}/{i.pallets} physical · {formatEquivalent(invoiceEquivalentForNextUnassigned(i, remaining))} big-equiv</strong>{batchLoadMode==="partial"&&<input className="bulk-batch-qty" type="number" min={1} max={remaining||1} value={qty} disabled={!remaining} onChange={e=>setBatchPartialQuantities(q=>({...q,[i.id]:Math.min(remaining||1,Math.max(1,Number(e.target.value)||1))}))}/>}</label>})}</div>
+      <div className="bulk-batch-invoice-list">{[...allPlanInvoices.filter(i=>i.scheduled_date===date&&(!batchBuildingId||i.building_id===batchBuildingId)),...(batchIncludeWaiting?waiting.filter(i=>!batchBuildingId||i.building_id===batchBuildingId):[])].filter((i,idx,arr)=>arr.findIndex(x=>x.id===i.id)===idx).map(i=>{const remaining=Math.max(0,Number(i.pallets||0)-invoiceLoaded(i));const qty=Math.min(remaining,Math.max(1,Number(batchPartialQuantities[i.id]||1)));return <label key={i.id} className={`bulk-batch-invoice-row ${batchSelectedIds.includes(i.id)?"selected":""}`}><input type="checkbox" checked={batchSelectedIds.includes(i.id)} disabled={!remaining} onChange={()=>{toggleBatchInvoice(i.id);setBatchPartialQuantities(q=>({...q,[i.id]:Math.max(1,remaining)}))}}/><span><b>{i.invoice_no}</b><small>{i.customer_name} · {i.area||"No area"} · {i.division||"Division"} · {i.scheduled_date ? `Scheduled · ${i.scheduled_date}` : "Waiting for schedule"}</small></span><em className="bulk-batch-invoice-status">{i.scheduled_date ? "SCHEDULED" : "WAITING"}</em><strong>{remaining}/{i.pallets} load units · {invoicePhysicalQuantity(i)} physical pallets · {formatEquivalent(invoiceEquivalentForNextUnassigned(i, remaining))} big-equiv</strong>{batchLoadMode==="partial"&&<input className="bulk-batch-qty" type="number" min={1} max={remaining||1} value={qty} disabled={!remaining} onChange={e=>setBatchPartialQuantities(q=>({...q,[i.id]:Math.min(remaining||1,Math.max(1,Number(e.target.value)||1))}))}/>}</label>})}</div>
       <div className="bulk-batch-load-note">Only the selected vehicles receive pallets. Loading still respects vehicle compatibility and remaining capacity.</div>
       <div className="bulk-load-modal-actions"><GlassButton variant="secondary" size="sm" onClick={closeBatchLoadModal}>Cancel</GlassButton><GlassButton size="sm" onClick={confirmBatchLoad} disabled={!batchSelectedIds.length||!batchVehicleIds.length}><Truck size={13}/> Load selected</GlassButton></div>
     </GlassCard></div>}
     {loadInvoiceTarget&&<div className="bulk-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)closeInvoiceLoadModal()}}><GlassCard className="bulk-planner-modal bulk-load-modal bulk-modal-surface">
       <div className="bulk-panel-title"><Truck size={16}/> Load invoice <button onClick={closeInvoiceLoadModal}><X size={14}/></button></div>
-      <div className="bulk-load-modal-invoice"><div><span>INVOICE</span><b>{loadInvoiceTarget.invoice_no}</b><small>{loadInvoiceTarget.customer_name} · {invoicePhysicalQuantity(loadInvoiceTarget)} physical pallets · {formatEquivalent(invoiceEquivalentTotal(loadInvoiceTarget))} big-equiv</small><small>Physical count is separate from Big-equivalent loading capacity.</small></div><div className="bulk-load-remaining"><strong>{Math.max(0,Number(loadInvoiceTarget.pallets||0)-invoiceLoaded(loadInvoiceTarget))}</strong><span>physical remaining</span><small>{formatInvoiceEquivalent(loadInvoiceTarget, invoiceEquivalentForNextUnassigned(loadInvoiceTarget, Math.max(0,Number(loadInvoiceTarget.pallets||0)-invoiceLoaded(loadInvoiceTarget))))} big-equiv</small></div></div>
-      <div className="bulk-load-vehicle-grid">{selectedVehicles.map(cfg=>{const v=vehicleMap.get(cfg.vehicle_id);if(!v)return null;const free=Math.max(0,capacityFor(cfg,v)-loadedByVehicle(cfg.vehicle_id));const active=loadVehicleId===v.id;return <button type="button" key={v.id} className={`bulk-load-vehicle-choice ${active?"selected":""}`} onClick={()=>setLoadVehicleId(v.id)}><img src={vehicleImage(v)} alt=""/><div><b>{v.number}</b><span>{v.type||"Vehicle"}</span><small>{formatOperationalEquivalent(free)} big-pallet space free</small><small>{(plan.vehicle_meta?.[v.id]?.driver||cfg.driver||"No driver")} · {(plan.vehicle_meta?.[v.id]?.helper||cfg.helper||"No helper")}</small><small style={{whiteSpace:"normal",overflowWrap:"anywhere",color:"var(--muted)"}}>Permitted: {vehiclePermittedLabel(v.id)}</small>{!vehicleAreaStatus(loadInvoiceTarget!,v).permitted&&<span title="Invoice area is outside this vehicle's permitted areas" style={{width:9,height:9,borderRadius:"50%",background:"#f59e0b",boxShadow:"0 0 0 2px rgba(245,158,11,.16)",flex:"0 0 auto"}}/>}</div>{active&&<Check size={15}/>}</button>})}</div>
+      <div className="bulk-load-modal-invoice"><div><span>INVOICE</span><b>{loadInvoiceTarget.invoice_no}</b><small>{loadInvoiceTarget.customer_name} · {invoicePhysicalQuantity(loadInvoiceTarget)} physical pallets · {formatEquivalent(invoiceEquivalentTotal(loadInvoiceTarget))} big-equiv</small><small>Physical count is separate from Big-equivalent loading capacity.</small></div><div className="bulk-load-remaining"><strong>{Math.max(0,Number(loadInvoiceTarget.pallets||0)-invoiceLoaded(loadInvoiceTarget))}</strong><span>load units remaining</span><small>{formatInvoiceEquivalent(loadInvoiceTarget, invoiceEquivalentForNextUnassigned(loadInvoiceTarget, Math.max(0,Number(loadInvoiceTarget.pallets||0)-invoiceLoaded(loadInvoiceTarget))))} big-equiv</small></div></div>
+      <div className="bulk-load-vehicle-grid">{selectedVehicles.map(cfg=>{const v=vehicleMap.get(cfg.vehicle_id);if(!v)return null;const free=Math.max(0,capacityForTrip(cfg,v)-loadedByVehicle(cfg.vehicle_id,loadTripNumber));const active=loadVehicleId===v.id;return <button type="button" key={v.id} className={`bulk-load-vehicle-choice ${active?"selected":""}`} onClick={()=>{setLoadVehicleId(v.id);setLoadTripNumber(1)}}><img src={vehicleImage(v)} alt=""/><div><b>{v.number}</b><span>{v.type||"Vehicle"}</span><small>{formatOperationalEquivalent(free)} big-pallet space free on Trip {loadTripNumber}</small><small>{(plan.vehicle_meta?.[v.id]?.driver||cfg.driver||"No driver")} · {(plan.vehicle_meta?.[v.id]?.helper||cfg.helper||"No helper")}</small><small style={{whiteSpace:"normal",overflowWrap:"anywhere",color:"var(--muted)"}}>Permitted: {vehiclePermittedLabel(v.id)}</small>{!vehicleAreaStatus(loadInvoiceTarget!,v).permitted&&<span title="Invoice area is outside this vehicle's permitted areas" style={{width:9,height:9,borderRadius:"50%",background:"#f59e0b",boxShadow:"0 0 0 2px rgba(245,158,11,.16)",flex:"0 0 auto"}}/>}</div>{active&&<Check size={15}/>}</button>})}</div>
       {!manageVehicleId&&<div className="bulk-load-form">
+        <label className="bulk-load-qty"><span>Assign to trip</span><select value={loadTripNumber} onChange={e=>setLoadTripNumber(Math.max(1,Number(e.target.value)||1))}>{Array.from({length:tripCountFor(loadVehicleId)},(_,idx)=>idx+1).map(t=><option key={t} value={t}>{t===1?"First trip":t===2?"Second trip":"Third trip"}</option>)}</select></label>
         <div className="bulk-load-mode"><span>Load quantity</span><div><button type="button" className={loadQuantity===Math.max(1,Number(loadInvoiceTarget.pallets||0)-invoiceLoaded(loadInvoiceTarget))?"active":""} onClick={()=>setLoadQuantity(Math.max(1,Number(loadInvoiceTarget.pallets||0)-invoiceLoaded(loadInvoiceTarget)))}>Full load</button><button type="button" className={loadQuantity!==Math.max(1,Number(loadInvoiceTarget.pallets||0)-invoiceLoaded(loadInvoiceTarget))?"active":""} onClick={()=>setLoadQuantity(Math.min(1,Math.max(1,Number(loadInvoiceTarget.pallets||0)-invoiceLoaded(loadInvoiceTarget))))}>Partial</button></div></div>
-        <label className="bulk-load-qty"><span>Physical pallets to load</span><input type="number" min={1} max={Math.max(1,Number(loadInvoiceTarget.pallets||0)-invoiceLoaded(loadInvoiceTarget))} value={loadQuantity} onChange={e=>setLoadQuantity(Math.max(1,Math.min(Math.max(1,Number(loadInvoiceTarget.pallets||0)-invoiceLoaded(loadInvoiceTarget)),Number(e.target.value||1))))}/></label><small style={{display:"block",marginTop:6,color:"var(--muted)"}}>This load = {formatInvoiceEquivalent(loadInvoiceTarget, invoiceEquivalentForNextUnassigned(loadInvoiceTarget, loadQuantity))} big-equiv.</small>
+        <label className="bulk-load-qty"><span>Load units (pallets / box loads)</span><input type="number" min={1} max={Math.max(1,Number(loadInvoiceTarget.pallets||0)-invoiceLoaded(loadInvoiceTarget))} value={loadQuantity} onChange={e=>setLoadQuantity(Math.max(1,Math.min(Math.max(1,Number(loadInvoiceTarget.pallets||0)-invoiceLoaded(loadInvoiceTarget)),Number(e.target.value||1))))}/></label><small style={{display:"block",marginTop:6,color:"var(--muted)"}}>This load = {formatInvoiceEquivalent(loadInvoiceTarget, invoiceEquivalentForNextUnassigned(loadInvoiceTarget, loadQuantity))} big-equiv.</small>
       </div>}
       {manageVehicleId&&<div className="bulk-load-manage-panel"><div><span>Currently on {vehicleMap.get(manageVehicleId)?.number || manageVehicleId}</span><b>{formatEquivalent(invoiceEquivalentLoaded(loadInvoiceTarget))} big-equiv loaded</b></div><label><span>Quantity</span><input type="number" min={1} max={Math.max(1,assignedCountOnVehicle(loadInvoiceTarget,manageVehicleId))} value={loadQuantity} onChange={e=>setLoadQuantity(Math.max(1,Math.min(Math.max(1,assignedCountOnVehicle(loadInvoiceTarget,manageVehicleId)),Number(e.target.value||1))))}/></label><div className="bulk-load-manage-destination"><span>Move to</span><div>{selectedVehicles.filter(cfg=>cfg.vehicle_id!==manageVehicleId).map(cfg=>{const v=vehicleMap.get(cfg.vehicle_id);return <button type="button" key={cfg.vehicle_id} className={loadVehicleId===cfg.vehicle_id?"selected":""} onClick={()=>setLoadVehicleId(cfg.vehicle_id)}>{v?.number||cfg.vehicle_id}</button>})}</div></div></div>}
-      <div className="bulk-load-modal-actions"><GlassButton variant="secondary" size="sm" onClick={closeInvoiceLoadModal}>Cancel</GlassButton>{manageVehicleId?<><GlassButton variant="secondary" size="sm" onClick={()=>removeInvoicePallets(loadInvoiceTarget,manageVehicleId,loadQuantity)}><X size={13}/> Remove {loadQuantity}</GlassButton><GlassButton size="sm" onClick={()=>moveInvoicePallets(loadInvoiceTarget,manageVehicleId,loadVehicleId,loadQuantity)} disabled={!loadVehicleId || loadVehicleId===manageVehicleId}><Truck size={13}/> Move {loadQuantity}</GlassButton></>:<GlassButton size="sm" onClick={confirmInvoiceLoad}><Truck size={13}/> Load {loadQuantity} physical pallet{loadQuantity===1?"":"s"}</GlassButton>}</div>
+      <div className="bulk-load-modal-actions"><GlassButton variant="secondary" size="sm" onClick={closeInvoiceLoadModal}>Cancel</GlassButton>{manageVehicleId?<><GlassButton variant="secondary" size="sm" onClick={()=>removeInvoicePallets(loadInvoiceTarget,manageVehicleId,loadQuantity)}><X size={13}/> Remove {loadQuantity}</GlassButton><GlassButton size="sm" onClick={()=>moveInvoicePallets(loadInvoiceTarget,manageVehicleId,loadVehicleId,loadQuantity)} disabled={!loadVehicleId || loadVehicleId===manageVehicleId}><Truck size={13}/> Move {loadQuantity}</GlassButton></>:<GlassButton size="sm" onClick={confirmInvoiceLoad}><Truck size={13}/> Load {loadQuantity} unit{loadQuantity===1?"":"s"} · Trip {loadTripNumber}</GlassButton>}</div>
     </GlassCard></div>}
     {deleteInvoiceTarget&&<div className="bulk-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setDeleteInvoiceTarget(null)}}><GlassCard className="bulk-planner-modal bulk-modal-surface" style={{maxWidth:460}}><div className="bulk-panel-title"><Trash2 size={16}/> Delete invoice <button onClick={()=>setDeleteInvoiceTarget(null)}><X size={14}/></button></div><div className="bulk-modal-intro">Do you want to delete this invoice?</div><div style={{padding:"14px 0",display:"grid",gap:6}}><strong>{deleteInvoiceTarget.invoice_no}</strong><span>{deleteInvoiceTarget.customer_name}</span><small>{deleteInvoiceTarget.scheduled_date ? `Scheduled ${deleteInvoiceTarget.scheduled_date}` : "Waiting for schedule"} · {formatEquivalent(invoiceEquivalentTotal(deleteInvoiceTarget))} big-equiv</small></div><div className="bulk-load-modal-actions"><GlassButton variant="secondary" size="sm" onClick={()=>setDeleteInvoiceTarget(null)}>No</GlassButton><GlassButton size="sm" onClick={()=>void confirmDeleteInvoice()}><Trash2 size={13}/> Yes, delete</GlassButton></div></GlassCard></div>}
     {showBuildingEditor&&<div className="bulk-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setShowBuildingEditor(false)}}><GlassCard className="bulk-planner-modal bulk-modal-surface"><div className="bulk-panel-title"><Store size={16}/> Stores & destinations <button onClick={()=>setShowBuildingEditor(false)}><X size={14}/></button></div><div className="bulk-modal-intro">Create reusable store categories with default weekdays, specific dates, area and operational notes.</div><div className="bulk-store-form"><input value={storeForm.name} placeholder="Customer / store / destination name" onChange={e=>setStoreForm({...storeForm,name:e.target.value})}/><select value={storeForm.type} onChange={e=>setStoreForm({...storeForm,type:e.target.value as Building["type"]})}><option value="store">Store</option><option value="hospital">Hospital / Ward</option><option value="warehouse">Warehouse</option><option value="other">Other</option><option value="custom">Custom type</option></select><select value={storeForm.division} onChange={e=>setStoreForm({...storeForm,division:e.target.value})}><option value="">Current page: {divisionView}</option><option value="Pharma">Pharma</option><option value="Consumer">Consumer</option></select>{storeForm.type==="custom"&&<input value={storeForm.custom_type} placeholder="Custom type name" onChange={e=>setStoreForm({...storeForm,custom_type:e.target.value})}/>}<input value={storeForm.area} placeholder="Area" onChange={e=>setStoreForm({...storeForm,area:e.target.value})}/><input value={storeForm.note} placeholder="Details / notes" onChange={e=>setStoreForm({...storeForm,note:e.target.value})}/><label className="bulk-field-with-label"><span>Store timing</span><input type="time" value={storeForm.timing} onChange={e=>setStoreForm({...storeForm,timing:e.target.value})}/></label><label style={{display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:700}}><input type="checkbox" checked={storeForm.can_share_vehicle !== false} onChange={e=>setStoreForm({...storeForm,can_share_vehicle:e.target.checked})}/> Can share vehicle with other customers</label><div className="bulk-store-days">{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((d,i)=><button type="button" key={d} className={storeForm.schedule_days.includes(i)?"active":""} onClick={()=>toggleStoreDay(i)}>{d}</button>)}</div><div className="bulk-specific-date-picker"><input type="date" value={storeDatePicker} onChange={e=>setStoreDatePicker(e.target.value)}/><GlassButton variant="secondary" size="sm" onClick={addStoreSpecificDate}><Plus size={13}/> Add date</GlassButton><span>{storeForm.schedule_dates || "No specific dates selected"}</span></div><div className="bulk-store-form-actions"><GlassButton size="sm" onClick={addStore}>{editingStoreId?<Check size={13}/>:<Plus size={13}/>} {editingStoreId?"Update Customer / Location":"Add Customer / Location"}</GlassButton>{editingStoreId&&<GlassButton variant="secondary" size="sm" onClick={()=>{setEditingStoreId(null);setStoreForm({ name:"", type:"store", custom_type:"", area:"", note:"", timing:"", schedule_days:[], schedule_dates:"", division:divisionView, can_share_vehicle:true });}}>Cancel</GlassButton>}</div></div><div className="bulk-store-list">{(plan.buildings||[]).map(b=><div className="bulk-store-row" key={b.id}><div className="bulk-store-icon">{storeIcon(b.type)}</div><div><b>{b.name}</b><span>{buildingTypeLabel(b)} · {b.division || "Shared"} · {b.area||"Area not set"}{b.note?` · ${b.note}`:""}{b.timing?` · Timing ${b.timing}`:""}</span><small>{(b.schedule_days?.length?b.schedule_days.map((d:number)=>scheduleDayNames[d]).join(" · "):"Every day")}{b.schedule_dates?.length?` · ${b.schedule_dates.length} specific date(s)`:""} · {b.can_share_vehicle === false ? "Vehicle alone" : "Vehicle can share"}</small></div><div className="bulk-store-row-actions"><button className="btn icon-btn" title="Edit store / customer" onClick={()=>editStore(b)}><Pencil size={13}/></button><button className="btn icon-btn" title="Remove store" onClick={()=>removeStore(b.id)}><Trash2 size={13}/></button></div></div>)}</div></GlassCard></div>}
