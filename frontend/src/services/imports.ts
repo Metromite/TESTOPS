@@ -21,7 +21,7 @@
 //     a retention job, or a scheduled task. Do not add one.
 // ============================================================================
 
-import { supabase, getSupabaseClientForImport, getSupabaseClientByProject } from "@/lib/supabase";
+import { supabase, getSupabaseClientForImport, getSupabaseClientByProject, getFederatedSupabaseClients } from "@/lib/supabase";
 import { makeCrudService } from "./crud";
 import type { ImportBatch, RawImportRow } from "./types";
 
@@ -86,40 +86,48 @@ export async function finalizeImportBatch(
   result: { row_count: number; success_count: number; failed_count: number; validation_errors?: unknown[] }
 ): Promise<ImportBatch> {
   const status = result.failed_count === 0 ? "completed" : result.success_count === 0 ? "failed" : "partial";
-  const { data: batch, error: findError } = await supabase.from("import_batches").select("storage_project").eq("id", batchId).maybeSingle();
-  if (findError) throw new Error(`Failed to find import owner: ${findError.message}`);
-  const client = getSupabaseClientByProject(batch?.storage_project === "secondary" ? "secondary" : "primary");
+  let batch: any = null;
+  for (const c of getFederatedSupabaseClients()) {
+    const r = await c.from("import_batches").select("storage_project").eq("id", batchId).maybeSingle();
+    if (r.error) throw new Error(`Failed to find import owner: ${r.error.message}`);
+    if (r.data) { batch = r.data; break; }
+  }
+  const client = getSupabaseClientByProject(batch?.storage_project === "secondary" ? "secondary" : batch?.storage_project === "tertiary" ? "tertiary" : "primary");
   const { data, error } = await client.from("import_batches").update({ ...result, status }).eq("id", batchId).select("*").single();
   if (error || !data) throw new Error(`Failed to finalize import batch: ${error?.message || "No batch returned"}`);
   return data as ImportBatch;
 }
 
-export async function insertRawImportRows(rows: Omit<RawImportRow, "id" | "imported_at">[], clientOverride?: import("@supabase/supabase-js").SupabaseClient): Promise<void> {
-  if (rows.length === 0) return;
+export async function insertRawImportRows(rows: Omit<RawImportRow, "id" | "imported_at">[], clientOverride?: import("@supabase/supabase-js").SupabaseClient, onProgress?: (processed: number, total: number) => void): Promise<void> {
+  if (!rows.length) return;
   const client = clientOverride ?? supabase;
-
-  // Never send a whole large Excel file as one PostgREST INSERT. Raw rows can
-  // contain sizeable JSON objects, so a single request can exceed the database
-  // statement timeout even when the file itself is valid. Small batches also
-  // make retries safe and keep the UI responsive.
-  const BATCH_SIZE = 100;
-  for (let start = 0; start < rows.length; start += BATCH_SIZE) {
-    const batch = rows.slice(start, start + BATCH_SIZE);
-    let { error } = await client.from("raw_import_rows").insert(batch);
-
-    // One smaller retry handles unusually large rows without restarting the
-    // complete import. We only retry the current batch.
-    if (error && /statement timeout|canceling statement/i.test(error.message) && batch.length > 20) {
-      for (let i = 0; i < batch.length && !error; i += 20) {
-        const mini = batch.slice(i, i + 20);
-        const result = await client.from("raw_import_rows").insert(mini);
+  const CHUNK = 250;
+  const CONCURRENCY = 4;
+  let next = 0;
+  let processed = 0;
+  const worker = async () => {
+    while (true) {
+      const start = next;
+      next += CHUNK;
+      if (start >= rows.length) return;
+      const batch = rows.slice(start, start + CHUNK);
+      let error: any = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const result = await client.from("raw_import_rows").insert(batch);
         error = result.error;
+        if (!error) break;
+        if (!/timeout|canceling statement|payload|too large|gateway/i.test(error.message || "")) break;
+        await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
       }
+      if (error) throw new Error(`Failed to store raw import rows (${start + 1}-${Math.min(start + CHUNK, rows.length)}): ${error.message}`);
+      processed += batch.length;
+      onProgress?.(processed, rows.length);
+      await new Promise(r => setTimeout(r, 0));
     }
-
-    if (error) throw new Error(`Failed to store raw import rows (rows ${start + 1}-${Math.min(start + BATCH_SIZE, rows.length)}): ${error.message}`);
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.ceil(rows.length / CHUNK)) }, () => worker()));
 }
+
 
 /** Import history list (brief section 7) — excludes manually-deleted
  * batches by default so the list matches what's actually still in

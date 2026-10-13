@@ -17,13 +17,23 @@ export const featureFlagsService = {
   async set(name: string, enabled: boolean, updatedBy: string, description?: string): Promise<FeatureFlag> {
     const { data, error } = await supabase
       .from("feature_flags")
-      .upsert({ name, enabled, updated_by: updatedBy, ...(description ? { description } : {}) }, { onConflict: "name" })
+      .upsert({ flag_key: name, name, enabled, updated_by: updatedBy, ...(description ? { description } : {}) }, { onConflict: "flag_key" })
       .select()
       .single();
     if (error) throw new Error(`Failed to set feature flag ${name}: ${error.message}`);
     return data;
   },
 };
+
+
+export async function recordRecentAudit(entityType: string, entityKey: string, action: string, beforeState: unknown = {}, afterState: unknown = {}, details: unknown = {}): Promise<void> {
+  const actor = sessionStorage.getItem("dispatchops-username") || "unknown";
+  const { error } = await supabase.from("audit_log").insert({
+    entity_type: entityType, entity_key: entityKey, action, actor, success: true,
+    before_state: beforeState, after_state: afterState, details, undone: false,
+  });
+  if (error) throw new Error(`Failed to write audit log entry: ${error.message}`);
+}
 
 export const auditLogService = {
   async list(opts?: { entityType?: string; limit?: number }): Promise<AuditLogEntry[]> {

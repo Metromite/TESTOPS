@@ -1,6 +1,10 @@
-import { useEffect, useState } from "react";
-import { Download, X, Building2, Warehouse, MapPin, Truck, Route, Briefcase, CalendarDays, RefreshCw, Clock, ChevronDown, FileSpreadsheet, BarChart3, Timer, Package, Map, AlertTriangle } from "lucide-react";
-import { getCachedDashboardFilterMeta, getDashboardFilterMeta } from "../services/dashboardKpis";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Download, Building2, Warehouse, MapPin, Truck, Briefcase, CalendarDays, ChevronDown, FileSpreadsheet, BarChart3, Timer, Package, Map, AlertTriangle } from "lucide-react";
+import { getPreloadedDashboardRange, getCachedDashboardFilterMeta, getCachedDashboardDriverDirectory } from "../services/dashboardKpis";
+import { getDashboardLocalDataset,
+  getDashboardLocalLoadingProgress,
+  subscribeDashboardLocalProgress, getLocalFilterOptions, preloadDashboardLocalDataset, subscribeDashboardLocal } from "../services/dashboardLocalStore";
 import { exportDashboardExcel, exportDashboardView, fetchDashboardEndpoint, type DashboardExportView } from "../services/dashboardAnalytics";
 import { getDrivers } from "../services/operational";
 import { triggerDashboardRefresh } from "../hooks/dashboardRefreshBus";
@@ -18,7 +22,7 @@ import { GlassButton } from "../design-system/GlassButton";
 import { GlassFilterBar } from "../design-system/GlassFilter";
 import { GlassInput } from "../design-system/GlassInput";
 import { dashboardFilterParams } from "../types/dashboardFilters";
-import { supabase } from "../lib/supabase";
+import { getFederatedSupabaseClients } from "../lib/supabase";
 import { useOperationalRealtime } from "../hooks/useOperationalRealtime";
 import ExportStatus from "../components/ExportStatus";
 import type { ExportProgress } from "../services/desktopExport";
@@ -44,6 +48,38 @@ export default function Dashboard() {
   const [exportError, setExportError] = useState("");
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportTriggerRef = useRef<HTMLDivElement>(null);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  const [exportMenuPos, setExportMenuPos] = useState<{ left: number; top: number } | null>(null);
+  // Keep the portaled export menu anchored to the Export button while any
+  // page/container scroll happens. The menu is fixed to the viewport, so its
+  // coordinates are refreshed from the trigger on every scroll frame.
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    const sync = () => {
+      const rect = exportTriggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setExportMenuPos({ left: Math.max(8, rect.right - 250), top: rect.bottom + 8 });
+    };
+    const close = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const insideTrigger = !!exportTriggerRef.current?.contains(target);
+      const insideMenu = !!exportMenuRef.current?.contains(target);
+      if (!insideTrigger && !insideMenu) setExportMenuOpen(false);
+    };
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") setExportMenuOpen(false); };
+    sync();
+    window.addEventListener("resize", sync);
+    window.addEventListener("scroll", sync, true);
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", key);
+    return () => {
+      window.removeEventListener("resize", sync);
+      window.removeEventListener("scroll", sync, true);
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", key);
+    };
+  }, [exportMenuOpen]);
   // PERF FIX (slow tab switching): tabs below used to be conditionally
   // *mounted* (`{tab === "x" && <XTab/>}`), so switching away from a tab
   // unmounted it entirely - switching back mounted it fresh and re-ran
@@ -57,14 +93,12 @@ export default function Dashboard() {
   const [driverList, setDriverList] = useState<string[]>([]);
 
   // Dashboard Filter Slicers (V2 milestone) - Excel/Power BI-style,
-  // every one multi-select. Options are sourced live: vehicle_types/
-  // route_types from /api/meta/options (reference_data.py), everything
-  // else (drivers/areas/divisions/facility types/salesmen) from
-  // /api/dashboard/filter-options (distinct values actually imported).
+  // every one multi-select. Vehicle type is intentionally limited to Van/Pickup;
+  // Area comes directly from the selected SAP export month, and Drivers are
+  // Fleet Database identities that have valid SAP data in that month.
   const [selDrivers, setSelDrivers] = useState<string[]>([]);
   const [selAreas, setSelAreas] = useState<string[]>([]);
   const [selDivisions, setSelDivisions] = useState<string[]>([]);
-  const [selRouteTypes, setSelRouteTypes] = useState<string[]>([]);
   const [selVehicleTypes, setSelVehicleTypes] = useState<string[]>([]);
   const [selFacilityTypes, setSelFacilityTypes] = useState<string[]>([]);
   const [selSalesmen, setSelSalesmen] = useState<string[]>([]);
@@ -89,8 +123,14 @@ export default function Dashboard() {
   // Start with the current month as a safe, bounded query while the one-row
   // "latest data date" lookup completes. The effect below immediately moves
   // this to the latest month that actually contains data.
-  const [dateFrom, setDateFrom] = useState(_monthStart());
-  const [dateTo, setDateTo] = useState(_today());
+  const preloadedRange = getPreloadedDashboardRange();
+  const [dateFrom, setDateFrom] = useState(preloadedRange?.start || "");
+  const [dateTo, setDateTo] = useState(preloadedRange?.end || "");
+  const [latestRangeReady, setLatestRangeReady] = useState(() => Boolean(preloadedRange?.start && preloadedRange?.end));
+  const [localDataset, setLocalDataset] = useState(() => getDashboardLocalDataset());
+  const [initialLoadingProgress, setInitialLoadingProgress] = useState(() => getDashboardLocalLoadingProgress());
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
+  const [initialLoadingHint, setInitialLoadingHint] = useState("Preparing your Dashboard data…");
   // FINAL CORRECTION PASS (single source of truth, item 12): promoted out
   // of LeadTimeTab-local state so Dashboard.tsx is the one place that owns
   // every filter, including these two - see dashboardFilters.ts's
@@ -98,22 +138,15 @@ export default function Dashboard() {
   const [selLeadTimeBand, setSelLeadTimeBand] = useState("");
   const [selClassification, setSelClassification] = useState("");
 
-  const cachedFilterMeta = getCachedDashboardFilterMeta();
-  const [vehicleTypeOptions, setVehicleTypeOptions] = useState<string[]>(
-    cachedFilterMeta?.vehicle_types?.length ? cachedFilterMeta.vehicle_types : []
-  );
-  const [routeTypeOptions, setRouteTypeOptions] = useState<string[]>(
-    cachedFilterMeta?.route_types?.length ? cachedFilterMeta.route_types : []
-  );
-  const [filterOptions, setFilterOptions] = useState<{ divisions: string[]; facility_types: string[]; salesmen: string[]; areas: string[]; drivers: string[] }>(
-    cachedFilterMeta ? {
-      divisions: cachedFilterMeta.divisions,
-      facility_types: cachedFilterMeta.facility_types,
-      salesmen: cachedFilterMeta.salesmen,
-      areas: cachedFilterMeta.areas,
-      drivers: cachedFilterMeta.drivers,
-    } : { divisions: [], facility_types: [], salesmen: [], areas: [], drivers: [] }
-  );
+  const [vehicleTypeOptions, setVehicleTypeOptions] = useState<string[]>(["Van", "Pickup"]);
+  const initialFilterMeta = getCachedDashboardFilterMeta(dateFrom, dateTo);
+  const [filterOptions, setFilterOptions] = useState<{ divisions: string[]; facility_types: string[]; salesmen: string[]; areas: string[]; drivers: string[] }>({
+    divisions: initialFilterMeta?.divisions || [],
+    facility_types: initialFilterMeta?.facility_types || [],
+    salesmen: initialFilterMeta?.salesmen || [],
+    areas: initialFilterMeta?.areas || [],
+    drivers: initialFilterMeta?.drivers || [],
+  });
   // DRIVER SLICER (item 7 - display name): Fleet Database's own
   // code+name directory, fetched once and reused - purely for a richer
   // label on the slicer buttons (e.g. "D040 · Hussain Mohammed" instead
@@ -122,108 +155,160 @@ export default function Dashboard() {
   // /api/dashboard/filter-options (filterOptions.drivers below), same as
   // before this change. GET /api/drivers already exists (Fleet Database
   // CRUD) - reused as-is, no new endpoint.
-  const [driverDirectory, setDriverDirectory] = useState<DriverDirectoryEntry[]>([]);
+  const [driverDirectory, setDriverDirectory] = useState<DriverDirectoryEntry[]>(() => getCachedDashboardDriverDirectory() as DriverDirectoryEntry[]);
+
+  // Keep all analytics tabs on the same canonical driver identity. The slicer
+  // stores Fleet codes, while several legacy analytics RPCs match SAP driver
+  // names. Convert selected Fleet codes to names before they reach the shared
+  // GlobalFilters object; this preserves the slicer UI and prevents downstream
+  // tabs from becoming zero-result while Overview still works.
+  const canonicalSelectedDrivers = selDrivers.map((selected) => {
+    const match = driverDirectory.find((d) =>
+      String(d.code || "").trim().toLowerCase() === selected.trim().toLowerCase() ||
+      String(d.name || "").trim().toLowerCase() === selected.trim().toLowerCase()
+    );
+    return match?.name?.trim() || selected;
+  });
 
   const globalFilters = {
-    drivers: selDrivers.join(","), areas: selAreas.join(","), division: selDivisions.join(","),
-    route_type: selRouteTypes.join(","), vehicle_type: selVehicleTypes.join(","),
+    drivers: canonicalSelectedDrivers.join(","), areas: selAreas.join(","), division: selDivisions.join(","),
+    route_type: "", vehicle_type: selVehicleTypes.join(","),
     facility_type: selFacilityTypes.join(","), salesman: selSalesmen.join(","),
     start_date: dateFrom, end_date: dateTo,
     lead_time_band: selLeadTimeBand, classification: selClassification,
   };
-  const anyGlobalFilterActive = !!(
-    selDrivers.length || selAreas.length || selDivisions.length || selRouteTypes.length ||
-    selVehicleTypes.length || selFacilityTypes.length || selSalesmen.length || dateFrom || dateTo ||
-    selLeadTimeBand || selClassification
-  );
 
-  function clearAllFilters() {
-    setDriver("");
-    setSelDrivers([]); setSelAreas([]); setSelDivisions([]); setSelRouteTypes([]);
-    setSelVehicleTypes([]); setSelFacilityTypes([]); setSelSalesmen([]);
-    setDateFrom(""); setDateTo("");
-    setSelLeadTimeBand(""); setSelClassification("");
-  }
 
-  function loadFilterMeta() {
-    // Use the last known slicer metadata immediately, then refresh it in the
-    // background. This removes the old "page through all SAP rows first"
-    // delay while keeping the dropdowns current after imports.
-    getDashboardFilterMeta().then((m) => {
-      setVehicleTypeOptions(m.vehicle_types);
-      setRouteTypeOptions(m.route_types);
-      setFilterOptions({
-        divisions: m.divisions,
-        facility_types: m.facility_types,
-        salesmen: m.salesmen,
-        areas: m.areas,
-        drivers: m.drivers,
-      });
-    }).catch(() => {});
-    getDrivers<DriverDirectoryEntry>().then((rows) => setDriverDirectory(rows || [])).catch(() => {});
-  }
 
-  useEffect(() => {
-    loadFilterMeta();
-    // Pick the latest month with actual SAP data, then scope the initial
-    // dashboard query/render to that month only. Never default to all history.
-    (async () => {
-      try {
-        const { data, error } = await supabase
+  async function syncDashboardToLatestImportedMonth(force = false) {
+    try {
+      const clients = getFederatedSupabaseClients();
+      const results = await Promise.all(clients.map(async (client) => {
+        const { data, error } = await client
           .from("sap_invoice_facts")
           .select("dispatch_date")
           .not("dispatch_date", "is", null)
           .order("dispatch_date", { ascending: false })
           .limit(1);
-        if (error || !data?.[0]?.dispatch_date) return;
-        const latest = String(data[0].dispatch_date).slice(0, 10);
-        const [year, month] = latest.split("-").map(Number);
-        if (!year || !month) return;
-        const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
-        const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
-        const monthEnd = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
-        setDateFrom(monthStart);
-        setDateTo(monthEnd);
-      } catch {
-        // Leave the date fields empty if the metadata lookup fails; the
-        // existing dashboard remains usable and the user can choose dates.
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        if (error) return null;
+        return data?.[0]?.dispatch_date ? String(data[0].dispatch_date).slice(0, 10) : null;
+      }));
+      const latest = results.filter(Boolean).sort().pop();
+      if (!latest) return;
+      const [year, month] = latest.split("-").map(Number);
+      if (!year || !month) return;
+      const latestMonthKey = `${year}-${String(month).padStart(2, "0")}`;
+      const currentMonthKey = String(dateFrom || "").slice(0, 7);
+      if (!force && currentMonthKey === latestMonthKey) return;
+      const monthStart = `${latestMonthKey}-01`;
+      const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+      const monthEnd = `${latestMonthKey}-${String(lastDay).padStart(2, "0")}`;
+      setDateFrom(monthStart);
+      setDateTo(monthEnd);
+    } catch {
+      // Keep the current selection if the live latest-date lookup fails.
+    }
+  }
+
+
+  useEffect(() => {
+    const unsubscribe = subscribeDashboardLocal(() => setLocalDataset(getDashboardLocalDataset()));
+    const unsubscribeProgress = subscribeDashboardLocalProgress(setInitialLoadingProgress);
+    return () => { unsubscribe(); unsubscribeProgress(); };
   }, []);
-  useOperationalRealtime("dashboard-live-master-data", ["import_batches", "vehicles", "drivers", "areas", "consumer_salesmen"], () => { loadFilterMeta(); triggerDashboardRefresh(); });
+
+  // UI-only finalization. Keep the existing data-loading pipeline untouched.
+  // Once the dataset and latest range are ready, finish the visual progress
+  // at 100% first, keep 100% on screen briefly, and only then reveal the
+  // Dashboard. This prevents the UI from ever opening while it visibly stops
+  // at 65% (or another intermediate value).
+  useEffect(() => {
+    if (!localDataset || !latestRangeReady || initialLoadComplete) return;
+
+    // The data pipeline can legitimately jump from its last measured fetch
+    // checkpoint (often ~65%) to ready. Do not expose that jump to the user.
+    // Finish the *visual* progress in small steps so it reads as continuous
+    // progress while the already-loaded local dataset stays completely
+    // untouched.
+    let displayed = Math.max(0, Math.min(99, initialLoadingProgress));
+    if (displayed < 65 || displayed >= 95) displayed = 65;
+    setInitialLoadingProgress(displayed);
+
+    const hints = [
+      "Did you know? You can combine multiple months in the date filter.",
+      "Did you know? Driver filters update the dashboard instantly from local data.",
+      "Did you know? You can click a KPI to drill into the underlying orders.",
+      "Did you know? Division, Area, Vehicle Type and Salesman filters can work together.",
+      "Did you know? Dashboard data is kept locally so returning to this page is fast.",
+      "Did you know? Driver Performance links GPS routes back to the matching driver and vehicle.",
+    ];
+    let hintIndex = 0;
+    setInitialLoadingHint(hints[hintIndex]);
+    const hintTimer = window.setInterval(() => {
+      hintIndex = (hintIndex + 1) % hints.length;
+      setInitialLoadingHint(hints[hintIndex]);
+    }, 2200);
+
+    let revealTimer: number | undefined;
+    const progressTimer = window.setInterval(() => {
+      displayed = Math.min(100, displayed + (displayed < 88 ? 2 : 1));
+      setInitialLoadingProgress(displayed);
+      if (displayed >= 100) {
+        window.clearInterval(progressTimer);
+        revealTimer = window.setTimeout(() => setInitialLoadComplete(true), 350);
+      }
+    }, 70);
+
+    return () => {
+      window.clearInterval(progressTimer);
+      window.clearInterval(hintTimer);
+      if (revealTimer !== undefined) window.clearTimeout(revealTimer);
+    };
+  }, [localDataset, latestRangeReady, initialLoadComplete]);
+
+  useEffect(() => {
+    // On a brand-new browser there may be no cached latest-data range yet.
+    // Resolve the latest imported SAP month before starting the first local
+    // dataset render so the Dashboard cannot open on an empty current month
+    // and paint all KPIs as zero. Refreshes already have this range cached,
+    // which is why the bug was mainly visible on first load.
+    if (latestRangeReady) return;
+    void syncDashboardToLatestImportedMonth(false).finally(() => setLatestRangeReady(true));
+  }, [latestRangeReady]);
+
+  useEffect(() => {
+    if (!latestRangeReady || (!dateFrom && !dateTo)) return;
+    void preloadDashboardLocalDataset(dateFrom, dateTo).catch(() => {});
+  }, [latestRangeReady, dateFrom, dateTo]);
+
+  useEffect(() => {
+    const cached = getCachedDashboardDriverDirectory();
+    if (cached.length) setDriverDirectory(cached as DriverDirectoryEntry[]);
+    void getDrivers<DriverDirectoryEntry>().then((rows) => setDriverDirectory(rows || [])).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    // The Dashboard now derives all slicer options from the same local dataset
+    // used by the analytics tabs. This makes the lists month-aware and keeps
+    // selections that have no rows from ever producing a zero-result surprise.
+    if (!localDataset || localDataset.key !== "ALL") return;
+    const opts = getLocalFilterOptions(localDataset, globalFilters);
+    setVehicleTypeOptions(opts.vehicle_types);
+    setFilterOptions({ divisions: opts.divisions, facility_types: opts.facility_types, salesmen: opts.salesmen, areas: opts.areas, drivers: opts.drivers });
+    setSelDrivers((current) => current.filter((d) => opts.drivers.some((x) => x.toLowerCase() === d.toLowerCase())));
+  }, [localDataset, dateFrom, dateTo, selDrivers, selAreas, selDivisions, selFacilityTypes, selSalesmen, selVehicleTypes]);
+
+  useOperationalRealtime("dashboard-live-master-data", ["import_batches", "sap_invoice_facts", "vehicles", "drivers", "areas", "consumer_salesmen"], () => {
+    void preloadDashboardLocalDataset(dateFrom, dateTo, true).catch(() => {});
+    void syncDashboardToLatestImportedMonth(false);
+    triggerDashboardRefresh();
+  });
 
   // Do NOT fire every heavy dashboard RPC when filters change. The previous
   // warm-up launched Driver Performance + Lead Time + Order Summary (and the
   // other analytics) simultaneously, which made PostgreSQL compete for CPU
   // and caused statement timeouts on larger datasets. Each tab now loads only
   // when it is actually needed; the shared cache still makes revisits fast.
-  // ITEM 1: "Refresh Dashboard" button + optional auto-refresh.
-  // Reloads the filter-option lists (drivers/areas/divisions/etc. can
-  // change as new data is imported) and, via triggerDashboardRefresh(),
-  // every currently-mounted tab's own data - same endpoints/params each
-  // tab already uses, just re-run on demand instead of only on filter
-  // change. This does not touch the visitedTabs keep-mounted behavior
-  // above, so switching tabs is still instant with no refetch.
-  const [refreshing, setRefreshing] = useState(false);
-  const [autoRefreshMin, setAutoRefreshMin] = useState(0); // 0 = off
-
-  function refreshDashboard() {
-    setRefreshing(true);
-    loadFilterMeta();
-    triggerDashboardRefresh();
-    // purely cosmetic - the underlying loads are async and have no shared
-    // "done" signal to await, so this just gives the button a brief
-    // pressed/spinning state rather than claiming a precise completion time.
-    setTimeout(() => setRefreshing(false), 600);
-  }
-
-  useEffect(() => {
-    if (!autoRefreshMin) return;
-    const id = setInterval(refreshDashboard, autoRefreshMin * 60_000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRefreshMin]);
 
   async function handleExport(view: DashboardExportView = "full") {
     setExportError("");
@@ -255,46 +340,35 @@ export default function Dashboard() {
         title="Dashboard"
         actions={
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5 text-[12px] text-muted">
-              <Clock className="h-3.5 w-3.5" />
-              <select
-                value={autoRefreshMin}
-                onChange={(e) => setAutoRefreshMin(Number(e.target.value))}
-                title="Auto-refresh dashboard"
-              >
-                <option value={0}>Auto-refresh: Off</option>
-                <option value={1}>Every 1 min</option>
-                <option value={5}>Every 5 min</option>
-                <option value={15}>Every 15 min</option>
-                <option value={30}>Every 30 min</option>
-              </select>
-            </div>
-            <GlassButton variant="subtle" size="sm" onClick={refreshDashboard} disabled={refreshing}>
-              <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
-              Refresh Dashboard
-            </GlassButton>
-            <div className="relative" onMouseLeave={() => setExportMenuOpen(false)}>
-              <GlassButton variant="primary" size="sm" onClick={() => { setExportMenuOpen((v) => !v); }}>
+            <div ref={exportTriggerRef} className="relative">
+              <GlassButton variant="primary" size="sm" onClick={() => {
+                setExportMenuOpen((v) => !v);
+                const rect = exportTriggerRef.current?.getBoundingClientRect();
+                if (rect) setExportMenuPos({ left: Math.max(8, rect.right - 250), top: rect.bottom + 8 });
+              }}>
                 <Download className="h-4 w-4" />
                 Export to Excel
                 <ChevronDown className="h-3.5 w-3.5" />
               </GlassButton>
-              <div className="dashboard-export-menu absolute right-0 top-full z-[300] mt-2 min-w-[250px] rounded-xl border border-[var(--glass-border)] bg-[var(--glass-bg-3)] p-1.5 shadow-elevation2 backdrop-blur-[var(--glass-blur-3)] backdrop-saturate-[180%]" style={{ display: exportMenuOpen ? "block" : "none", boxShadow: "0 18px 50px rgba(0,0,0,.35)" }}>
-                {[
-                  ["full", "Full Dashboard Export", Download],
-                  ["dashboard", "KPI Summary", BarChart3],
-                  ["driverperf", "Driver Performance", FileSpreadsheet],
-                  ["leadtime", "Lead Time Analytics", Timer],
-                  ["order", "Order Summary", Package],
-                  ["area", "Area Analytics", Map],
-                  ["notsupplied", "Not Supplied", AlertTriangle],
-                ].map(([key, label, Icon]) => {
-                  const I = Icon as any;
-                  return <button key={String(key)} type="button" onClick={() => { setExportMenuOpen(false); handleExport(key as DashboardExportView); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-ink hover:bg-[var(--row-hover)] hover:text-[var(--teal)]">
-                    <I className="h-3.5 w-3.5" /> {String(label)}
-                  </button>;
-                })}
-              </div>
+              {exportMenuOpen && exportMenuPos && createPortal(
+                <div ref={exportMenuRef} className="dashboard-export-menu" style={{ position: "fixed", left: exportMenuPos.left, top: exportMenuPos.top, width: 250, zIndex: 100000, boxShadow: "0 18px 50px rgba(0,0,0,.35)" }}>
+                  {[
+                    ["full", "Full Dashboard Export", Download],
+                    ["dashboard", "KPI Summary", BarChart3],
+                    ["driverperf", "Driver Performance", FileSpreadsheet],
+                    ["leadtime", "Lead Time Analytics", Timer],
+                    ["order", "Order Summary", Package],
+                    ["area", "Area Analytics", Map],
+                    ["notsupplied", "Not Supplied", AlertTriangle],
+                  ].map(([key, label, Icon]) => {
+                    const I = Icon as any;
+                    return <button key={String(key)} type="button" onClick={() => { setExportMenuOpen(false); handleExport(key as DashboardExportView); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-ink hover:bg-[var(--row-hover)] hover:text-[var(--teal)]">
+                      <I className="h-3.5 w-3.5" /> {String(label)}
+                    </button>;
+                  })}
+                </div>,
+                document.body
+              )}
             </div>
             {exportError && (
               <span style={{ fontSize: 12, color: "var(--red)" }}>{exportError}</span>
@@ -309,19 +383,12 @@ export default function Dashboard() {
         <MultiSelectSlicer icon={Warehouse} label="Facility Type" options={filterOptions.facility_types} selected={selFacilityTypes} onChange={setSelFacilityTypes} />
         <MultiSelectSlicer icon={MapPin} label="Area" options={filterOptions.areas} selected={selAreas} onChange={setSelAreas} />
         <MultiSelectSlicer icon={Truck} label="Vehicle Type" options={vehicleTypeOptions} selected={selVehicleTypes} onChange={setSelVehicleTypes} />
-        <MultiSelectSlicer icon={Route} label="Route Type" options={routeTypeOptions} selected={selRouteTypes} onChange={setSelRouteTypes} />
         <MultiSelectSlicer icon={Briefcase} label="Salesman" options={filterOptions.salesmen} selected={selSalesmen} onChange={setSelSalesmen} />
         <div className="flex items-center gap-1.5">
           <CalendarDays className="h-3.5 w-3.5 text-muted" />
           <GlassInput type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} title="From date" className="w-auto" />
           <GlassInput type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} title="To date" className="w-auto" />
         </div>
-        {(driver || anyGlobalFilterActive) && (
-          <GlassButton variant="subtle" size="sm" onClick={clearAllFilters}>
-            <X className="h-3.5 w-3.5" />
-            Clear All Filters
-          </GlassButton>
-        )}
       </GlassFilterBar>
 
       {/*
@@ -335,7 +402,7 @@ export default function Dashboard() {
         edited. See DriverSlicerBar.tsx for the full rationale.
       */}
       <DriverSlicerBar
-        options={filterOptions.drivers.length ? filterOptions.drivers : driverList}
+        options={filterOptions.drivers}
         selected={selDrivers}
         onChange={setSelDrivers}
         driverDirectory={driverDirectory}
@@ -345,12 +412,74 @@ export default function Dashboard() {
 
       <DashboardTabs tabs={TABS} active={tab} onChange={selectTab} />
 
-      {tab === "home" && <HomeTab driver={driver} onSelectDriver={setDriver} onDriverListLoaded={setDriverList} globalFilters={globalFilters} />}
+      {tab === "home" && <HomeTab driver={driver} onSelectDriver={(name) => { setDriver(name); setSelDrivers([]); }} onDriverListLoaded={setDriverList} globalFilters={globalFilters} />}
       {tab === "driver-performance" && <DriverPerformanceTab driver={driver} globalFilters={globalFilters} />}
       {tab === "lead-time" && <LeadTimeTab driver={driver} globalFilters={globalFilters} setLeadTimeBand={setSelLeadTimeBand} setClassification={setSelClassification} />}
       {tab === "order-summary" && <OrderSummaryTab driver={driver} globalFilters={globalFilters} />}
       {tab === "area-analytics" && <AreaAnalyticsTab driver={driver} globalFilters={globalFilters} />}
       {tab === "not-supplied" && <NotSuppliedTab driver={driver} globalFilters={globalFilters} />}
+
+      {(!localDataset || !latestRangeReady || !initialLoadComplete) && (
+        <DashboardInitialLoadingOverlay progress={initialLoadingProgress} hint={initialLoadingHint} />
+      )}
+    </div>
+  );
+}
+
+function DashboardInitialLoadingOverlay({ progress, hint }: { progress: number; hint: string }) {
+  const safeProgress = Math.max(0, Math.min(100, Math.round(progress)));
+  const [dots, setDots] = useState(0);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setDots((v) => (v + 1) % 4), 420);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const stage = safeProgress < 72
+    ? "Preparing your data"
+    : safeProgress < 88
+      ? "Building your dashboard"
+      : safeProgress < 100
+        ? "Finalizing your workspace"
+        : "Ready";
+
+  return (
+    <div className="dashboard-initial-loading" aria-live="polite" aria-busy="true">
+      <div className="dashboard-loading-scrim" />
+
+      <div className="dashboard-loading-card">
+        <div className="dashboard-loading-brand">
+          <div className="dashboard-loading-logo"><img src="/app-icon.png" alt="Dispatch OPS" /></div>
+          <div>
+            <div className="dashboard-loading-title">DispatchOPS</div>
+            <div className="dashboard-loading-subtitle">Dashboard</div>
+          </div>
+          <div className="dashboard-loading-live"><span /> LIVE</div>
+        </div>
+
+        <div className="dashboard-loading-status">
+          <div>
+            <strong>{stage}</strong>
+            <span>We’re loading, hang on{".".repeat(dots)}</span>
+          </div>
+          <b>{safeProgress}%</b>
+        </div>
+
+        <div className="dashboard-loading-progress-track">
+          <div className="dashboard-loading-progress-fill" style={{ width: `${safeProgress}%` }}>
+            <span className="dashboard-loading-progress-glow" />
+          </div>
+        </div>
+
+        <div className="dashboard-loading-activity">
+          <span className="dashboard-loading-dot" />
+          <span className="dashboard-loading-dot" />
+          <span className="dashboard-loading-dot" />
+          <span className="dashboard-loading-activity-label">Loading dashboard data securely</span>
+        </div>
+
+        <div className="dashboard-loading-hint">{hint}</div>
+      </div>
     </div>
   );
 }

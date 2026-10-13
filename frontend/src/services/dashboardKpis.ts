@@ -31,7 +31,9 @@
  * rest of this port, not a rewrite bolted on top of an already-large
  * change.
  */
-import { supabase } from "@/lib/supabase";
+import { supabase, getFederatedSupabaseClients } from "@/lib/supabase";
+import { getCached, setCached } from "../hooks/dashboardCache";
+import { dashboardFilterParams } from "../types/dashboardFilters";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -145,13 +147,13 @@ function homeFilterJson(f: FilterParams): Record<string, unknown> {
   const list = (v: string) => String(v || "").split(",").map(x => x.trim()).filter(Boolean);
   return {
     driver: f.driver || "", drivers: list(f.drivers), areas: list(f.areas), division: list(f.division),
-    route_type: list(f.route_type), vehicle_type: list(f.vehicle_type), facility_type: list(f.facility_type),
+    route_type: [], vehicle_type: list(f.vehicle_type), facility_type: list(f.facility_type),
     salesman: list(f.salesman), lead_time_band: "", classification: "",
   };
 }
 
 function homeRpcKey(f: FilterParams): string {
-  return JSON.stringify([f.start_date,f.end_date,f.driver,f.drivers,f.areas,f.division,f.route_type,f.vehicle_type,f.facility_type,f.salesman]);
+  return JSON.stringify([f.start_date,f.end_date,f.driver,f.drivers,f.areas,f.division,f.vehicle_type,f.facility_type,f.salesman]);
 }
 
 function mergeHomeSnapshots(parts: any[]): HomeDashboard {
@@ -186,51 +188,180 @@ function mergeHomeSnapshots(parts: any[]): HomeDashboard {
   };
 }
 
-function canonicalizeHomeSnapshotToFleet(snapshot: HomeDashboard, fleetVehicles: Map<string, { number: string; type: string }>): HomeDashboard {
-  // Fleet Database is the single source of truth for vehicle-type labels.
-  // Normalize only for matching/grouping; display the exact Fleet spelling.
-  const fleetTypeByKey = new Map<string, string>();
-  for (const v of fleetVehicles.values()) {
-    const t = String(v.type || "").trim();
-    if (t) fleetTypeByKey.set(normalizeDimension(t), t);
-  }
-
-  const typeKeyToFleetLabel = new Map<string, string>();
-  for (const label of snapshot.charts?.vantype?.labels || []) {
-    const key = normalizeDimension(label);
-    if (fleetTypeByKey.has(key)) typeKeyToFleetLabel.set(key, fleetTypeByKey.get(key)!);
-  }
-
+function canonicalizeHomeSnapshotToFleet(snapshot: HomeDashboard, _fleetVehicles: Map<string, { number: string; type: string }>): HomeDashboard {
   const vt = snapshot.charts?.vantype;
   if (!vt) return snapshot;
   const grouped = new Map<string, { label: string; normal: number; freezer: number }>();
   for (let i = 0; i < (vt.labels || []).length; i++) {
     const raw = String(vt.labels[i] || "").trim();
-    if (!raw) continue;
-    const key = normalizeDimension(raw);
-    const label = typeKeyToFleetLabel.get(key) || raw;
-    const cur = grouped.get(key) || { label, normal: 0, freezer: 0 };
+    const key = normalizeDimension(raw).includes("pickup") ? "pickup" : "van";
+    const cur = grouped.get(key) || { label: key === "pickup" ? "Pickup" : "Van", normal: 0, freezer: 0 };
     cur.normal += Number(vt.normal?.[i] || 0);
     cur.freezer += Number(vt.freezer?.[i] || 0);
-    // If Fleet has this type, always use its exact current spelling.
-    if (fleetTypeByKey.has(key)) cur.label = fleetTypeByKey.get(key)!;
     grouped.set(key, cur);
   }
-  const keys = [...grouped.keys()].sort((a,b) => a.localeCompare(b));
+  return { ...snapshot, charts: { ...snapshot.charts, vantype: {
+    labels: ["Van", "Pickup"],
+    normal: [grouped.get("van")?.normal || 0, grouped.get("pickup")?.normal || 0],
+    freezer: [grouped.get("van")?.freezer || 0, grouped.get("pickup")?.freezer || 0],
+  } } };
+}
+
+const DASHBOARD_RANGE_CACHE_KEY = "dispatchops-dashboard-latest-range-v3";
+const FILTER_META_CACHE_PREFIX = "dispatchops-dashboard-filter-meta-v3:";
+const DRIVER_OPTIONS_CACHE_PREFIX = "dispatchops-dashboard-driver-options-v3:";
+const DRIVER_DIRECTORY_CACHE_KEY = "dispatchops-dashboard-driver-directory-v1";
+const DASHBOARD_PRELOAD_VERSION = "v2";
+const FILTER_META_CACHE_MS = 10 * 60_000;
+const DRIVER_OPTIONS_CACHE_MS = 10 * 60_000;
+let dashboardPreloadPromise: Promise<void> | null = null;
+let dashboardPreloadKey = "";
+
+function rangeCacheKey(startDate?: string, endDate?: string): string {
+  return `${String(startDate || "")}::${String(endDate || "")}`;
+}
+function readJsonCache<T>(key: string, maxAgeMs: number): T | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || Date.now() - Number(parsed.savedAt || 0) > maxAgeMs) return null;
+    return parsed.value as T;
+  } catch { return null; }
+}
+function writeJsonCache(key: string, value: unknown): void {
+  try { localStorage.setItem(key, JSON.stringify({ savedAt: Date.now(), value })); } catch {}
+}
+
+function hasMeaningfulFilterMeta(value: Partial<DashboardFilterMeta> | null | undefined): boolean {
+  if (!value) return false;
+  return [value.divisions, value.facility_types, value.salesmen, value.areas, value.drivers, value.vehicle_types, value.route_types]
+    .some((v) => Array.isArray(v) && v.length > 0);
+}
+
+function hasMeaningfulDriverOptions(value: { drivers?: unknown[]; driver_names?: unknown[] } | null | undefined): boolean {
+  return !!value && ((Array.isArray(value.drivers) && value.drivers.length > 0) || (Array.isArray(value.driver_names) && value.driver_names.length > 0));
+}
+
+function readLegacyFilterMetaCache(): DashboardFilterMeta | null {
+  try {
+    const raw = localStorage.getItem("dispatchops-dashboard-filter-meta-v6");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return hasMeaningfulFilterMeta(parsed?.value) ? parsed.value as DashboardFilterMeta : null;
+  } catch { return null; }
+}
+function dashboardFilterMetaCacheKey(startDate?: string, endDate?: string): string {
+  return `${FILTER_META_CACHE_PREFIX}${rangeCacheKey(startDate, endDate)}`;
+}
+function dashboardDriverOptionsCacheKey(startDate?: string, endDate?: string, filters: Record<string, unknown> = {}): string {
+  return `${DRIVER_OPTIONS_CACHE_PREFIX}${JSON.stringify([startDate || "", endDate || "", filters])}`;
+}
+
+function monthRangeFromDate(value: string) {
+  const [year, month] = String(value || "").slice(0, 7).split("-").map(Number);
+  if (!year || !month) return null;
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
   return {
-    ...snapshot,
-    charts: {
-      ...snapshot.charts,
-      vantype: {
-        labels: keys.map(k => grouped.get(k)!.label),
-        normal: keys.map(k => grouped.get(k)!.normal),
-        freezer: keys.map(k => grouped.get(k)!.freezer),
-      },
-    },
+    start: `${year}-${String(month).padStart(2, "0")}-01`,
+    end: `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`,
   };
 }
 
-async function fetchHomeDashboardRpc(f: FilterParams): Promise<HomeDashboard> {
+export function getPreloadedDashboardRange(): { start: string; end: string } | null {
+  try {
+    const raw = localStorage.getItem(DASHBOARD_RANGE_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed?.start && parsed?.end) return { start: String(parsed.start), end: String(parsed.end) };
+  } catch {}
+  return null;
+}
+
+export function getCachedDashboardFilterMeta(startDate?: string, endDate?: string): DashboardFilterMeta | null {
+  const exact = readJsonCache<DashboardFilterMeta>(dashboardFilterMetaCacheKey(startDate, endDate), FILTER_META_CACHE_MS);
+  if (exact) return exact;
+  return (!startDate && !endDate) ? readJsonCache<DashboardFilterMeta>(FILTER_META_CACHE_PREFIX + "default", FILTER_META_CACHE_MS) : null;
+}
+
+export function getCachedDashboardDriverOptions(
+  startDate?: string,
+  endDate?: string,
+  filters: { areas?: string[]; division?: string[]; facility_type?: string[]; salesman?: string[]; vehicle_type?: string[] } = {},
+): { drivers: string[]; driver_names: Array<{ code: string; name: string }> } | null {
+  const payload = {
+    areas: filters.areas || [], division: filters.division || [], facility_type: filters.facility_type || [],
+    salesman: filters.salesman || [], vehicle_type: filters.vehicle_type || [],
+  };
+  return readJsonCache<{ drivers: string[]; driver_names: Array<{ code: string; name: string }> }>(
+    dashboardDriverOptionsCacheKey(startDate, endDate, payload), DRIVER_OPTIONS_CACHE_MS,
+  );
+}
+
+export function getCachedDashboardDriverDirectory(): Array<{ code: string; name: string }> {
+  return readJsonCache<Array<{ code: string; name: string }>>(DRIVER_DIRECTORY_CACHE_KEY, 60 * 60_000) || [];
+}
+
+async function discoverLatestDashboardRange(): Promise<{ start: string; end: string } | null> {
+  try {
+    const results = await Promise.all(getFederatedSupabaseClients().map(async (client: any) => {
+      try {
+        const { data, error } = await client.from("sap_invoice_facts").select("dispatch_date").not("dispatch_date", "is", null).order("dispatch_date", { ascending: false }).limit(1);
+        if (error) return null;
+        return data?.[0]?.dispatch_date ? String(data[0].dispatch_date).slice(0, 10) : null;
+      } catch { return null; }
+    }));
+    const latest = results.filter(Boolean).sort().pop();
+    const range = latest ? monthRangeFromDate(String(latest)) : null;
+    if (range) {
+      try { localStorage.setItem(DASHBOARD_RANGE_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), ...range })); } catch {}
+    }
+    return range;
+  } catch { return null; }
+}
+
+async function preloadDashboardDriverDirectory(): Promise<void> {
+  const existing = getCachedDashboardDriverDirectory();
+  if (existing.length) return;
+  try {
+    const { data, error } = await supabase.from("drivers").select("code,name").order("name");
+    if (!error && Array.isArray(data)) writeJsonCache(DRIVER_DIRECTORY_CACHE_KEY, data);
+  } catch {}
+}
+
+/**
+ * Starts the Dashboard interaction dataset before the user navigates to it.
+ * The selected month/range is loaded once; slicer changes are then resolved in
+ * browser memory rather than by issuing one RPC per tab/filter combination.
+ */
+export function preloadDashboardFastPath(): Promise<void> {
+  const cachedRange = getPreloadedDashboardRange();
+  const desiredKey = cachedRange ? `${cachedRange.start}:${cachedRange.end}:${DASHBOARD_PRELOAD_VERSION}` : "discovering";
+  if (dashboardPreloadPromise && dashboardPreloadKey === desiredKey) return dashboardPreloadPromise;
+  dashboardPreloadKey = desiredKey;
+  dashboardPreloadPromise = (async () => {
+    const range = getPreloadedDashboardRange() || await discoverLatestDashboardRange();
+    if (!range) return;
+
+    // One bounded dataset + one compact GPS/route aggregation is the new
+    // interaction fast-path. All slicer changes after this point are local
+    // filtering; we deliberately do NOT warm five separate tab RPCs because
+    // that only moves the database work earlier without making clicks local.
+    try {
+      const { preloadDashboardLocalDataset } = await import("./dashboardLocalStore");
+      await preloadDashboardLocalDataset("", "");
+    } catch {}
+
+    // Keep the small metadata caches warm for other Dashboard consumers and
+    // for the first render while the local dataset is being prepared.
+    await Promise.allSettled([
+      getDashboardFilterMeta(range.start, range.end),
+      preloadDashboardDriverDirectory(),
+    ]);
+  })().catch(() => {}).then(() => undefined);
+  return dashboardPreloadPromise;
+}
+
+export async function fetchHomeDashboardRpc(f: FilterParams): Promise<HomeDashboard> {
   const key=homeRpcKey(f); const now=Date.now(); const hit=homeRpcCache.get(key);
   if(hit && hit.expires>now){if(hit.value)return hit.value;if(hit.promise)return hit.promise;}
   const promise=(async()=>{
@@ -808,41 +939,35 @@ export async function computeHomeDashboard(f: FilterParams): Promise<HomeDashboa
   return { kpis, driver_overview: driverOverview, charts: { driver_boxes: driverBoxesChart, facility: facilityChart, vantype: vantypeChart, returns: returnsChart } };
 }
 
-const DETAIL_ROW_LIMIT = 2000;
+const DETAIL_ROW_LIMIT = 200;
 
-/** Direct port of get_home_detail_rows(). */
-export async function getHomeDetailRows(metric: string, f: FilterParams): Promise<HomeDetailResponse> {
-  let rows = await buildFilteredSapRows(f);
-
-  if (metric === "not_supplied") rows = rows.filter((r) => r.not_supplied_reason);
-  else if (metric === "freezer_boxes") rows = rows.filter((r) => (r.freezer_boxes || 0) > 0);
-  else if (metric === "normal_boxes") rows = rows.filter((r) => (r.normal_boxes || 0) > 0);
-
-  if (metric === "active_drivers" || metric === "unique_customers" || metric === "active_vehicles") {
-    const keyFn: Record<string, (r: SapRow) => string> = {
-      active_drivers: (r) => r.driver_name,
-      unique_customers: (r) => r.customer_name,
-      active_vehicles: (r) => r.vehicle_key,
-    };
-    const agg = new Map<string, { name: string; invoices: number; boxes: number; not_supplied: number }>();
-    for (const r of rows) {
-      const k = keyFn[metric](r);
-      if (!k) continue;
-      let e = agg.get(k);
-      if (!e) { e = { name: k, invoices: 0, boxes: 0, not_supplied: 0 }; agg.set(k, e); }
-      e.invoices += 1;
-      e.boxes += r.boxes || 0;
-      e.not_supplied += r.not_supplied_reason ? 1 : 0;
-    }
-    const entityRows = [...agg.values()].sort((a, b) => b.invoices - a.invoices).slice(0, DETAIL_ROW_LIMIT);
-    return { metric, columns: ["name", "invoices", "boxes", "not_supplied"], rows: entityRows, truncated: agg.size > DETAIL_ROW_LIMIT, total_matching: agg.size };
-  }
-
-  const totalMatching = rows.length;
-  const sorted = [...rows].sort((a, b) => (b.dispatch_date || "").localeCompare(a.dispatch_date || "")).slice(0, DETAIL_ROW_LIMIT);
-  const columns = ["invoice_no", "dispatch_date", "invoice_date", "driver_name", "helper_name", "vehicle_num", "area", "division_desc", "customer_name", "boxes", "normal_boxes", "freezer_boxes", "not_supplied_reason"];
-  const rowDicts = sorted.map((r) => Object.fromEntries(columns.map((c) => [c, r[c]])));
-  return { metric, columns, rows: rowDicts, truncated: totalMatching > DETAIL_ROW_LIMIT, total_matching: totalMatching };
+/** Fast KPI detail path: the first 200 rows come directly from PostgreSQL.
+ * The old implementation fetched the entire month before returning those 200
+ * rows, which is exactly why a small popup could take minutes. */
+export async function getHomeDetailRows(metric: string, f: FilterParams, offset = 0, search = ""): Promise<HomeDetailResponse> {
+  const { getFederatedSupabaseClients } = await import("@/lib/supabase");
+  const filters = homeFilterJson(f);
+  const parts = await Promise.all(getFederatedSupabaseClients().map(async (client: any) => {
+    const { data, error } = await client.rpc("dispatchops_dashboard_home_detail", {
+      p_start: f.start_date || null, p_end: f.end_date || null, p_metric: metric,
+      p_filters: filters, p_limit: DETAIL_ROW_LIMIT, p_offset: offset, p_search: search || ""
+    });
+    if (error) throw new Error(error.message);
+    return data || { metric, columns: [], rows: [], truncated: false, total_matching: 0 };
+  }));
+  const rows = parts.flatMap((p: any) => Array.isArray(p.rows) ? p.rows : []);
+  // Federated projects can each have up to 200 rows. Keep the UI batch bounded
+  // to 200 while preserving the global newest-first order.
+  rows.sort((a: any, b: any) => String(b.dispatch_date || "").localeCompare(String(a.dispatch_date || "")));
+  const limited = rows.slice(0, DETAIL_ROW_LIMIT);
+  const total = parts.reduce((n: number, p: any) => n + Number(p.total_matching || 0), 0);
+  return {
+    metric,
+    columns: parts.find((p: any) => Array.isArray(p.columns) && p.columns.length)?.columns || [],
+    rows: limited,
+    truncated: total > offset + limited.length,
+    total_matching: total,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -862,33 +987,6 @@ export interface DashboardFilterMeta extends FilterOptions {
   route_types: string[];
 }
 
-const FILTER_META_CACHE_KEY = "dispatchops-dashboard-filter-meta-v2";
-const FILTER_META_CACHE_MS = 10 * 60_000;
-
-function distinctNonEmpty(values: (string | null | undefined)[]): string[] {
-  return [...new Set(values.map((v) => (v ?? "").trim()).filter(Boolean))].sort();
-}
-
-function readFilterMetaCache(): DashboardFilterMeta | null {
-  try {
-    const raw = localStorage.getItem(FILTER_META_CACHE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed?.value || !parsed?.savedAt) return null;
-    return parsed.value as DashboardFilterMeta;
-  } catch {
-    return null;
-  }
-}
-
-function writeFilterMetaCache(value: DashboardFilterMeta) {
-  try {
-    localStorage.setItem(FILTER_META_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), value }));
-  } catch {
-    // Cache is an optimization only.
-  }
-}
-
 /**
  * Fast dashboard slicer metadata.
  *
@@ -898,37 +996,95 @@ function writeFilterMetaCache(value: DashboardFilterMeta) {
  * The v21 RPC returns all slicer lists in one small response and also makes
  * Fleet Database vehicle types authoritative.
  */
-export async function getDashboardFilterMeta(): Promise<DashboardFilterMeta> {
-  const cached = readFilterMetaCache();
+export async function getDashboardDriverOptionsDynamic(
+  startDate?: string,
+  endDate?: string,
+  filters: { areas?: string[]; division?: string[]; facility_type?: string[]; salesman?: string[]; vehicle_type?: string[] } = {},
+): Promise<{ drivers: string[]; driver_names: Array<{ code: string; name: string }> }> {
+  const payload = {
+    areas: filters.areas || [], division: filters.division || [], facility_type: filters.facility_type || [],
+    salesman: filters.salesman || [], vehicle_type: filters.vehicle_type || [],
+  };
+  const cacheKey = dashboardDriverOptionsCacheKey(startDate, endDate, payload);
+  const cached = readJsonCache<{ drivers: string[]; driver_names: Array<{ code: string; name: string }> }>(cacheKey, DRIVER_OPTIONS_CACHE_MS);
+  if (cached) {
+    // Revalidate in the background; callers can paint from cache immediately.
+    void getDashboardDriverOptionsDynamicFresh(startDate, endDate, payload, cacheKey).catch(() => {});
+    return cached;
+  }
+  return getDashboardDriverOptionsDynamicFresh(startDate, endDate, payload, cacheKey);
+}
 
-  const { getFederatedSupabaseClients } = await import("@/lib/supabase");
+async function getDashboardDriverOptionsDynamicFresh(
+  startDate: string | undefined,
+  endDate: string | undefined,
+  payload: Record<string, unknown>,
+  cacheKey: string,
+): Promise<{ drivers: string[]; driver_names: Array<{ code: string; name: string }> }> {
   const clients = getFederatedSupabaseClients();
-
-  // Some installations have a read-only secondary Supabase project that may
-  // not have the newest metadata RPC. Never let that one project blank every
-  // Dashboard slicer: use every successful project and keep the local cache.
   const results = await Promise.all(clients.map(async (client: any) => {
     try {
-      const result = await client.rpc("dispatchops_dashboard_filter_meta");
+      const result = await client.rpc("dispatchops_dashboard_driver_options_dynamic", {
+        p_start: startDate || null, p_end: endDate || null, p_filters: payload,
+      });
+      if (result.error) return null;
+      return result.data || {};
+    } catch { return null; }
+  }));
+  const driverSet = new Set<string>();
+  const nameMap = new Map<string, { code: string; name: string }>();
+  for (const value of results) {
+    for (const code of Array.isArray(value?.drivers) ? value.drivers : []) {
+      const v = String(code).trim(); if (v) driverSet.add(v);
+    }
+    for (const row of Array.isArray(value?.driver_names) ? value.driver_names : []) {
+      const code = String(row?.code || '').trim(); const name = String(row?.name || '').trim();
+      if (code) nameMap.set(code.toLowerCase(), { code, name });
+    }
+  }
+  const out = {
+    drivers: Array.from(driverSet).sort(),
+    driver_names: Array.from(nameMap.values()).sort((a, b) => a.name.localeCompare(b.name) || a.code.localeCompare(b.code)),
+  };
+  // Never poison the local cache with an empty response caused by a missing
+  // RPC, transient auth/network failure, or a project that does not expose
+  // the dashboard function yet. An empty cache makes the Excel-like fast path
+  // look authoritative and hides the real data on the next render.
+  if (hasMeaningfulDriverOptions(out)) writeJsonCache(cacheKey, out);
+  else {
+    const meta = getCachedDashboardFilterMeta(startDate, endDate) || readLegacyFilterMetaCache();
+    if (meta?.drivers?.length) return { drivers: meta.drivers, driver_names: [] };
+  }
+  return out;
+}
+
+export async function getDashboardFilterMeta(startDate?: string, endDate?: string): Promise<DashboardFilterMeta> {
+  const cacheKey = dashboardFilterMetaCacheKey(startDate, endDate);
+  const cached = readJsonCache<DashboardFilterMeta>(cacheKey, FILTER_META_CACHE_MS);
+  if (cached) {
+    void getDashboardFilterMetaFresh(startDate, endDate, cacheKey).catch(() => {});
+    return cached;
+  }
+  return getDashboardFilterMetaFresh(startDate, endDate, cacheKey);
+}
+
+async function getDashboardFilterMetaFresh(startDate?: string, endDate?: string, cacheKey = dashboardFilterMetaCacheKey(startDate, endDate)): Promise<DashboardFilterMeta> {
+  const clients = getFederatedSupabaseClients();
+  const results = await Promise.all(clients.map(async (client: any) => {
+    try {
+      const result = await client.rpc("dispatchops_dashboard_filter_meta_v2", { p_start: startDate || null, p_end: endDate || null });
       if (result.error) return { data: null, error: result.error };
       return { data: result.data || {}, error: null };
-    } catch (error) {
-      return { data: null, error };
-    }
+    } catch (error) { return { data: null, error }; }
   }));
-
-  const successful = results.filter((r: any) => !r.error && r.data);
+  const successful = results.filter((r: any) => !r.error && r.data && hasMeaningfulFilterMeta(r.data));
   if (!successful.length) {
-    if (cached) return cached;
+    const stale = readJsonCache<DashboardFilterMeta>(cacheKey, 24 * 60 * 60_000) || readLegacyFilterMetaCache();
+    if (stale) return stale;
     const error: any = results.find((r: any) => r.error)?.error;
     throw new Error(error?.message || "Unable to load Dashboard filter metadata.");
   }
-
-  const merged: DashboardFilterMeta = {
-    divisions: [], facility_types: [], salesmen: [], areas: [], drivers: [],
-    vehicle_types: [], route_types: [],
-  };
-
+  const merged: DashboardFilterMeta = { divisions: [], facility_types: [], salesmen: [], areas: [], drivers: [], vehicle_types: [], route_types: [] };
   for (const result of successful) {
     const v = result.data || {};
     for (const key of Object.keys(merged) as (keyof DashboardFilterMeta)[]) {
@@ -937,14 +1093,19 @@ export async function getDashboardFilterMeta(): Promise<DashboardFilterMeta> {
       (merged as any)[key] = [...new Set([...current, ...incoming].map(String).map(x => x.trim()).filter(Boolean))].sort();
     }
   }
-
-  writeFilterMetaCache(merged);
+  if (hasMeaningfulFilterMeta(merged)) {
+    writeJsonCache(cacheKey, merged);
+    if (!startDate && !endDate) writeJsonCache(FILTER_META_CACHE_PREFIX + "default", merged);
+  } else {
+    const stale = readLegacyFilterMetaCache();
+    if (stale) return stale;
+  }
   return merged;
 }
 
 /** Backwards-compatible helper used by non-dashboard callers. */
 export async function getFilterOptions(): Promise<FilterOptions> {
-  const cached = readFilterMetaCache();
+  const cached = getCachedDashboardFilterMeta();
   if (cached) {
     // Return the cached list immediately. Dashboard refreshes update it in the
     // background, so opening the Dashboard never waits for metadata.
@@ -961,6 +1122,6 @@ export async function getFilterOptions(): Promise<FilterOptions> {
   };
 }
 
-export function getCachedDashboardFilterMeta(): DashboardFilterMeta | null {
-  return readFilterMetaCache();
+export function getCachedDashboardFilterMetaLegacy(): DashboardFilterMeta | null {
+  return getCachedDashboardFilterMeta();
 }

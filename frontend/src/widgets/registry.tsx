@@ -28,7 +28,7 @@ import {
 } from "./leadTimeWidgets";
 import { StandaloneOrderSummaryTable } from "./orderSummaryWidgets";
 import { StandaloneOrdersByAreaChart, StandaloneByAreaTable, StandaloneWeeklyByAreaTable } from "./areaAnalyticsWidgets";
-import { StandaloneNotSuppliedTable, StandaloneZeroBoxTable } from "./notSuppliedWidgets";
+import { StandaloneNotSuppliedTable } from "./notSuppliedWidgets";
 import { TotalAliasesKpi, ConfirmedAliasesKpi, AliasListWidget } from "./customerIntelligenceWidgets";
 
 export type WidgetCategory = "kpi" | "chart" | "table" | "page";
@@ -83,9 +83,8 @@ export const WIDGET_REGISTRY: WidgetDef[] = [
   { id: "aa-table", label: "By Area", category: "table", pageLabel: "Area Analytics", render: () => <StandaloneByAreaTable /> },
   { id: "aa-table-weekly", label: "Weekly by Area", category: "table", pageLabel: "Area Analytics", render: () => <StandaloneWeeklyByAreaTable /> },
 
-  // Not Supplied - 2 tables
+  // Not Supplied - collapsed-by-driver table
   { id: "ns-table", label: "Not Supplied", category: "table", pageLabel: "Not Supplied", render: () => <StandaloneNotSuppliedTable /> },
-  { id: "ns-table-zero", label: "Zero Boxes", category: "table", pageLabel: "Not Supplied", render: () => <StandaloneZeroBoxTable /> },
 
   // Customer Intelligence - 2 KPIs (the alias list itself is registered as
   // a "page"-category widget below, since it's one cohesive search+list

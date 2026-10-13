@@ -1,7 +1,8 @@
 import { ReactNode, useRef, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, useLocation } from "react-router-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
+import { claimDropdown, releaseDropdown } from "../components/dropdownCoordinator";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -36,22 +37,31 @@ interface NavItemDef {
 /** Single nav link with a shared, sliding "liquid" active-pill (Framer
  *  Motion layoutId) - the one signature motion detail of the nav bar. */
 export function GlassNavItem({ to, label, end, icon, layoutId }: NavItemDef & { layoutId: string }) {
+  const location = useLocation();
+  const routePlanningChildren = ["/route-planner", "/route-plan-driver", "/route-plan-helper", "/route-plan-sheet", "/replacements"];
+  const isRoutePlanningItem = to === "/route-planner";
+  const activeForRoute = isRoutePlanningItem ? routePlanningChildren.includes(location.pathname) : (end ? location.pathname === to : location.pathname.startsWith(to));
   return (
     <NavLink
       to={to}
       end={end}
-      className={({ isActive }) =>
-        cn(
+      data-route-planning-active={isRoutePlanningItem && activeForRoute ? "true" : undefined}
+      className={() => {
+        const active = activeForRoute;
+        return cn(
           "relative flex items-center gap-1.5 rounded-md px-3.5 py-2 text-[13.5px] font-semibold transition-colors duration-150",
-          isActive ? "text-white" : "text-muted hover:text-ink hover:bg-[var(--row-hover)]"
-        )
-      }
+          active ? `text-white ${isRoutePlanningItem ? "route-planning-top-level" : ""}` : "text-muted hover:text-ink hover:bg-[var(--row-hover)]"
+        );
+      }}
     >
-      {({ isActive }) => (
+      {() => {
+        const active = activeForRoute;
+        return (
         <>
-          {isActive && (
+          {active && (
             <motion.span
               layoutId={layoutId}
+              aria-hidden="true"
               className="absolute inset-0 -z-10 rounded-md bg-[var(--blue)]"
               transition={{ type: "spring", stiffness: 520, damping: 30 }}
             />
@@ -59,7 +69,8 @@ export function GlassNavItem({ to, label, end, icon, layoutId }: NavItemDef & { 
           {icon}
           {label}
         </>
-      )}
+        );
+      }}
     </NavLink>
   );
 }
@@ -70,41 +81,46 @@ export function GlassNavGroup({
   icon,
   items,
   layoutId,
+  onOpen,
 }: {
   label: string;
   icon?: ReactNode;
   items: NavItemDef[];
   layoutId: string;
+  onOpen?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const location = useLocation();
   const isActiveGroup = items.some((i) => (i.end ? location.pathname === i.to : location.pathname.startsWith(i.to)));
   const groupId = layoutId + label;
 
   useEffect(() => {
-    function onClickOutside(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    if (!open) {
+      releaseDropdown(groupId);
+      return;
     }
-    // BUGFIX (only one dropdown open at a time, robustly): close this
-    // dropdown whenever ANY other nav dropdown reports it just opened,
-    // not just on outside clicks - so two menus can never both show.
-    function onOtherGroupOpened(e: Event) {
-      if ((e as CustomEvent).detail !== groupId) setOpen(false);
+
+    claimDropdown(groupId, () => setOpen(false));
+
+    function onPointerDownOutside(e: PointerEvent) {
+      const target = e.target as Node;
+      if (ref.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     }
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
     }
-    document.addEventListener("mousedown", onClickOutside);
-    document.addEventListener("nav-dropdown-open", onOtherGroupOpened);
+    document.addEventListener("pointerdown", onPointerDownOutside, true);
     document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.removeEventListener("mousedown", onClickOutside);
-      document.removeEventListener("nav-dropdown-open", onOtherGroupOpened);
+      document.removeEventListener("pointerdown", onPointerDownOutside, true);
       document.removeEventListener("keydown", onKeyDown);
+      releaseDropdown(groupId);
     };
-  }, [groupId]);
+  }, [open, groupId]);
 
   useEffect(() => {
     if (!open) return;
@@ -122,9 +138,9 @@ export function GlassNavGroup({
   }, [open]);
 
   function toggleOpen() {
-    setOpen((o) => {
-      const next = !o;
-      if (next) document.dispatchEvent(new CustomEvent("nav-dropdown-open", { detail: groupId }));
+    setOpen((current) => {
+      const next = !current;
+      if (next) onOpen?.();
       return next;
     });
   }
@@ -132,7 +148,17 @@ export function GlassNavGroup({
   return (
     <div ref={ref} className="relative">
       <button
-        onClick={toggleOpen}
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          toggleOpen();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggleOpen();
+          }
+        }}
         aria-expanded={open}
         aria-haspopup="menu"
         data-active={isActiveGroup ? "true" : "false"}
@@ -161,17 +187,12 @@ export function GlassNavGroup({
         document.body, positioned from the trigger's live bounding rect,
         guarantees it always paints above all page content.
       */}
-      {menuPos && createPortal(
-        <AnimatePresence>
-          {open && (
-            <motion.div
-              initial={{ opacity: 0, y: -4, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -4, scale: 0.98 }}
-              transition={{ duration: 0.15 }}
+      {menuPos && open && createPortal(
+            <div
               style={{ position: "fixed", left: menuPos.left, top: menuPos.top, zIndex: 9999 }}
               // ITEM PASS 6: same fix as MultiSelectSlicer's dropdown -
               // shared Level 3 tokens instead of an ad hoc navy2/95 value.
+              ref={menuRef}
               className="liquid-glass-dropdown min-w-[220px] rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg-3)] p-1.5 shadow-elevation2 backdrop-blur-[var(--glass-blur-3)] backdrop-saturate-[200%]"
             >
               {items.map((item) => (
@@ -191,9 +212,7 @@ export function GlassNavGroup({
                   {item.label}
                 </NavLink>
               ))}
-            </motion.div>
-          )}
-        </AnimatePresence>,
+            </div>,
         document.body
       )}
     </div>

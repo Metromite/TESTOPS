@@ -3,7 +3,7 @@
  * Round -12: refactored to compose widgets/notSuppliedWidgets.tsx.
  */
 import { GlobalFilters } from "../types/dashboardFilters";
-import { useNotSuppliedData, NotSuppliedTable, ZeroBoxTable } from "../widgets/notSuppliedWidgets";
+import { useNotSuppliedData, NotSuppliedTable } from "../widgets/notSuppliedWidgets";
 
 export default function NotSuppliedTab({ driver, globalFilters }: { driver: string; globalFilters?: GlobalFilters }) {
   const { data, error } = useNotSuppliedData(driver, globalFilters);
@@ -11,8 +11,7 @@ export default function NotSuppliedTab({ driver, globalFilters }: { driver: stri
   if (!data) return <div>Loading...</div>;
   return (
     <div>
-      <div style={{ marginBottom: 20 }}><NotSuppliedTable data={data} /></div>
-      <ZeroBoxTable data={data} />
+      <NotSuppliedTable data={data} />
     </div>
   );
 }

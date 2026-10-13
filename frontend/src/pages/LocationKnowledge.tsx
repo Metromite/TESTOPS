@@ -5,12 +5,14 @@ import {
   updateLocationKnowledge, type LocationImportResult, type LocationKnowledgeRow,
 } from "../services/locationKnowledge";
 import { getPrimarySupabaseClient } from "../lib/supabase";
+import { getRole } from "../api/client";
 
 type Area = { id:string; code:string; name:string };
 type Form = { customer_name:string; shipment_to:string; remarks:string; area_code:string; area_name:string; latest_invoice:string; first_seen_date:string; last_seen_date:string; seen_count:number; is_active:boolean; coordinates:string; t_nf1:string; t_nt1:string; t_nf2:string; t_nt2:string; t_ff:string; t_ft:string; t_sf:string; t_st:string; fri_off:boolean; sat_off:boolean; custom_days:string };
 const emptyForm:Form={customer_name:"",shipment_to:"",remarks:"",area_code:"",area_name:"",latest_invoice:"",first_seen_date:"",last_seen_date:"",seen_count:1,is_active:true,coordinates:"",t_nf1:"",t_nt1:"",t_nf2:"",t_nt2:"",t_ff:"",t_ft:"",t_sf:"",t_st:"",fri_off:false,sat_off:false,custom_days:""};
 
 export default function LocationKnowledge(){
+  const isAdmin = getRole() === "admin";
   const sapFile=useRef<HTMLInputElement>(null), manageFile=useRef<HTMLInputElement>(null);
   const [rows,setRows]=useState<LocationKnowledgeRow[]>([]); const [areas,setAreas]=useState<Area[]>([]); const [search,setSearch]=useState("");
   const [busy,setBusy]=useState(false); const [result,setResult]=useState<LocationImportResult|null>(null); const [message,setMessage]=useState(""); const [error,setError]=useState("");
@@ -33,13 +35,13 @@ export default function LocationKnowledge(){
       <strong>Location Knowledge Management</strong>
       <div style={{color:"var(--muted)",fontSize:12,marginTop:5}}>Area Code is selected from Fleet Data → Areas, so the Area Name always stays synchronized. SAP learning remains non-destructive and does not keep the original workbook.</div>
       <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginTop:14}}>
-        <button className="btn" onClick={startAdd}>＋ Add Customer Manually</button>
-        <button className="btn" onClick={()=>manageFile.current?.click()} disabled={busy}>⬆ Upload Management Excel</button>
+        {isAdmin && <button className="btn" onClick={startAdd}>＋ Add Customer Manually</button>}
+        {isAdmin && <button className="btn" onClick={()=>manageFile.current?.click()} disabled={busy}>⬆ Upload Management Excel</button>}
         <button className="btn" onClick={async()=>{setBusy(true);try{exportLocationKnowledge(await listAllLocationKnowledge());setMessage("Excel export created successfully.");}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}} disabled={busy}>⬇ Download Excel</button>
         <input ref={manageFile} type="file" accept=".xlsx,.xls,.csv" hidden onChange={()=>void uploadManagement()}/>
-        <span style={{width:1,height:26,background:"var(--border)"}} />
-        <input ref={sapFile} type="file" accept=".xlsx,.xls,.csv" disabled={busy}/><button className="btn" disabled={busy} onClick={()=>void uploadSap()}>{busy?"Working…":"Learn From SAP Excel"}</button>
-        <button className="btn" style={{background:"var(--red)"}} onClick={()=>setShowReset(true)}>Reset / Erase All</button>
+        {isAdmin&&<><span style={{width:1,height:26,background:"var(--border)"}} /><button className="btn" style={{background:"var(--red)"}} onClick={()=>setShowReset(true)}>Reset All</button></>}
+        {isAdmin && <><input ref={sapFile} type="file" accept=".xlsx,.xls,.csv" disabled={busy}/><button className="btn" disabled={busy} onClick={()=>void uploadSap()}>{busy?"Working…":"Learn From SAP Excel"}</button></>}
+        
       </div>
       {result&&<div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:12}}><span className="badge ok">{result.savedPatterns} patterns saved/updated</span><span className="badge">{result.sourceRows} source rows</span><span className="badge">{result.excludedNotSupply} Not Supply excluded</span><span className="badge">{result.unresolvedArea} unresolved areas skipped</span></div>}
       {message&&<div style={{color:"var(--green,#4ade80)",marginTop:10,fontSize:12}}>{message}</div>}{error&&<div style={{color:"var(--red)",marginTop:10,fontSize:12}}>{error}</div>}
@@ -47,7 +49,7 @@ export default function LocationKnowledge(){
     <div className="glass-card table-scroll">
       <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:10}}><strong style={{flex:1}}>Customer Location Records ({rows.length})</strong><input value={search} onChange={e=>setSearch(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")void refresh();}} placeholder="Customer, shipment, remarks or area…" style={{minWidth:320}}/><button className="btn" onClick={()=>void refresh()}>Search</button></div>
       <table className="data-table"><thead><tr><th>Customer</th><th>Shipment To</th><th>Remarks / Instructions</th><th>Area Code</th><th>Area Name</th><th>Seen</th><th>Latest Invoice</th><th>First Seen</th><th>Last Seen</th><th>Coordinates</th><th>Normal</th><th>Friday</th><th>Saturday</th><th>Active</th><th>Actions</th></tr></thead>
-      <tbody>{rows.length===0&&<tr><td colSpan={15} style={{textAlign:"center",padding:20,color:"var(--muted)"}}>No location knowledge yet.</td></tr>}{rows.map(r=><tr key={r.id}><td><strong>{r.customer_name}</strong></td><td style={{maxWidth:260,whiteSpace:"normal"}}>{r.shipment_to||"—"}</td><td style={{maxWidth:280,whiteSpace:"normal"}}>{r.remarks||"—"}</td><td><span className="badge ok">{r.area_code}</span></td><td>{r.area_name}</td><td>{r.seen_count}</td><td>{r.latest_invoice||"—"}</td><td>{r.first_seen_date||"—"}</td><td>{r.last_seen_date||"—"}</td><td>{r.coordinates||"—"}</td><td>{r.t_nf1||r.t_nt1?`${r.t_nf1||"—"}–${r.t_nt1||"—"}`:"—"}</td><td>{r.fri_off?"CLOSED":(r.t_ff||r.t_ft?`${r.t_ff||"—"}–${r.t_ft||"—"}`:"—")}</td><td>{r.sat_off?"CLOSED":(r.t_sf||r.t_st?`${r.t_sf||"—"}–${r.t_st||"—"}`:"—")}</td><td>{r.is_active===false?"NO":"YES"}</td><td style={{whiteSpace:"nowrap"}}><button className="btn" onClick={()=>startEdit(r)}>Edit</button> <button className="btn" style={{background:"var(--red)"}} onClick={()=>void remove(r)}>Delete</button></td></tr>)}</tbody></table>
+      <tbody>{rows.length===0&&<tr><td colSpan={15} style={{textAlign:"center",padding:20,color:"var(--muted)"}}>No location knowledge yet.</td></tr>}{rows.map(r=><tr key={r.id}><td><strong>{r.customer_name}</strong></td><td style={{maxWidth:260,whiteSpace:"normal"}}>{r.shipment_to||"—"}</td><td style={{maxWidth:280,whiteSpace:"normal"}}>{r.remarks||"—"}</td><td><span className="badge ok">{r.area_code}</span></td><td>{r.area_name}</td><td>{r.seen_count}</td><td>{r.latest_invoice||"—"}</td><td>{r.first_seen_date||"—"}</td><td>{r.last_seen_date||"—"}</td><td>{r.coordinates||"—"}</td><td>{r.t_nf1||r.t_nt1?`${r.t_nf1||"—"}–${r.t_nt1||"—"}`:"—"}</td><td>{r.fri_off?"CLOSED":(r.t_ff||r.t_ft?`${r.t_ff||"—"}–${r.t_ft||"—"}`:"—")}</td><td>{r.sat_off?"CLOSED":(r.t_sf||r.t_st?`${r.t_sf||"—"}–${r.t_st||"—"}`:"—")}</td><td>{r.is_active===false?"NO":"YES"}</td><td style={{whiteSpace:"nowrap"}}>{isAdmin&&<button className="btn" onClick={()=>startEdit(r)}>Edit</button>}{isAdmin&&<button className="btn" style={{background:"var(--red)"}} onClick={()=>void remove(r)}>Delete</button>}</td></tr>)}</tbody></table>
     </div>
     {showAdd&&<div className="modal-overlay" style={{position:"fixed",inset:0,zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,.72)",padding:16}}><div className="glass-card" style={{width:"min(900px,96vw)",maxHeight:"90vh",overflow:"auto"}}><h3>{editing?"Edit Customer Location":"Add Customer Location"}</h3><div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:12,marginTop:12}}>
       <label>Customer<input value={form.customer_name} onChange={e=>setForm({...form,customer_name:e.target.value})}/></label>

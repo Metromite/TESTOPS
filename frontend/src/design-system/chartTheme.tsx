@@ -1,4 +1,6 @@
 import { ReactNode } from "react";
+import { BarChart3, type LucideIcon } from "lucide-react";
+import { GlassPanel } from "./GlassPanel";
 
 /**
  * Chart palette references the same CSS custom properties as the rest of
@@ -18,6 +20,47 @@ export const CHART_PALETTE = [
   "var(--green)",
   "var(--blue)",
 ];
+
+
+export function ChartPanel({
+  title,
+  icon: Icon = BarChart3,
+  actions,
+  description,
+  bodyClassName,
+  className,
+  children,
+}: {
+  title: ReactNode;
+  icon?: LucideIcon;
+  actions?: ReactNode;
+  description?: ReactNode;
+  bodyClassName?: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <GlassPanel
+      title={
+        <span className="dispatch-chart-title">
+          <span className="dispatch-chart-title-icon"><Icon size={15} strokeWidth={1.8} /></span>
+          <span className="truncate">{title}</span>
+        </span>
+      }
+      description={description}
+      actions={actions}
+      bodyClassName={bodyClassName}
+      className={`dispatch-chart-panel ${className || ""}`}
+    >
+      {children}
+    </GlassPanel>
+  );
+}
+
+export const chartBarProps = {
+  radius: [0, 5, 5, 0] as [number, number, number, number],
+  activeBar: { opacity: 0.82 },
+};
 
 export const chartGrid = {
   stroke: "var(--border)",

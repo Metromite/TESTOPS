@@ -11,6 +11,8 @@ export function getRole(): string | null {
 export function logout(): void {
   sessionStorage.removeItem(AUTH_KEY);
   sessionStorage.removeItem("dispatchops-role");
+  sessionStorage.removeItem("dispatchops-username");
+  sessionStorage.removeItem("dispatchops-user-id");
 }
 
 export function isAuthEnabled(): boolean {

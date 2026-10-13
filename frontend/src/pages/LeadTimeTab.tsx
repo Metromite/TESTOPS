@@ -41,8 +41,8 @@ export default function LeadTimeTab({
       <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(4, minmax(160px,1fr))" }}>
         <TotalInvoicesKpi data={data} />
         <OverallAvgKpi data={data} />
-        <FastestKpi data={data} />
-        <LongestKpi data={data} />
+        <FastestKpi data={data} driver={driver} globalFilters={globalFilters} />
+        <LongestKpi data={data} driver={driver} globalFilters={globalFilters} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>

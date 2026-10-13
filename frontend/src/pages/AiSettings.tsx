@@ -2,6 +2,9 @@ import { useEffect, useState, FormEvent, useRef } from "react";
 import { aiProviders, getAiConfig, reindexAi, saveAiConfig } from "../services/operational";
 import { useTheme } from "../theme/ThemeProvider";
 import { resetWallpaper, setWallpaper } from "../services/wallpaper";
+import { deleteAppUser, listAppUsers, saveAppUser, unlockAppUser, unlockLocalLogin, type AppRole, type AppUser } from "../services/appAuth";
+import { getAudit } from "../services/operational";
+import { getPrimarySupabaseClient, getSecondarySupabaseClient, getTertiarySupabaseClient } from "../lib/supabase";
 
 interface ProviderInfo { key: string; label: string; needs_key: boolean; default_model: string; }
 interface FallbackChainEntry { provider: string; model: string; api_key_set: boolean }
@@ -12,6 +15,15 @@ interface Config {
 interface EditableFallback { provider: string; model: string; api_key: string; api_key_set: boolean }
 interface ProvidersResponse { providers: ProviderInfo[] }
 
+function formatAuditChange(e:any): string {
+  const before=e?.before_state&&typeof e.before_state==="object"?e.before_state:{};
+  const after=e?.after_state&&typeof e.after_state==="object"?e.after_state:{};
+  const keys=[...new Set([...Object.keys(before),...Object.keys(after)])].filter(k=>k!=="updated_at"&&k!=="created_at"&&k!=="id");
+  const changed=keys.filter(k=>JSON.stringify(before?.[k])!==JSON.stringify(after?.[k])).slice(0,6);
+  if(!changed.length) return e?.action||"updated";
+  return changed.map(k=>`${k}: ${JSON.stringify(before?.[k])} → ${JSON.stringify(after?.[k])}`).join(" · ");
+}
+
 export default function AiSettings() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [cfg, setCfg] = useState<Config | null>(null);
@@ -21,6 +33,15 @@ export default function AiSettings() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   const [reindexResult, setReindexResult] = useState<any>(null);
+  const [adminPassword, setAdminPassword] = useState("");
+  const [users, setUsers] = useState<AppUser[]>([]);
+  const [usersLoaded, setUsersLoaded] = useState(false);
+  const [userBusy, setUserBusy] = useState(false);
+  const [userMsg, setUserMsg] = useState("");
+  const [userForm, setUserForm] = useState<{id?:string;username:string;password:string;role:AppRole;active:boolean}>({username:"",password:"",role:"user",active:true});
+  const [adminNewPassword, setAdminNewPassword] = useState("");
+  const [recentUpdates, setRecentUpdates] = useState<any[]>([]);
+  const [dbHealth, setDbHealth] = useState<{name:string;ok:boolean;ms:number}[]>([]);
 
   async function load() {
     try {
@@ -35,7 +56,27 @@ export default function AiSettings() {
       setError(e.message);
     }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    void load();
+    void (async()=>{
+      try {
+        const entries = await getAudit<any>("");
+        setRecentUpdates(entries.slice(0,5));
+      } catch {}
+      const targets=[
+        {name:"Primary",client:getPrimarySupabaseClient()},
+        {name:"Secondary",client:getSecondarySupabaseClient()},
+        {name:"Tertiary",client:getTertiarySupabaseClient()},
+      ];
+      const results=await Promise.all(targets.map(async x=>{
+        const t=performance.now();
+        if (!x.client) return {name:x.name,ok:false,ms:Math.round(performance.now()-t)};
+        try { const {error}=await x.client.from(x.name==="Primary"?"drivers":x.name==="Secondary"?"price_change_campaigns":"bulk_organizer_plans").select("id").limit(1); return {name:x.name,ok:!error,ms:Math.round(performance.now()-t)}; }
+        catch { return {name:x.name,ok:false,ms:Math.round(performance.now()-t)}; }
+      }));
+      setDbHealth(results);
+    })();
+  }, []);
 
   function addFallback() {
     setChain([...chain, { provider: providers[0]?.key || "ollama", model: "", api_key: "", api_key_set: false }]);
@@ -74,6 +115,59 @@ export default function AiSettings() {
     } catch (e: any) {
       setError(e.message);
     }
+  }
+
+  const currentAdminUsername = sessionStorage.getItem("dispatchops-username") || "admin";
+
+  async function loadUsers() {
+    if (!adminPassword) { setUserMsg("Enter the current admin password first."); return; }
+    setUserBusy(true); setUserMsg("");
+    try {
+      const rows = await listAppUsers(currentAdminUsername, adminPassword);
+      setUsers(rows); setUsersLoaded(true);
+    } catch (e:any) { setUserMsg(e.message || "Could not load users"); }
+    finally { setUserBusy(false); }
+  }
+
+  async function changeAdminPassword() {
+    if (!adminPassword || !adminNewPassword) { setUserMsg("Enter the current admin password and the new admin password first."); return; }
+    setUserBusy(true); setUserMsg("");
+    try {
+      const rows = usersLoaded ? users : await listAppUsers(currentAdminUsername, adminPassword);
+      const me = rows.find(u => u.id === sessionStorage.getItem("dispatchops-user-id")) || rows.find(u => u.username.toLowerCase() === currentAdminUsername.toLowerCase() && u.role === "admin");
+      if (!me) throw new Error("Current admin account was not found.");
+      const savedAdmin = await saveAppUser({adminUsername:currentAdminUsername,adminPassword,id:me.id,username:me.username,password:adminNewPassword,role:"admin",active:true});
+      setAdminNewPassword("");
+      setAdminPassword("");
+      setUserMsg(`Admin password changed for ${savedAdmin.username}. Enter the new password next time you manage users.`);
+      if (!usersLoaded) { setUsers(rows); setUsersLoaded(true); }
+    } catch(e:any) { setUserMsg(e.message || "Could not change admin password"); }
+    finally { setUserBusy(false); }
+  }
+
+  function resetUserForm() { setUserForm({username:"",password:"",role:"user",active:true}); }
+
+  async function saveUser() {
+    if (!adminPassword) { setUserMsg("Enter the current admin password first."); return; }
+    setUserBusy(true); setUserMsg("");
+    try {
+      const savedUser = await saveAppUser({adminUsername:currentAdminUsername,adminPassword, ...userForm});
+      if (savedUser.id === sessionStorage.getItem("dispatchops-user-id")) sessionStorage.setItem("dispatchops-username", savedUser.username);
+      await loadUsers();
+      resetUserForm();
+      setUserMsg(`User ${savedUser.username} saved.`);
+      try { setRecentUpdates((await getAudit<any>("")).slice(0,5)); } catch {}
+    } catch (e:any) { setUserMsg(e.message || "Could not save user"); }
+    finally { setUserBusy(false); }
+  }
+
+  async function removeUser(id:string) {
+    if (!adminPassword) { setUserMsg("Enter the current admin password first."); return; }
+    if (!confirm("Delete this login account?")) return;
+    setUserBusy(true); setUserMsg("");
+    try { await deleteAppUser(currentAdminUsername,adminPassword,id); await loadUsers(); setUserMsg("User deleted."); }
+    catch(e:any){ setUserMsg(e.message || "Could not delete user"); }
+    finally { setUserBusy(false); }
   }
 
   if (error && !cfg) return <div className="page"><div className="glass-card error-text">{error}</div></div>;
@@ -171,6 +265,63 @@ export default function AiSettings() {
             {JSON.stringify(reindexResult, null, 2)}
           </pre>
         )}
+      </div>
+
+      <div className="glass-card" style={{ marginBottom: 20 }}>
+        <strong>Admin Accounts & Login Users</strong>
+        <p style={{ fontSize: 13, color: "var(--muted)" }}>
+          Manage the username, password, role and active status of application logins.
+          The current admin password is required for every account change. Passwords are stored as hashes in the database.
+        </p>
+        <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) auto", gap:8, alignItems:"end" }}>
+          <label className="field"><span>Current admin password</span><input type="password" value={adminPassword} onChange={e=>setAdminPassword(e.target.value)} placeholder="Enter admin password to manage users" /></label>
+          <button className="btn" type="button" disabled={userBusy} onClick={()=>void loadUsers()}>{userBusy?"Loading…":"Load users"}</button>
+        </div>
+        <div style={{marginTop:14,display:"grid",gap:8}}>
+          {usersLoaded && users.map(u=><div key={u.id} style={{display:"grid",gridTemplateColumns:"minmax(130px,1fr) 120px 90px 90px auto",gap:8,alignItems:"center",padding:9,border:"1px solid var(--line)",borderRadius:10}}>
+            <b>{u.username}</b><span className="muted small">{u.role}</span><span className="muted small">{u.active?"Active":"Disabled"}</span>
+            <button className="btn" type="button" onClick={()=>setUserForm({id:u.id,username:u.username,password:"",role:u.role,active:u.active})}>Edit</button><button className="btn" type="button" onClick={async()=>{try{await unlockAppUser(currentAdminUsername,adminPassword,u.id,u.username);unlockLocalLogin(u.username);setUserMsg(`Login lock cleared for ${u.username}.`);}catch(e:any){setUserMsg(e.message||"Could not unlock user");}}}>Unlock</button>
+            <button className="btn" type="button" style={{background:"var(--red)"}} onClick={()=>void removeUser(u.id)}>Delete</button>
+          </div>)}
+          <div style={{padding:12,border:"1px solid var(--line)",borderRadius:10}}>
+            <strong>Change Admin Password</strong>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:8,marginTop:8,alignItems:"end"}}>
+              <input type="password" placeholder="Current admin password" value={adminPassword} onChange={e=>setAdminPassword(e.target.value)}/>
+              <input type="password" placeholder="New admin password" value={adminNewPassword} onChange={e=>setAdminNewPassword(e.target.value)}/>
+              <button className="btn" type="button" disabled={userBusy} onClick={()=>void changeAdminPassword()}>Change Password</button>
+            </div>
+          </div>
+          <div style={{padding:12,border:"1px solid var(--line)",borderRadius:10}}>
+            <strong>{userForm.id?"Edit login":"Add login"}</strong>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:8,marginTop:8}}>
+              <input placeholder="Username" value={userForm.username} onChange={e=>setUserForm(x=>({...x,username:e.target.value}))}/>
+              <input type="password" placeholder={userForm.id?"New password (optional)":"Password"} value={userForm.password} onChange={e=>setUserForm(x=>({...x,password:e.target.value}))}/>
+              <select value={userForm.role} onChange={e=>setUserForm(x=>({...x,role:e.target.value as AppRole}))}><option value="admin">Admin</option><option value="user">User</option><option value="dispatcher">Dispatcher</option></select>
+              <label style={{display:"flex",alignItems:"center",gap:7}}><input type="checkbox" checked={userForm.active} onChange={e=>setUserForm(x=>({...x,active:e.target.checked}))}/> Active</label>
+            </div>
+            <div style={{display:"flex",gap:8,marginTop:8}}><button className="btn" type="button" disabled={userBusy} onClick={()=>void saveUser()}>{userForm.id?"Save user":"Add user"}</button>{userForm.id&&<button className="btn" type="button" onClick={resetUserForm}>Cancel</button>}</div>
+          </div>
+        </div>
+        {userMsg && <div style={{marginTop:8,color:userMsg.toLowerCase().includes("saved")||userMsg.toLowerCase().includes("deleted")?"var(--green)":"var(--amber)",fontSize:13}}>{userMsg}</div>}
+      </div>
+
+      <div className="glass-card" style={{ marginBottom: 20 }}>
+        <strong>Database Health</strong>
+        <p style={{fontSize:13,color:"var(--muted)",marginTop:6}}>Connection status is shown here instead of a banner on every page.</p>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:8}}>
+          {dbHealth.map(x=><div key={x.name} style={{padding:10,border:"1px solid var(--line)",borderRadius:10}}><b>{x.name}</b><div style={{fontSize:12,color:x.ok?"var(--green)":"var(--red)",marginTop:4}}>{x.ok?`Connected · ${x.ms} ms`:"Connection problem"}</div></div>)}
+        </div>
+      </div>
+
+      <div className="glass-card" style={{ marginBottom: 20 }}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><strong>Recent Updates</strong><span className="muted small">Last 5 changes</span></div>
+        <div style={{marginTop:10}}>
+          {recentUpdates.length===0 ? <div className="muted small">No recent updates recorded yet.</div> : recentUpdates.map((e:any)=><div key={String(e.id)} style={{padding:"9px 0",borderBottom:"1px solid var(--line)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",gap:10}}><b>{e.actor||"unknown"}</b><span className="muted small">{e.timestamp?new Date(e.timestamp).toLocaleString():""}</span></div>
+            <div style={{fontSize:12,marginTop:3}}>{e.action||"update"} · {e.entity_type||"record"} · {e.entity_key||""}</div>
+            <div className="muted small" style={{marginTop:3,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{formatAuditChange(e)}</div>
+          </div>)}
+        </div>
       </div>
 
       <AppearanceSettings />

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, KeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/lib/supabase";
 import { GlassInput } from "../design-system/GlassInput";
@@ -33,7 +34,6 @@ const STATIC_FIELDS: Record<string, string[]> = {};
 /** Supabase replacement for the old `/api/autocomplete/{field}` endpoint. */
 async function fetchAutocomplete(field: string, q: string): Promise<string[]> {
   const needle = q.trim();
-  if (!needle) return [];
 
   if (STATIC_FIELDS[field]) {
     return STATIC_FIELDS[field].filter((v) => v.toLowerCase().includes(needle.toLowerCase())).slice(0, 10);
@@ -48,22 +48,26 @@ async function fetchAutocomplete(field: string, q: string): Promise<string[]> {
       return (data ?? []).map((a) => `${a.code} - ${a.name}`);
     }
     case "driver": {
-      const { data, error } = await supabase
-        .from("drivers")
-        .select("code,name")
-        .or(`code.ilike.%${needle}%,name.ilike.%${needle}%`)
-        .limit(10);
-      if (error) return [];
-      return (data ?? []).map((d) => `${d.code} - ${d.name}`);
+      const query = supabase.from("drivers").select("code,name");
+      const { data, error } = needle
+        ? await query.or(`code.ilike.%${needle}%,name.ilike.%${needle}%`).limit(10)
+        : await query.limit(10);
+      if (!error && (data ?? []).length) return (data ?? []).map((d) => `${d.code} - ${d.name}`);
+      const fallback = await supabase.from("drivers").select("code,name").limit(500);
+      if (fallback.error) return [];
+      const n = needle.toLowerCase();
+      return (fallback.data ?? []).filter((d: any) => `${d.code} ${d.name}`.toLowerCase().includes(n)).slice(0, 10).map((d: any) => `${d.code} - ${d.name}`);
     }
     case "helper": {
-      const { data, error } = await supabase
-        .from("helpers")
-        .select("code,name")
-        .or(`code.ilike.%${needle}%,name.ilike.%${needle}%`)
-        .limit(10);
-      if (error) return [];
-      return (data ?? []).map((h) => `${h.code} - ${h.name}`);
+      const query = supabase.from("helpers").select("code,name");
+      const { data, error } = needle
+        ? await query.or(`code.ilike.%${needle}%,name.ilike.%${needle}%`).limit(10)
+        : await query.limit(10);
+      if (!error && (data ?? []).length) return (data ?? []).map((h) => `${h.code} - ${h.name}`);
+      const fallback = await supabase.from("helpers").select("code,name").limit(500);
+      if (fallback.error) return [];
+      const n = needle.toLowerCase();
+      return (fallback.data ?? []).filter((h: any) => `${h.code} ${h.name}`.toLowerCase().includes(n)).slice(0, 10).map((h: any) => `${h.code} - ${h.name}`);
     }
     case "vehicle_type": {
       const { data, error } = await supabase.from("vehicles").select("type").ilike("type", `%${needle}%`).limit(100);
@@ -126,6 +130,8 @@ export default function AutocompleteInput({
   // open alongside an already-open filter dropdown elsewhere on the same
   // page. Joining the same coordinator, same pattern as those two files.
   const instanceId = useRef(`autocomplete-${Math.random().toString(36).slice(2)}`).current;
+  const inputWrapRef = useRef<HTMLDivElement>(null);
+  const [dropdownPos, setDropdownPos] = useState<{ left: number; top: number; width: number } | null>(null);
 
   useEffect(() => {
     function onOtherOpened(e: Event) {
@@ -137,6 +143,10 @@ export default function AutocompleteInput({
 
   function announceOpen() {
     document.dispatchEvent(new CustomEvent("nav-dropdown-open", { detail: instanceId }));
+    requestAnimationFrame(() => {
+      const rect = inputWrapRef.current?.getBoundingClientRect();
+      if (rect) setDropdownPos({ left: rect.left, top: rect.bottom + 6, width: rect.width });
+    });
   }
 
   useEffect(() => {
@@ -170,28 +180,25 @@ export default function AutocompleteInput({
   }
 
   return (
-    <div className="relative">
+    <div ref={inputWrapRef} className="relative">
       <GlassInput
         value={value}
         placeholder={placeholder}
         disabled={disabled}
         onChange={(e) => { onChange(e.target.value); setOpen(true); announceOpen(); }}
-        onFocus={() => { setOpen(true); announceOpen(); }}
+        onFocus={() => { setOpen(true); announceOpen(); fetchAutocomplete(field, value).then((s) => { setSuggestions(s); setHighlighted(0); }).catch(() => {}); }}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         onKeyDown={onKeyDown}
       />
       <AnimatePresence>
-        {open && suggestions.length > 0 && (
+        {open && suggestions.length > 0 && dropdownPos && createPortal(
           <motion.div
             initial={{ opacity: 0, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
             transition={{ duration: 0.12 }}
-            // ITEM PASS 6 (Part 5/6, glass surface hierarchy): shared
-            // Level 3 tokens instead of an ad hoc navy2/95 value - this is
-            // the reusable autocomplete used by Salesman Categorization
-            // and Vacations, so this one fix covers both.
-            className="absolute z-[9999] mt-1.5 max-h-[180px] min-w-full overflow-y-auto rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg-3)] p-1 shadow-elevation2 backdrop-blur-[var(--glass-blur-3)] backdrop-saturate-[200%]"
+            className="autocomplete-dropdown max-h-[180px] overflow-y-auto rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg-3)] p-1 shadow-elevation2 backdrop-blur-[var(--glass-blur-3)] backdrop-saturate-[200%]"
+            style={{ position: "fixed", left: dropdownPos.left, top: dropdownPos.top, width: dropdownPos.width, zIndex: 100000 }}
           >
             {suggestions.map((s, i) => (
               <div
@@ -204,7 +211,8 @@ export default function AutocompleteInput({
                 {s}
               </div>
             ))}
-          </motion.div>
+          </motion.div>,
+          document.body
         )}
       </AnimatePresence>
     </div>

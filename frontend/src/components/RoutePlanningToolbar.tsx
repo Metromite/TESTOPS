@@ -1,5 +1,4 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 
 const TABS = [
@@ -43,10 +42,9 @@ export default function RoutePlanningToolbar() {
             {({ isActive }) => (
               <>
                 {isActive && (
-                  <motion.span
-                    layoutId="route-planning-tab-pill"
+                  <span
+                    aria-hidden="true"
                     className="absolute inset-0 -z-10 rounded-lg bg-[var(--blue)]"
-                    transition={{ type: "spring", stiffness: 500, damping: 38 }}
                   />
                 )}
                 {t.label}

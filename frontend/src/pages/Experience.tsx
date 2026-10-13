@@ -1,45 +1,119 @@
-import { useEffect, useState } from "react";
-import { getExperienceDetail, getExperienceSuggestions, getExperienceSummary } from "../services/operational";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { getRole } from "../api/client";
+import { getExperienceDetailPage, getExperienceSuggestions, getExperienceSummary, getCachedExperienceSummary, refreshExperienceSummary, prefetchExperienceDetail } from "../services/operational";
 import { processExperienceExport, importExperienceDataExport, exportExperienceData, resetExperiencePeriod, resetAllExperienceData, type ImportProgress } from "../services/importEngine";
 import DetailWindow from "../components/DetailWindow";
 
-interface Summary { person_code:string; person_name:string; person_type:string; distinct_areas:number; total_days:number; most_recent_area:string; most_recent_end:string; consumer_orders:number; pharma_orders:number; vehicle_types:string; experience:string; }
+interface Summary { person_code:string; person_name:string; person_type:string; distinct_areas:number; total_days:number; consumer_orders:number; pharma_orders:number; vehicle_types:string; experience:string; most_recent_area:string; most_recent_end:string; }
 interface Suggestion { label:string; value:string; kind:string }
+type Division = "Pharma" | "Consumer";
+type DetailRow = Record<string, any>;
+
+const DETAIL_PAGE_SIZE = 100;
 
 export default function Experience() {
-  const [summary,setSummary]=useState<Summary[]>([]); const [detail,setDetail]=useState<any[]>([]);
+  const [division,setDivision]=useState<Division>("Pharma");
+  const [summary,setSummary]=useState<Summary[]>(()=>getCachedExperienceSummary<Summary>("Pharma")); const [summaryLoading,setSummaryLoading]=useState(()=>getCachedExperienceSummary<Summary>("Pharma").length===0);
+  const [detail,setDetail]=useState<DetailRow[]>([]); const [detailRaw,setDetailRaw]=useState<DetailRow[]>([]);
+  const [detailOffset,setDetailOffset]=useState(0); const [detailHasMore,setDetailHasMore]=useState(false); const [detailLoadingMore,setDetailLoadingMore]=useState(false);
   const [selected,setSelected]=useState<{code:string;type:string;name:string}|null>(null); const [detailLoading,setDetailLoading]=useState(false);
   const [typeFilter,setTypeFilter]=useState(""); const [search,setSearch]=useState(""); const [suggestions,setSuggestions]=useState<Suggestion[]>([]); const [showSuggestions,setShowSuggestions]=useState(false);
-  const [error,setError]=useState(""); const [uploading,setUploading]=useState(false); const [uploadMode,setUploadMode]=useState<"sap"|"backup">("sap"); const [uploadProgress,setUploadProgress]=useState<ImportProgress|null>(null); const [exporting,setExporting]=useState(false);
+  const [error,setError]=useState(""); const [uploadProgress,setUploadProgress]=useState<ImportProgress|null>(null); const [exporting,setExporting]=useState(false);
+  const [experienceLoadProgress,setExperienceLoadProgress]=useState(0);
+  const detailRequestId=useRef(0);
+  const isAdmin = getRole() === "admin"; const [uploading,setUploading]=useState(false); const [uploadMode,setUploadMode]=useState<"sap"|"backup">("sap");
 
-  async function loadSummary(){try{setSummary(await getExperienceSummary<Summary>());}catch(e:any){setError(e.message)}}
-  useEffect(()=>{void loadSummary()},[]);
+  async function loadSummary(nextDivision:Division=division, forceRefresh=false){
+    setError("");
+    const cached=getCachedExperienceSummary<Summary>(nextDivision);
+    if(!forceRefresh && cached.length){
+      setSummary(cached);
+      setSummaryLoading(false);
+      setExperienceLoadProgress(100);
+      // Refresh silently; the visible table stays fully interactive.
+      void refreshExperienceSummary(nextDivision).then(rows=>{setSummary(rows as Summary[]);}).catch(()=>{});
+      return;
+    }
+    setSummaryLoading(true);
+    setExperienceLoadProgress(8);
+    const timer=window.setInterval(()=>setExperienceLoadProgress(p=>p<88?p+Math.max(2,Math.round((88-p)*0.12)):p),220);
+    try {
+      const rows=await getExperienceSummary<Summary>(nextDivision,{forceRefresh});
+      setSummary(rows);
+      setExperienceLoadProgress(100);
+    }
+    catch(e:any) { setError(e?.message||String(e)); }
+    finally { window.clearInterval(timer); setSummaryLoading(false); }
+  }
+
+  useEffect(()=>{void loadSummary("Pharma")},[]);
   useEffect(()=>{if(!search.trim()){setSuggestions([]);return}const h=setTimeout(()=>getExperienceSuggestions<Suggestion>(search).then(setSuggestions).catch(()=>{}),150);return()=>clearTimeout(h)},[search]);
 
-  async function handleUpload(file:File|undefined){if(!file)return;setUploading(true);setUploadProgress(null);setError("");try{if(uploadMode==="sap") await processExperienceExport(file,p=>setUploadProgress(p)); else await importExperienceDataExport(file,p=>setUploadProgress(p)); await loadSummary()}catch(e:any){setError(e?.message||String(e));setUploadProgress(p=>p??{status:"failed",progress_pct:0,current_step:"Experience import failed",processed_units:0,total_units:0,estimated_seconds_remaining:0,log:"",error:e?.message||String(e)})}finally{setUploading(false)}}
+  async function changeDivision(next:Division){
+    if(next===division)return;
+    setDivision(next); setSelected(null); setDetail([]); setDetailRaw([]); setDetailOffset(0); setDetailHasMore(false);
+    await loadSummary(next);
+  }
+
   async function handleDownload(){setExporting(true);setError("");setUploadProgress(null);try{await exportExperienceData(p=>setUploadProgress(p))}catch(e:any){setError(e?.message||String(e))}finally{setExporting(false)}}
-  async function handleReset(){
-    const choice=window.prompt("Experience Reset\n\nEnter YYYY-MM to remove only that month, or type ALL to remove all Experience history:");
-    if(!choice)return;
-    const value=choice.trim().toUpperCase();
-    const isAll=value==="ALL";
-    let year=0,month=0;
-    if(!isAll){const m=value.match(/^(\d{4})-(\d{2})$/);if(!m){window.alert("Use YYYY-MM, for example 2026-08, or type ALL.");return;}year=Number(m[1]);month=Number(m[2]);if(month<1||month>12){window.alert("Month must be between 01 and 12.");return;}}
-    const label=isAll?"ALL Experience history":`${year}-${String(month).padStart(2,"0")} Experience history`;
-    if(!window.confirm(`WARNING: This will permanently remove ${label} from ALL THREE Supabase projects.\n\nSAP Dashboard data, V-Zone data, Drivers, Helpers, Fleet and Route Planner data will NOT be deleted.\n\nContinue?`))return;
-    const password=window.prompt("Enter the Experience reset password:");if(password!=="0000"){window.alert("Incorrect password. No Experience data was removed.");return;}
-    setUploading(true);setError("");setUploadProgress(null);try{const result=isAll?await resetAllExperienceData():await resetExperiencePeriod(year,month);window.alert(`Experience reset complete. ${result.rows} records removed.`);setSelected(null);setDetail([]);await loadSummary()}catch(e:any){setError(e?.message||String(e))}finally{setUploading(false)}}
+  async function handleUpload(file:File|undefined){if(!isAdmin||!file)return;setUploading(true);setError("");setUploadProgress(null);try{if(uploadMode==="sap") await processExperienceExport(file,p=>setUploadProgress(p)); else await importExperienceDataExport(file,p=>setUploadProgress(p)); await loadSummary(division,true)}catch(e:any){setError(e?.message||String(e))}finally{setUploading(false)}}
+  async function handleReset(){if(!isAdmin)return;const key=window.prompt("Enter month YYYY-MM, or ALL to erase all experience:","ALL");if(key===null)return;try{setUploading(true);if(key.trim().toUpperCase()==="ALL") await resetAllExperienceData(); else { const m=/^(\d{4})-(\d{2})$/.exec(key.trim()); if(!m) throw new Error("Enter month as YYYY-MM or ALL."); await resetExperiencePeriod(Number(m[1]), Number(m[2])); } await loadSummary(division,true)}catch(e:any){setError(e?.message||String(e))}finally{setUploading(false)}}
 
-  async function openDetail(code:string,type:string,name:string){setSelected({code,type,name});setDetailLoading(true);try{const rows=await getExperienceDetail<Record<string,unknown>>(code,type);const daily:any[]=(rows as Array<Record<string,unknown>>).map(d=>({...d,date:String(d.date||d.end_date||""),area:String(d.area_name||d.area||"UNKNOWN"),area_code:String(d.experienced_area_code||d.area_code||"UNKNOWN"),route_type:String(d.route_type||""),experience_division:String(d.experience_division||d.sector||"Pharma"),vehicle_type:String(d.vehicle_type||"UNKNOWN"),vehicle_number:String(d.vehicle_number||"")})).sort((a,b)=>a.date.localeCompare(b.date));const runs:any[]=[];const dayMs=86400000;for(const d of daily){const last=runs[runs.length-1];const consecutive=last&&last.area_code===d.area_code&&last.experience_division===d.experience_division&&last.vehicle_type===d.vehicle_type&&(new Date(`${d.date}T00:00:00`).getTime()-new Date(`${last.end_date}T00:00:00`).getTime())===dayMs;if(consecutive){last.end_date=d.date;last.days++;last.order_count+=Number(d.order_count||0);last.consumer_orders+=Number(d.consumer_orders||0);last.pharma_orders+=Number(d.pharma_orders||0);if(d.vehicle_number&&!last.vehicles.includes(d.vehicle_number))last.vehicles.push(d.vehicle_number)}else runs.push({area:d.area,area_code:d.area_code,route_type:d.route_type,experience_division:d.experience_division,vehicle_type:d.vehicle_type,start_date:d.date,end_date:d.date,days:1,order_count:Number(d.order_count||0),consumer_orders:Number(d.consumer_orders||0),pharma_orders:Number(d.pharma_orders||0),vehicles:d.vehicle_number?[d.vehicle_number]:[]})}setDetail(runs.reverse().map(r=>({...r,vehicle:r.vehicles.join(", ")||"—",date_range:r.start_date===r.end_date?r.start_date:`${r.start_date} → ${r.end_date}`})))}catch(e:any){setError(e.message)}finally{setDetailLoading(false)}}
+  function shapeDetailRows(rows:DetailRow[]):DetailRow[]{
+    const daily:any[]=rows.map(d=>({...d,date:String(d.date||d.end_date||""),area:String(d.area_name||d.area||"UNKNOWN"),area_code:String(d.experienced_area_code||d.area_code||"UNKNOWN"),route_type:String(d.route_type||""),experience_division:String(d.experience_division||d.experience_type||d.sector||division),vehicle_type:String(d.vehicle_type||"UNKNOWN"),vehicle_number:String(d.vehicle_number||"")})).sort((a,b)=>a.date.localeCompare(b.date));
+    const runs:any[]=[]; const dayMs=86400000;
+    for(const d of daily){
+      const last=runs[runs.length-1];
+      const consecutive=last&&last.area_code===d.area_code&&last.experience_division===d.experience_division&&last.vehicle_type===d.vehicle_type&&(new Date(`${d.date}T00:00:00`).getTime()-new Date(`${last.end_date}T00:00:00`).getTime())===dayMs;
+      if(consecutive){last.end_date=d.date;last.days++;last.order_count+=Number(d.order_count||0);last.consumer_orders+=Number(d.consumer_orders||0);last.pharma_orders+=Number(d.pharma_orders||0);if(d.vehicle_number&&!last.vehicles.includes(d.vehicle_number))last.vehicles.push(d.vehicle_number)}
+      else runs.push({area:d.area,area_code:d.area_code,route_type:d.route_type,experience_division:d.experience_division,vehicle_type:d.vehicle_type,start_date:d.date,end_date:d.date,days:1,order_count:Number(d.order_count||0),consumer_orders:Number(d.consumer_orders||0),pharma_orders:Number(d.pharma_orders||0),vehicles:d.vehicle_number?[d.vehicle_number]:[]});
+    }
+    return runs.reverse().map(r=>({...r,vehicle:r.vehicles.join(", ")||"—",date_range:r.start_date===r.end_date?r.start_date:`${r.start_date} → ${r.end_date}`}));
+  }
 
-  const q=search.trim().toLowerCase(); const filtered=summary.filter(s=>!typeFilter||s.person_type===typeFilter).filter(s=>!q||s.person_code.toLowerCase().includes(q)||s.person_name.toLowerCase().includes(q)||s.most_recent_area.toLowerCase().includes(q)||s.experience.toLowerCase().includes(q)||s.vehicle_types.toLowerCase().includes(q));
+  async function openDetail(code:string,type:string,name:string){
+    const requestId=++detailRequestId.current;
+    setSelected({code,type,name}); setDetail([]); setDetailRaw([]); setDetailOffset(0); setDetailHasMore(false); setDetailLoading(true); setError("");
+    try{
+      const page=await getExperienceDetailPage<DetailRow>(code,type,division,0,DETAIL_PAGE_SIZE);
+      // Only the latest click may commit async data to the visible popup.
+      // This prevents a slower earlier request from winning a race after the
+      // user switches between people quickly.
+      if(requestId!==detailRequestId.current) return;
+      setDetailRaw(page.rows); setDetail(shapeDetailRows(page.rows)); setDetailOffset(page.rows.length); setDetailHasMore(page.hasMore);
+    }catch(e:any){
+      if(requestId===detailRequestId.current) setError(e?.message||String(e));
+    }
+    finally{if(requestId===detailRequestId.current) setDetailLoading(false)}
+  }
+
+  async function loadMoreDetail(){
+    if(!selected||detailLoadingMore||!detailHasMore)return;
+    setDetailLoadingMore(true);
+    try{
+      const page=await getExperienceDetailPage<DetailRow>(selected.code,selected.type,division,detailOffset,DETAIL_PAGE_SIZE);
+      const merged=[...detailRaw,...page.rows]; setDetailRaw(merged); setDetail(shapeDetailRows(merged)); setDetailOffset(merged.length); setDetailHasMore(page.hasMore);
+    }catch(e:any){setError(e?.message||String(e));}
+    finally{setDetailLoadingMore(false)}
+  }
+
+  const q=search.trim().toLowerCase();
+  const filtered=useMemo(()=>summary.filter(s=>!typeFilter||s.person_type===typeFilter).filter(s=>!q||s.person_code.toLowerCase().includes(q)||s.person_name.toLowerCase().includes(q)||s.most_recent_area.toLowerCase().includes(q)||s.experience.toLowerCase().includes(q)||s.vehicle_types.toLowerCase().includes(q)),[summary,typeFilter,q]);
+
   return <div className="page">
     <h2>Experience</h2><p style={{color:"var(--muted)",fontSize:13,marginTop:-8}}>Exact daily experience for Drivers and Helpers. Consumer/Pharma is decided per person per day from the existing Dashboard Configuration. Vehicle type comes from the Vehicles master with smart number normalization.</p>
-    <div className="glass-card" style={{marginBottom:20}}><div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}><div style={{flex:1,minWidth:300}}><strong>Experience Data Management</strong><div style={{color:"var(--muted)",fontSize:12,marginTop:4}}>Only Drivers/Helpers whose codes currently exist in the master are saved. Re-uploading the same month/data merges by person + exact date + area + vehicle, so it does not create duplicates. A newly added Driver/Helper is picked up automatically on the next upload.</div></div><button className="btn" disabled={exporting||uploading} onClick={()=>void handleDownload()}>{exporting?"Exporting…":"Download Experience Data"}</button><button className="btn" style={{background:"var(--red)"}} disabled={exporting||uploading} onClick={()=>void handleReset()}>Reset / Remove All Experience</button></div><div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginTop:12}}><select value={uploadMode} disabled={uploading} onChange={e=>setUploadMode(e.target.value as "sap"|"backup")}><option value="sap">Upload SAP Experience Source</option><option value="backup">Import Downloaded Experience Data</option></select><input type="file" accept=".xlsx,.xls,.csv" disabled={uploading||exporting} onChange={e=>{const f=e.target.files?.[0];void handleUpload(f);e.currentTarget.value=""}} />{uploading&&<span className="badge ok">{uploadProgress?.progress_pct??0}%</span>}</div><div style={{color:"var(--muted)",fontSize:11,marginTop:8}}>Reset supports a specific month (YYYY-MM) or ALL, with confirmation + password 0000. Salesman names are never stored in Experience; Consumer/Pharma comes from Dashboard Configuration.</div><div style={{color:"var(--muted)",fontSize:11,marginTop:4}}>{uploadMode==="sap"?"SAP source: processed in memory only; it does not change or delete normal SAP Dashboard imports.":"Experience backup: re-import a file previously downloaded from this screen; existing rows are merged, not duplicated."}</div></div>
-    {uploadProgress&&(uploading||uploadProgress.status!=="processing")&&<div className="glass-card" style={{marginBottom:20}}><strong>{uploadProgress.current_step}</strong><div style={{background:"var(--navy3)",borderRadius:999,height:7,marginTop:8,overflow:"hidden"}}><div style={{width:`${uploadProgress.progress_pct}%`,background:"var(--teal)",height:"100%"}}/></div><div style={{fontSize:11,color:"var(--muted)",marginTop:6}}>{uploadProgress.log||`${uploadProgress.processed_units}/${uploadProgress.total_units}`}</div></div>}
-    <div className="glass-card" style={{marginBottom:20,display:"flex",gap:10,flexWrap:"wrap",position:"relative"}}><select value={typeFilter} onChange={e=>setTypeFilter(e.target.value)}><option value="">All (Drivers &amp; Helpers)</option><option value="Driver">Drivers only</option><option value="Helper">Helpers only</option></select><div style={{position:"relative",flex:1,minWidth:420}}><input placeholder="Search Driver/Helper, Area, Area Code, Vehicle, Vehicle Type, Consumer or Pharma…" value={search} onChange={e=>{setSearch(e.target.value);setShowSuggestions(true)}} onFocus={()=>setShowSuggestions(true)} onBlur={()=>setTimeout(()=>setShowSuggestions(false),150)} style={{width:"100%"}}/>{showSuggestions&&suggestions.length>0&&<div className="glass-card" style={{position:"absolute",zIndex:9999,marginTop:4,padding:4,width:"100%",maxHeight:260,overflowY:"auto"}}>{suggestions.map((s,i)=><div key={`${s.kind}-${s.value}-${i}`} onMouseDown={()=>{setSearch(s.value);setShowSuggestions(false)}} style={{padding:"6px 8px",cursor:"pointer",fontSize:13}}>{s.label}</div>)}</div>}</div></div>
+    <div className="glass-card" style={{marginBottom:20}}><div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}><div style={{flex:1,minWidth:300}}><strong>Experience Data</strong><div style={{color:"var(--muted)",fontSize:12,marginTop:4}}>{isAdmin?"Admin can upload/import and reset Experience; users can only view and download the current Excel data.":"Users can view the dashboard experience and download the current Excel data; Excel upload/import is disabled."}</div></div><button className="btn" disabled={exporting||uploading} onClick={()=>void handleDownload()}>{exporting?"Exporting…":"Download Experience Data"}</button>{isAdmin&&<button className="btn" style={{background:"var(--red)"}} disabled={exporting||uploading} onClick={()=>void handleReset()}>Reset Experience</button>}</div>{isAdmin&&<div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginTop:12}}><select value={uploadMode} disabled={uploading} onChange={e=>setUploadMode(e.target.value as "sap"|"backup")}><option value="sap">Upload SAP Experience Source</option><option value="backup">Import Downloaded Experience Data</option></select><input type="file" accept=".xlsx,.xls,.csv" disabled={uploading||exporting} onChange={e=>{const f=e.target.files?.[0];void handleUpload(f);e.currentTarget.value=""}}/>{uploading&&<span className="badge ok">{uploadProgress?.progress_pct??0}%</span>}</div>}</div>
+    {uploadProgress&&(exporting||uploadProgress.status!=="processing")&&<div className="glass-card" style={{marginBottom:20}}><strong>{uploadProgress.current_step}</strong><div style={{background:"var(--navy3)",borderRadius:999,height:7,marginTop:8,overflow:"hidden"}}><div style={{width:`${uploadProgress.progress_pct}%`,background:"var(--teal)",height:"100%"}}/></div><div style={{fontSize:11,color:"var(--muted)",marginTop:6}}>{uploadProgress.log||`${uploadProgress.processed_units}/${uploadProgress.total_units}`}</div></div>}
+    {summaryLoading&&<div className="glass-card" style={{marginBottom:10,padding:"10px 14px"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,fontSize:12}}><strong>Loading Experience…</strong><span style={{color:"var(--muted)"}}>{experienceLoadProgress}%</span></div><div className="dashboard-loading-progress-track" style={{marginTop:8}}><div className="dashboard-loading-progress-fill" style={{width:`${Math.max(8,experienceLoadProgress)}%`}}><span className="dashboard-loading-progress-glow" /></div></div></div>}
+    <div className="glass-card" style={{marginBottom:20,display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",position:"relative"}}>
+      <select value={typeFilter} onChange={e=>setTypeFilter(e.target.value)}><option value="">All (Drivers &amp; Helpers)</option><option value="Driver">Drivers only</option><option value="Helper">Helpers only</option></select>
+      <div style={{position:"relative",flex:1,minWidth:260}}><input placeholder="Search Driver/Helper, Area, Area Code, Vehicle, Vehicle Type, Consumer or Pharma…" value={search} onChange={e=>{setSearch(e.target.value);setShowSuggestions(true)}} onFocus={()=>setShowSuggestions(true)} onBlur={()=>setTimeout(()=>setShowSuggestions(false),150)} style={{width:"100%"}}/>{showSuggestions&&suggestions.length>0&&<div className="glass-card" style={{position:"absolute",zIndex:9999,marginTop:4,padding:4,width:"100%",maxHeight:260,overflowY:"auto"}}>{suggestions.map((s,i)=><div key={`${s.kind}-${s.value}-${i}`} onMouseDown={()=>{setSearch(s.value);setShowSuggestions(false)}} style={{padding:"6px 8px",cursor:"pointer",fontSize:13}}>{s.label}</div>)}</div>}</div>
+      <div style={{display:"inline-flex",padding:3,borderRadius:10,background:"var(--navy3)",gap:3,flexShrink:0}} role="tablist" aria-label="Experience division">
+        {(["Pharma","Consumer"] as Division[]).map(d=><button key={d} type="button" className="btn" onClick={()=>void changeDivision(d)} style={{padding:"7px 14px",minWidth:92,background:division===d?"var(--teal)":"transparent",color:division===d?"white":"var(--muted)"}}>{d}</button>)}
+      </div>
+    </div>
     {error&&<div className="glass-card error-text" style={{marginBottom:20}}>{error}</div>}
-    <div className="glass-card table-scroll"><strong>Experience Summary</strong><table className="data-table" style={{marginTop:10}}><thead><tr><th>Name</th><th>Type</th><th>Experience</th><th>Consumer / Pharma Orders</th><th>Vehicle Types</th><th>Areas</th><th>Days</th><th>Most Recent Area</th><th>Last Worked</th></tr></thead><tbody>{filtered.length===0&&<tr><td colSpan={9} style={{color:"var(--muted)",textAlign:"center",padding:20}}>No experience history yet — upload an Experience Export.</td></tr>}{filtered.map(s=><tr key={`${s.person_type}-${s.person_code}`} onClick={()=>openDetail(s.person_code,s.person_type,s.person_name)} style={{cursor:"pointer"}}><td><strong>{s.person_name}</strong> <span style={{color:"var(--muted)",fontSize:11}}>({s.person_code})</span></td><td>{s.person_type}</td><td><span className="badge" style={{background:s.experience==="Consumer"?"var(--blue-soft, rgba(59,130,246,.18))":"var(--purple-soft, rgba(168,85,247,.18))"}}>{s.experience}</span></td><td>{s.consumer_orders} Consumer / {s.pharma_orders} Pharma</td><td>{s.vehicle_types||"UNKNOWN"}</td><td>{s.distinct_areas}</td><td>{s.total_days}</td><td>{s.most_recent_area}</td><td>{s.most_recent_end}</td></tr>)}</tbody></table></div>
-    {selected&&<DetailWindow title={`Exact Experience History — ${selected.name} (${selected.code})`} loading={detailLoading} columns={[{key:"area_code",label:"Area Code"},{key:"area",label:"Area"},{key:"route_type",label:"Route Type"},{key:"experience_division",label:"Experience"},{key:"vehicle_type",label:"Vehicle Type"},{key:"vehicle",label:"Vehicle(s)"},{key:"date_range",label:"Exact Dates"},{key:"days",label:"Consecutive Days"},{key:"order_count",label:"Orders"},{key:"consumer_orders",label:"Consumer Orders"},{key:"pharma_orders",label:"Pharma Orders"}]} rows={detail} onClose={()=>setSelected(null)}/>} 
+    <div className="glass-card table-scroll"><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><strong>Experience Summary — {division}</strong>{summaryLoading&&<span style={{fontSize:12,color:"var(--muted)"}}>Loading…</span>}</div><table className="data-table" style={{marginTop:10}}><thead><tr><th>Name</th><th>Type</th><th>Experience</th><th>Consumer / Pharma Orders</th><th>Vehicle Types</th><th>Areas</th><th>Days</th><th>Most Recent Area</th><th>Last Worked</th></tr></thead><tbody>{!summaryLoading&&filtered.length===0&&<tr><td colSpan={9} style={{color:"var(--muted)",textAlign:"center",padding:20}}>No experience history yet.</td></tr>}{filtered.map(s=><tr key={`${s.person_type}-${s.person_code}`} onMouseEnter={()=>{void prefetchExperienceDetail(s.person_code,s.person_type,division).catch(()=>{})}} onClick={()=>openDetail(s.person_code,s.person_type,s.person_name)} style={{cursor:"pointer"}}><td><strong>{s.person_name}</strong> <span style={{color:"var(--muted)",fontSize:11}}>({s.person_code})</span></td><td>{s.person_type}</td><td><span className="badge" style={{background:s.experience==="Consumer"?"var(--blue-soft, rgba(59,130,246,.18))":"var(--purple-soft, rgba(168,85,247,.18))"}}>{s.experience}</span></td><td>{s.consumer_orders} Consumer / {s.pharma_orders} Pharma</td><td>{s.vehicle_types||"UNKNOWN"}</td><td>{s.distinct_areas}</td><td>{s.total_days}</td><td>{s.most_recent_area}</td><td>{s.most_recent_end}</td></tr>)}</tbody></table></div>
+    {selected&&<DetailWindow key={`${division}|${selected.type}|${selected.code}`} title={`Exact ${division} Experience History — ${selected.name} (${selected.code})`} loading={detailLoading} loadingMore={detailLoadingMore} truncated={detailHasMore} totalMatching={detailHasMore?undefined:detail.length} onLoadMore={()=>void loadMoreDetail()} columns={[{key:"area_code",label:"Area Code"},{key:"area",label:"Area"},{key:"route_type",label:"Route Type"},{key:"experience_division",label:"Experience"},{key:"vehicle_type",label:"Vehicle Type"},{key:"vehicle",label:"Vehicle(s)"},{key:"date_range",label:"Exact Dates"},{key:"days",label:"Consecutive Days"},{key:"order_count",label:"Orders"},{key:"consumer_orders",label:"Consumer Orders"},{key:"pharma_orders",label:"Pharma Orders"}]} rows={detail} onClose={()=>setSelected(null)}/>} 
   </div>
 }

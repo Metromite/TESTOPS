@@ -53,8 +53,8 @@
  * new shape) without needing a manual cache-clear step.
  */
 const cache = new Map<string, unknown>();
-const PERSIST_PREFIX = "dc_dashcache_v1:"; // v1 = PERSIST_VERSION below, kept in the key itself so a version bump can't collide with old entries
-const PERSIST_VERSION = 1;
+const PERSIST_PREFIX = "dc_dashcache_v2:"; // v1 = PERSIST_VERSION below, kept in the key itself so a version bump can't collide with old entries
+const PERSIST_VERSION = 2;
 
 function readFromStorage(key: string): unknown {
   try {

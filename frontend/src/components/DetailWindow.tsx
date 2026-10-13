@@ -17,14 +17,17 @@ import { GlassTable } from "../design-system/GlassTable";
 export interface DetailColumn { key: string; label: string; }
 
 export default function DetailWindow({
-  title, columns, rows, loading, truncated, totalMatching, onClose,
+  title, columns, rows, loading, loadingMore, truncated, totalMatching, onLoadMore, onSearch, onClose,
 }: {
   title: string;
   columns: DetailColumn[];
   rows: Record<string, any>[];
   loading?: boolean;
+  loadingMore?: boolean;
   truncated?: boolean;
   totalMatching?: number;
+  onLoadMore?: () => void;
+  onSearch?: (value: string) => void;
   onClose: () => void;
 }) {
   const [search, setSearch] = useState("");
@@ -34,7 +37,7 @@ export default function DetailWindow({
   // window rendered every returned invoice synchronously, which could block
   // the main thread and make a KPI click look like a full-page freeze.
   const PAGE_SIZE = 100;
-  const [page, setPage] = useState(0);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   const filtered = useMemo(() => {
     let out = rows;
@@ -52,7 +55,8 @@ export default function DetailWindow({
     return out;
   }, [rows, search, sortKey, sortDir, columns]);
 
-  useEffect(() => { setPage(0); }, [search, sortKey, sortDir, rows]);
+  useEffect(() => { setVisibleCount(PAGE_SIZE); }, [search, sortKey, sortDir]);
+  useEffect(() => { if (rows.length < visibleCount) setVisibleCount(Math.min(PAGE_SIZE, rows.length)); }, [rows.length, visibleCount]);
 
   function toggleSort(key: string) {
     if (sortKey === key) setSortDir(sortDir === "asc" ? "desc" : "asc");
@@ -118,15 +122,15 @@ export default function DetailWindow({
           icon={<Search className="h-4 w-4" />}
           placeholder="Search…"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => { const value = e.target.value; setSearch(value); onSearch?.(value); }}
           className="w-auto min-w-[220px]"
         />
         <GlassButton variant="secondary" size="sm" onClick={handleCopy}><Copy className="h-3.5 w-3.5" />Copy</GlassButton>
         <GlassButton variant="secondary" size="sm" onClick={handleExportCsv}><Download className="h-3.5 w-3.5" />Export</GlassButton>
         <GlassButton variant="secondary" size="sm" onClick={handlePrint}><Printer className="h-3.5 w-3.5" />Print</GlassButton>
         <span className="text-[12px] text-muted">
-          {filtered.length.toLocaleString()} row{filtered.length === 1 ? "" : "s"}
-          {truncated && totalMatching ? ` (showing first ${rows.length.toLocaleString()} of ${totalMatching.toLocaleString()} - narrow your filters for the rest)` : ""}
+          {filtered.length.toLocaleString()} loaded row{filtered.length === 1 ? "" : "s"}
+          {totalMatching ? ` of ${totalMatching.toLocaleString()}` : ""}
         </span>
       </div>
 
@@ -145,7 +149,16 @@ export default function DetailWindow({
         // retroactively shrink a fit-content ancestor's computed width.
         // overflow-x-auto here gives the table its own horizontal scroll
         // and stops it from pushing the dialog's own size around.
-        <GlassTable.Wrap className="max-h-[60vh] overflow-y-auto overflow-x-auto dispatch-glass-detail-table">
+        <GlassTable.Wrap
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) {
+              if (visibleCount < filtered.length) setVisibleCount((n) => Math.min(n + PAGE_SIZE, filtered.length));
+              else if (truncated && !loadingMore) onLoadMore?.();
+            }
+          }}
+          className="max-h-[60vh] overflow-y-auto overflow-x-auto dispatch-glass-detail-table"
+        >
           <GlassTable.Root>
             {/* Sticky header is safe here: this table always lives inside a
                 bounded-height scroll area (the modal cap above), not the
@@ -163,8 +176,8 @@ export default function DetailWindow({
               {filtered.length === 0 && (
                 <tr><td colSpan={columns.length} className="py-5 text-center text-muted">No matching rows.</td></tr>
               )}
-              {filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((r, i) => (
-                <tr key={`${page}-${i}`}>
+              {filtered.slice(0, visibleCount).map((r, i) => (
+                <tr key={`${i}-${String(r[columns[0]?.key] ?? "")}`}>
                   {columns.map((c) => <GlassTable.Td key={c.key}>{r[c.key] ?? "—"}</GlassTable.Td>)}
                 </tr>
               ))}
@@ -173,16 +186,11 @@ export default function DetailWindow({
         </GlassTable.Wrap>
       )}
 
-      {!loading && filtered.length > PAGE_SIZE && (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+      {!loading && (truncated || rows.length < Number(totalMatching || 0)) && (
+        <div className="mt-3 flex items-center justify-center gap-2">
           <span className="text-[12px] text-muted">
-            Showing {(page * PAGE_SIZE + 1).toLocaleString()}–{Math.min((page + 1) * PAGE_SIZE, filtered.length).toLocaleString()} of {filtered.length.toLocaleString()}
+            {loadingMore ? "Loading 100 more…" : `Showing ${Math.min(rows.length, Number(totalMatching || rows.length)).toLocaleString()} of ${Number(totalMatching || rows.length).toLocaleString()} — scroll for more`}
           </span>
-          <div className="flex items-center gap-2">
-            <GlassButton variant="secondary" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>Previous</GlassButton>
-            <span className="text-[12px] text-muted">Page {page + 1} / {Math.ceil(filtered.length / PAGE_SIZE)}</span>
-            <GlassButton variant="secondary" size="sm" disabled={(page + 1) * PAGE_SIZE >= filtered.length} onClick={() => setPage((p) => Math.min(Math.ceil(filtered.length / PAGE_SIZE) - 1, p + 1))}>Next</GlassButton>
-          </div>
         </div>
       )}
       </div>

@@ -24,10 +24,33 @@ export async function saveWorkbookToDispatchFolder(
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     if (!isTauriDesktop()) {
-      onProgress?.({ pct: 65, status: "saving", message: "Saving Excel file…" });
+      onProgress?.({ pct: 65, status: "saving", message: "Preparing Excel download…" });
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      XLSX.writeFile(workbook, filename);
-      const result = { path: filename, bytes: 0 };
+      const xlsxBytes = XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true });
+      onProgress?.({ pct: 85, status: "saving", message: "Starting Excel download…" });
+      const blob = new Blob([xlsxBytes], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+
+      // Browser-only download. Keep this completely separate from the Tauri
+      // save path so the web Dashboard never depends on the native command.
+      const legacySaver = (navigator as any).msSaveOrOpenBlob;
+      if (typeof legacySaver === "function") {
+        legacySaver.call(navigator, blob, filename);
+      } else {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        link.rel = "noopener";
+        link.style.position = "fixed";
+        link.style.left = "-9999px";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+      }
+      const result = { path: filename, bytes: blob.size };
       onProgress?.({ pct: 100, status: "success", message: "Excel export downloaded successfully.", path: filename });
       return result;
     }
@@ -84,14 +107,17 @@ export async function saveZipBundle(
   onProgress?: (p: ExportProgress) => void,
 ): Promise<SaveResult & { attachments: number }> {
   try {
-    onProgress?.({ pct: 2, status: "preparing", message: "Packing Excel file and attachments…" });
+    onProgress?.({ pct: 1, status: "preparing", message: "Starting download…" });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    onProgress?.({ pct: 3, status: "preparing", message: "Packing Excel file and attachments…" });
     const { default: JSZip } = await import("jszip");
     const zip = new JSZip();
-    zip.file(excelFilename, excelBase64, { base64: true });
+    const exportFolderName = zipFilename.replace(/\.zip$/i, "");
+    zip.file(`${exportFolderName}/${excelFilename}`, excelBase64, { base64: true });
     for (const a of attachments) {
-      zip.file(`${attachmentsDirName}/${a.filename}`, a.base64_data, { base64: true });
+      zip.file(`${exportFolderName}/${attachmentsDirName}/${a.filename}`, a.base64_data, { base64: true });
     }
-    const zipBase64 = await zip.generateAsync({ type: "base64", compression: "DEFLATE" }, (meta) => {
+    const zipBase64 = await zip.generateAsync({ type: "base64", compression: "DEFLATE", compressionOptions: { level: 3 } }, (meta) => {
       onProgress?.({ pct: Math.max(2, Math.min(92, Math.round(meta.percent))), status: "preparing", message: "Packing Excel file and attachments…" });
     });
 
@@ -105,7 +131,7 @@ export async function saveZipBundle(
       document.body.appendChild(link);
       link.click();
       link.remove();
-      URL.revokeObjectURL(url);
+      window.setTimeout(() => URL.revokeObjectURL(url), 1500);
       onProgress?.({ pct: 100, status: "success", message: "Zip file downloaded successfully.", path: zipFilename });
       return { path: zipFilename, bytes: 0, attachments: attachments.length };
     }
@@ -129,8 +155,20 @@ export async function saveWorkbookWithOfflineAttachments(
   attachments: OfflineExportAttachment[],
 ): Promise<SaveResult & { attachments: number; attachments_dir: string }> {
   if (!isTauriDesktop()) {
-    XLSX.writeFile(workbook, filename);
-    return { path: filename, bytes: 0, attachments: 0, attachments_dir: '' };
+    const xlsxBytes = XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true });
+    const blob = new Blob([xlsxBytes], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+    return { path: filename, bytes: blob.size, attachments: 0, attachments_dir: '' };
   }
   const base64 = XLSX.write(workbook, { bookType: 'xlsx', type: 'base64', compression: true });
   const stem = filename.replace(/\.[^.]+$/, '');

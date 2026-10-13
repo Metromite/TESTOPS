@@ -1,4 +1,5 @@
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
+import { useEffect, useState } from "react";
 
 import {
   LayoutDashboard,
@@ -10,7 +11,6 @@ import {
   LogOut,
   Sun,
   Moon,
-  SunMoon,
   Milestone,
   BriefcaseBusiness,
   Tags,
@@ -33,29 +33,26 @@ import {
 } from "../design-system/GlassSidebar";
 
 import { GlassButton } from "../design-system/GlassButton";
+import { featureFlagsService } from "../services/system";
 
-const MODES = [
-  {
-    key: "auto",
-    label: "Auto",
-    icon: SunMoon,
-  },
-  {
-    key: "light",
-    label: "Light",
-    icon: Sun,
-  },
-  {
-    key: "dark",
-    label: "Dark",
-    icon: Moon,
-  },
-] as const;
 
 export default function TopNav() {
-  const { mode, setMode } = useTheme();
+  const { mode, resolvedTheme, setMode } = useTheme();
   const navigate = useNavigate();
+  const location = useLocation();
   const role = getRole();
+  const [hiddenPages, setHiddenPages] = useState<string[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    featureFlagsService.list().then((flags) => {
+      if (!alive) return;
+      setHiddenPages(flags.filter((f) => f.name.startsWith("page_visible:") && !f.enabled).map((f) => f.name.slice("page_visible:".length)));
+    }).catch(() => { /* navigation remains fail-open */ });
+    return () => { alive = false; };
+  }, [location.pathname]);
+
+  const pageHidden = (path: string) => role !== "admin" && hiddenPages.includes(path);
 
   return (
     <GlassSidebarShell>
@@ -116,6 +113,7 @@ export default function TopNav() {
 
       <GlassNavGroup
         layoutId="nav-pill"
+        onOpen={() => { void import("../pages/Experience"); }}
         label="Fleet Data"
         icon={
           <Database className="h-4 w-4" />
@@ -157,23 +155,23 @@ export default function TopNav() {
         ]}
       />
 
-      <GlassNavItem
+      {!pageHidden("/route-intelligence") && <GlassNavItem
         layoutId="nav-pill"
         to="/route-intelligence"
         label="Route Intel"
         icon={
           <Route className="h-4 w-4" />
         }
-      />
+      />}
 
-      <GlassNavItem
+      {!pageHidden("/control-center") && <GlassNavItem
         layoutId="nav-pill"
         to="/control-center"
         label="Control Center"
         icon={
           <MonitorPlay className="h-4 w-4" />
         }
-      />
+      />}
 
       {role === "admin" && (
         <GlassNavGroup
@@ -185,7 +183,7 @@ export default function TopNav() {
           items={[
             {
               to: "/ai-settings",
-              label: "AI Settings",
+              label: "AI & Account Settings",
             },
             {
               to: "/data-sync",
@@ -213,7 +211,7 @@ export default function TopNav() {
             },
             {
               to: "/dashboard-configuration",
-              label: "Dashboard Configuration",
+              label: "Page Visibility & Dashboard Configuration",
             },
           ]}
         />
@@ -222,25 +220,18 @@ export default function TopNav() {
       <div className="flex-1" />
 
       <div className="top-nav-actions ml-auto flex shrink-0 items-center gap-2">
-        <div className="theme-switch flex items-center gap-0.5 rounded-lg bg-[var(--glass-bg)] p-1">
-          {MODES.map(
-            ({ key, label, icon: Icon }) => (
-              <button
-                key={key}
-                onClick={() => setMode(key)}
-                aria-label={label}
-                title={label}
-                className={
-                  "flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[12px] font-semibold transition-colors " +
-                  (mode === key
-                    ? "bg-[var(--blue)] text-white"
-                    : "text-[var(--blue)] hover:text-ink")
-                }
-              >
-                <Icon className="h-3.5 w-3.5" />
-              </button>
-            )
-          )}
+        <div className="theme-switch" role="group" aria-label="Theme">
+          <button
+            type="button"
+            className={`theme-switch-track ${((mode === "dark") || (mode === "auto" && resolvedTheme === "dark")) ? "is-dark" : "is-light"}`}
+            onClick={() => setMode((mode === "dark" || (mode === "auto" && resolvedTheme === "dark")) ? "light" : "dark")}
+            aria-label={((mode === "dark") || (mode === "auto" && resolvedTheme === "dark")) ? "Switch to light mode" : "Switch to dark mode"}
+            title={((mode === "dark") || (mode === "auto" && resolvedTheme === "dark")) ? "Light mode" : "Dark mode"}
+          >
+            <span className="theme-switch-option theme-switch-light" aria-hidden="true"><Sun className="h-3.5 w-3.5" /></span>
+            <span className="theme-switch-option theme-switch-dark" aria-hidden="true"><Moon className="h-3.5 w-3.5" /></span>
+            <span className="theme-switch-thumb" aria-hidden="true" />
+          </button>
         </div>
 
         {isAuthEnabled() && (

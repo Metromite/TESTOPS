@@ -54,10 +54,15 @@ async function applyBackground(theme: ThemeName) {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [mode, setModeState] = useState<Mode>(() => (localStorage.getItem("theme-mode") as Mode) || "auto");
+  // Default to Light. Preserve an explicit saved Dark/High Contrast choice,
+  // but do not let the system color scheme silently make a new session dark.
+  const [mode, setModeState] = useState<Mode>(() => {
+    const saved = localStorage.getItem("theme-mode") as Mode | null;
+    return saved === "dark" || saved === "high_contrast" || saved === "light" ? saved : "light";
+  });
   const [resolvedTheme, setResolvedTheme] = useState<ThemeName>(() => {
-    const initialMode = (localStorage.getItem("theme-mode") as Mode) || "auto";
-    return initialMode === "auto" ? resolveAuto() : (initialMode as ThemeName);
+    const saved = localStorage.getItem("theme-mode") as Mode | null;
+    return saved === "dark" || saved === "high_contrast" || saved === "light" ? saved : "light";
   });
 
   // Cache both wallpapers once. Theme switching itself must never wait for
@@ -67,29 +72,75 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const wallpaperLoaded = useRef(false);
 
   const setWallpaper = (url: string | null) => {
+    const img = document.querySelector<HTMLImageElement>(".dispatchops-initial-wallpaper");
     if (url) {
       document.body.style.setProperty("--dispatchops-wallpaper", `url("${url}")`);
-      document.body.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.15), rgba(0,0,0,0.15)), url("${url}")`;
-      document.body.style.backgroundSize = "cover";
-      document.body.style.backgroundPosition = "center";
-      document.body.style.backgroundAttachment = "fixed";
+      document.body.style.backgroundImage = "none";
+      document.body.style.backgroundSize = "auto";
+      document.body.style.backgroundPosition = "initial";
+      document.body.style.backgroundAttachment = "initial";
       document.body.classList.add("custom-bg");
+      if (img && img.src !== url) {
+        const swap = new Image();
+        swap.decoding = "async";
+        swap.fetchPriority = "high";
+        swap.onload = () => { img.src = url; };
+        swap.src = url;
+      } else if (!img) {
+        const early = document.createElement("img");
+        early.src = url;
+        early.alt = "";
+        early.setAttribute("aria-hidden", "true");
+        early.decoding = "async";
+        early.fetchPriority = "high";
+        early.className = "dispatchops-initial-wallpaper";
+        document.body.appendChild(early);
+      }
     } else {
       document.body.style.backgroundImage = "";
       document.body.style.removeProperty("--dispatchops-wallpaper");
       document.body.classList.remove("custom-bg");
+      if (img) img.remove();
     }
   };
 
+  const setWallpaperPair = (darkUrl: string | null, lightUrl: string | null) => {
+    const root = document.documentElement;
+    root.style.setProperty("--dispatchops-wallpaper-dark", darkUrl ? `url("${darkUrl}")` : "none");
+    root.style.setProperty("--dispatchops-wallpaper-light", lightUrl ? `url("${lightUrl}")` : "none");
+    document.body.classList.toggle("custom-bg", Boolean(darkUrl || lightUrl));
+  };
+
   const loadWallpapers = async () => {
+    const cacheKey = "dispatchops-wallpaper-cache-v1";
+    const now = Date.now();
+    try {
+      const saved = JSON.parse(localStorage.getItem(cacheKey) || "{}");
+      for (const theme of ["dark", "light"] as ThemeName[]) {
+        const hit = saved?.[theme];
+        if (hit?.url) wallpaperCache.current[theme] = hit.url;
+      }
+      const current = resolvedTheme === "high_contrast" ? "light" : resolvedTheme;
+      setWallpaperPair(wallpaperCache.current.dark, wallpaperCache.current.light);
+      if (wallpaperCache.current[current]) setWallpaper(wallpaperCache.current[current]);
+    } catch {}
     if (wallpaperLoaded.current) return;
     wallpaperLoaded.current = true;
     try {
       const config = await getAppearanceConfig();
-      for (const theme of ["dark", "light"] as ThemeName[]) {
+      const themes = ["dark", "light"] as ThemeName[];
+      const urls = await Promise.all(themes.map(async (theme) => {
         const path = theme === "dark" ? config?.dark_bg_path : config?.light_bg_path;
-        wallpaperCache.current[theme] = path ? await getWallpaperUrl(path) : null;
-      }
+        return path ? await getWallpaperUrl(path) : null;
+      }));
+      const saved:any = {};
+      themes.forEach((theme, i) => {
+        const url = urls[i];
+        wallpaperCache.current[theme] = url;
+        if (url) saved[theme] = { url, expiresAt: Date.now() + 50 * 60_000 };
+      });
+      try { localStorage.setItem(cacheKey, JSON.stringify(saved)); } catch {}
+      setWallpaperPair(wallpaperCache.current.dark, wallpaperCache.current.light);
       const current = resolvedTheme === "high_contrast" ? "light" : resolvedTheme;
       setWallpaper(wallpaperCache.current[current]);
     } catch {
@@ -105,6 +156,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     applyThemeToDocument(theme);
     setResolvedTheme(theme);
     const wallpaperTheme = theme === "high_contrast" ? "light" : theme;
+    document.body.style.setProperty("--dispatchops-wallpaper-overlay", theme === "dark" || theme === "high_contrast"
+      ? "linear-gradient(180deg, rgba(4,12,22,.22), rgba(4,12,22,.34))"
+      : "linear-gradient(180deg, rgba(255,255,255,.08), rgba(4,12,22,.16))");
+    setWallpaperPair(wallpaperCache.current.dark, wallpaperCache.current.light);
     const cached = wallpaperCache.current[wallpaperTheme];
     if (cached !== null || wallpaperLoaded.current) setWallpaper(cached);
     window.setTimeout(() => document.documentElement.classList.remove("theme-transition"), 180);

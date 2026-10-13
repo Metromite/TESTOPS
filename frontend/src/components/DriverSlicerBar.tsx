@@ -92,7 +92,7 @@ export default function DriverSlicerBar({
       const key = identifier.toLowerCase();
       const match = byCode.get(key) || byName.get(key);
       if (!match) return identifier;
-      return match.code && match.name ? `${match.code} · ${match.name}` : identifier;
+      return match.code && match.name ? `${match.name} · ${match.code}` : identifier;
     };
   }, [driverDirectory]);
 

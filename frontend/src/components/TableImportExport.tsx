@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import { supabase, getSecondarySupabaseClient, getTertiarySupabaseClient } from "@/lib/supabase";
 import { saveWorkbookToDispatchFolder, type ExportProgress } from "../services/desktopExport";
 import ExportStatus from "./ExportStatus";
+import { recordRecentAudit } from "../services/system";
 
 /**
  * SUPABASE PORT of the old Fleet Database "Export Excel / Import Excel /
@@ -33,18 +34,14 @@ interface Props {
   naturalKey: string; // unique business column used for upsert, e.g. "code"
   onImported: () => void;
   canWrite: boolean;
+  canImport?: boolean;
 }
 
-interface UndoEntry {
-  id: string;
-  before: Record<string, unknown> | null; // null = row was newly created by the import
-}
 
-export default function TableImportExport({ table, naturalKey, onImported, canWrite }: Props) {
+export default function TableImportExport({ table, naturalKey, onImported, canWrite, canImport = canWrite }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
-  const [lastImport, setLastImport] = useState<UndoEntry[] | null>(null);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
 
   async function handleExport() {
@@ -183,14 +180,9 @@ export default function TableImportExport({ table, naturalKey, onImported, canWr
         upserted.push(...(data ?? []));
       }
 
-      const undoEntries: UndoEntry[] = upserted.map((row: any) => ({
-        id: row.id,
-        before: existingByKey.get(String(row[naturalKey])) ?? null,
-      }));
-      setLastImport(undoEntries);
-
-      const created = undoEntries.filter((e) => e.before === null).length;
-      const updated = undoEntries.length - created;
+      const created = upserted.filter((row: any) => !existingByKey.has(String(row[naturalKey]))).length;
+      const updated = upserted.length - created;
+      try { await recordRecentAudit(table, "excel-import", "update", {}, { created, updated }, { source: "excel-import", naturalKey, skippedBlankKey }); } catch {}
       setMsg(`Imported: ${created} created, ${updated} updated${skippedBlankKey ? `, ${skippedBlankKey} skipped (blank ${naturalKey})` : ""}.`);
       if (fileRef.current) fileRef.current.value = "";
       onImported();
@@ -201,45 +193,6 @@ export default function TableImportExport({ table, naturalKey, onImported, canWr
     }
   }
 
-  async function handleUndo() {
-    if (!lastImport || lastImport.length === 0) {
-      setMsg("Nothing to undo.");
-      return;
-    }
-    setBusy(true);
-    setMsg("");
-    try {
-      const toRestore = lastImport.filter((e) => e.before !== null);
-      const toDelete = lastImport.filter((e) => e.before === null).map((e) => e.id);
-      if (toRestore.length > 0) {
-        const { data: restored, error } = await supabase.from(table).upsert(toRestore.map((e) => e.before as object)).select();
-        if (error) throw new Error(error.message);
-        const secondary = getSecondarySupabaseClient();
-        const tertiary = getTertiarySupabaseClient();
-        if (secondary && restored?.length) {
-          const { error: mirrorErr } = await secondary.from(table).upsert(restored as object[], { onConflict: "id" });
-          if (mirrorErr) throw new Error(mirrorErr.message);
-        }
-      }
-      if (toDelete.length > 0) {
-        const { error } = await supabase.from(table).delete().in("id", toDelete);
-        if (error) throw new Error(error.message);
-        const secondary = getSecondarySupabaseClient();
-        const tertiary = getTertiarySupabaseClient();
-        if (secondary) {
-          const { error: mirrorErr } = await secondary.from(table).delete().in("id", toDelete);
-          if (mirrorErr) throw new Error(mirrorErr.message);
-        }
-      }
-      setMsg(`Undid last import: restored ${toRestore.length}, removed ${toDelete.length} newly-created row(s).`);
-      setLastImport(null);
-      onImported();
-    } catch (e: any) {
-      setMsg(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
     <div>
@@ -247,14 +200,11 @@ export default function TableImportExport({ table, naturalKey, onImported, canWr
       <button className="btn" style={{ background: "var(--navy3)", color: "var(--muted)" }} onClick={handleExport}>
         📥 Export Excel
       </button>
-      {canWrite && (
+      {canImport && (
         <>
           <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ maxWidth: 180, fontSize: 12 }} />
           <button className="btn" onClick={handleImport} disabled={busy}>
             {busy ? "Importing..." : "📤 Import Excel"}
-          </button>
-          <button className="btn" style={{ background: "var(--amber)" }} onClick={handleUndo} disabled={busy || !lastImport}>
-            ↩ Undo Last Change
           </button>
         </>
       )}

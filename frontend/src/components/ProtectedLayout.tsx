@@ -1,17 +1,37 @@
 import { Suspense } from "react";
-import { useLocation, Outlet } from "react-router-dom";
+import { useLocation, Outlet, Navigate } from "react-router-dom";
+import { useEffect, useState } from "react";
 import TopNav from "./TopNav";
 import FloatingAiWidget from "./FloatingAiWidget";
+import { getRole } from "../api/client";
+import { featureFlagsService } from "../services/system";
 
 /**
- * PERMANENT ARCHITECTURE: this app has no login, so there is nothing for
- * this layout to gate - it exists purely to wrap every real page in the
- * persistent TopNav/FloatingAiWidget chrome. (Connectivity to the local
- * backend sidecar is handled one level up, by SetupGate.tsx - by the time
- * anything renders here, that's already confirmed working.)
+ * The application login is handled by App.tsx/AuthGate. This layout keeps
+ * the authenticated navigation and LOGI shell persistent across pages.
  */
 export default function ProtectedLayout() {
   const location = useLocation();
+  const [hiddenPages, setHiddenPages] = useState<string[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const role = getRole();
+  const isRoutePlanningPath = ["/route-planner", "/route-plan-driver", "/route-plan-helper", "/route-plan-sheet", "/replacements"].includes(location.pathname);
+  const transitionKey = isRoutePlanningPath ? "route-planning-shell" : location.pathname;
+
+  useEffect(() => {
+    let alive = true;
+    featureFlagsService.list().then((flags) => {
+      if (!alive) return;
+      setHiddenPages(flags.filter((f) => f.name.startsWith("page_visible:") && !f.enabled).map((f) => f.name.slice("page_visible:".length)));
+      setLoaded(true);
+    }).catch(() => alive && setLoaded(true));
+    return () => { alive = false; };
+  }, []);
+
+  if (loaded && role !== "admin" && hiddenPages.includes(location.pathname)) {
+    return <Navigate to="/" replace />;
+  }
+
   return (
     <>
       <TopNav />
@@ -35,7 +55,10 @@ export default function ProtectedLayout() {
         `.page-fade-in` keyframes in index.css.
       */}
       <Suspense fallback={<div key="page-loading" className="page-fade-in" style={{ minHeight: "40vh" }} />} >
-        <div key={location.pathname} className="page-fade-in">
+        <div
+          key={transitionKey}
+          className={isRoutePlanningPath ? "route-planning-transition" : "page-fade-in"}
+        >
           <Outlet />
         </div>
       </Suspense>
