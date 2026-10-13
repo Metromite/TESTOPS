@@ -17,10 +17,10 @@ import { ThemeProvider } from "./theme/ThemeProvider";
 import ProtectedLayout from "./components/ProtectedLayout";
 import RoutePlanningToolbar from "./components/RoutePlanningToolbar";
 import SetupGate from "./components/SetupGate";
-import { preloadDashboardFastPath } from "./services/dashboardKpis";
 
 import Login from "./Login";
 
+import { syncPrimaryConfigurationToSecondary } from "./lib/supabase";
 
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const RoutePlanner = lazy(() => import("./pages/RoutePlanner"));
@@ -76,12 +76,10 @@ function AuthGate({
 
   useEffect(() => {
     const handleAuthChange = () => {
-      const next = sessionStorage.getItem("dispatchops-auth") === "true";
-      setAuthenticated(next);
-      if (next) void preloadDashboardFastPath();
+      setAuthenticated(
+        sessionStorage.getItem("dispatchops-auth") === "true"
+      );
     };
-
-    if (authenticated) void preloadDashboardFastPath();
 
     window.addEventListener(
       "dispatchops-auth-change",
@@ -94,7 +92,7 @@ function AuthGate({
         handleAuthChange
       );
     };
-  }, [authenticated]);
+  }, []);
 
   if (!authenticated) {
     return <Login />;
@@ -104,6 +102,12 @@ function AuthGate({
 }
 
 export default function App() {
+  useEffect(() => {
+    void syncPrimaryConfigurationToSecondary().catch(
+      () => undefined
+    );
+  }, []);
+
   return (
     <HeroUIProvider>
       <ThemeProvider>

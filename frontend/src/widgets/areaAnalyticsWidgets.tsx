@@ -2,11 +2,10 @@
  * widgets/areaAnalyticsWidgets.tsx
  * Round -12: atomic widgets extracted from AreaAnalyticsTab.tsx.
  */
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { useDashboardLocalData } from "../hooks/useDashboardLocalData";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import { useDashboardQuery } from "../hooks/useDashboardQuery";
 import { GlobalFilters } from "../types/dashboardFilters";
-import { GlassTooltip, ChartPanel, CHART_PALETTE, chartGrid, chartAxisTick, chartAxisLine, chartBarProps } from "../design-system/chartTheme";
-import { MapPinned } from "lucide-react";
+import { GlassTooltip } from "../design-system/chartTheme";
 
 export interface AreaRow { area: string; orders: number; boxes: number; freezer: number; returns: number; drivers: number; success_pct: number; }
 export interface AreaData {
@@ -17,26 +16,26 @@ export interface AreaData {
   chart: { labels: string[]; values: number[] };
 }
 export function useAreaAnalyticsData(driver: string, globalFilters?: GlobalFilters) {
-  return useDashboardLocalData<AreaData>("/dashboard/area-analytics", globalFilters, driver);
+  return useDashboardQuery<AreaData>("/dashboard/area-analytics", driver, globalFilters);
 }
 export function OrdersByAreaChart({ data }: { data: AreaData }) {
   const chartData = data.chart.labels.map((l, i) => ({ name: l, orders: data.chart.values[i] }));
   return (
-    <ChartPanel title="Orders by Area (top 15)" icon={MapPinned}>
+    <div className="glass-card">
+      <strong>📦 Orders by Area (top 15)</strong>
       <ResponsiveContainer width="100%" height={300}>
         <BarChart data={chartData} layout="vertical">
-          <CartesianGrid {...chartGrid} />
-          <XAxis type="number" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} />
-          <YAxis type="category" dataKey="name" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} width={110} />
+          <XAxis type="number" tick={{ fontSize: 10 }} />
+          <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={110} />
           {/* CHART READABILITY FIX: this was the one chart in the app still
               using Recharts' plain default <Tooltip/> (no background
               styling at all) instead of the shared GlassTooltip every
               other chart already used - switched to match, and see
               chartTheme.tsx for the tooltip background opacity bump. */}
-          <Tooltip content={<GlassTooltip />} cursor={{ fill: "var(--row-hover)" }} /><Bar dataKey="orders" fill={CHART_PALETTE[1]} {...chartBarProps} />
+          <Tooltip content={<GlassTooltip />} cursor={{ fill: "var(--row-hover)" }} /><Bar dataKey="orders" fill="#00d4a8" />
         </BarChart>
       </ResponsiveContainer>
-    </ChartPanel>
+    </div>
   );
 }
 export function ByAreaTable({ data }: { data: AreaData }) {

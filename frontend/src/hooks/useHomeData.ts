@@ -8,12 +8,10 @@
  * directly inside HomeTab.tsx's component body.
  */
 import { useEffect, useRef, useState } from "react";
-import { computeHomeKpisFast, type FilterParams } from "../services/dashboardKpis";
+import { computeHomeDashboard, computeHomeKpisFast, getHomeDetailRows, type FilterParams } from "../services/dashboardKpis";
 import { GlobalFilters, EMPTY_GLOBAL_FILTERS } from "../types/dashboardFilters";
 import { DetailColumn } from "../components/DetailWindow";
 import { subscribeDashboardRefresh } from "./dashboardRefreshBus";
-import { useDashboardLocalData } from "./useDashboardLocalData";
-import { filterDashboardRows, getDashboardLocalDataset, type LocalSapRow } from "../services/dashboardLocalStore";
 import { getCached, setCached } from "./dashboardCache";
 
 export interface Kpis {
@@ -49,89 +47,84 @@ export const DEFAULT_COLUMNS: DetailColumn[] = [
 
 export function useHomeData(driver: string, globalFilters: GlobalFilters | undefined, onDriverListLoaded?: (names: string[]) => void) {
   const gf = globalFilters || EMPTY_GLOBAL_FILTERS;
-  const local = useDashboardLocalData<HomeDashboard>("/dashboard/home", gf, driver);
-  const data = local.data;
-  const error = local.error;
+  const cacheKey = `/dashboard/home?${new URLSearchParams({ driver, ...gf }).toString()}`;
+  // See dashboardCache.ts - same "show last-known data instantly on
+  // remount" fix as useDashboardQuery, applied here too since Overview
+  // has its own bespoke hook rather than going through that one.
+  const [data, setData] = useState<HomeDashboard | null>(() => getCached<HomeDashboard>(cacheKey) ?? null);
+  const [error, setError] = useState("");
   const [detailMetric, setDetailMetric] = useState<string | null>(null);
   const [detailTitle, setDetailTitle] = useState("");
   const [detailRows, setDetailRows] = useState<Record<string, any>[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailTruncated, setDetailTruncated] = useState(false);
   const [detailTotal, setDetailTotal] = useState(0);
-  const [detailOffset, setDetailOffset] = useState(0);
-  const [detailSearch, setDetailSearch] = useState("");
-  const [detailLoadingMore, setDetailLoadingMore] = useState(false);
+
+  const requestSeq = useRef(0);
+
+  async function load() {
+    const seq = ++requestSeq.current;
+    try {
+      const params: FilterParams = { driver, ...gf };
+      const d = await computeHomeDashboard(params);
+      if (!d || !d.driver_overview) {
+        setError("Dashboard data came back empty - the server may still be starting up, or there's no data imported yet. Try refreshing.");
+        return;
+      }
+      if (seq !== requestSeq.current) return;
+      setData(d);
+      setCached(cacheKey, d);
+      setError("");
+      if (!driver && onDriverListLoaded) onDriverListLoaded(d.driver_overview.map((r: DriverRow) => r.driver_name));
+    } catch (e: any) {
+      if (seq === requestSeq.current) setError(e.message);
+    }
+  }
 
   useEffect(() => {
-    if (!driver && data && onDriverListLoaded) onDriverListLoaded(data.driver_overview.map((r: DriverRow) => r.driver_name));
-  }, [driver, data, onDriverListLoaded]);
+    // A changed date/slicer selection must never continue displaying the
+    // previous selection's charts/table/KPI supplement while the new query
+    // is running. Reuse only an exact-filter cache entry; otherwise clear it.
+    setData(getCached<HomeDashboard>(cacheKey) ?? null);
+    const id = window.setTimeout(() => load(), 120);
+    return () => { window.clearTimeout(id); requestSeq.current += 1; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheKey]);
 
-  function buildLocalDetail(metric: string, driverOverride?: string, offset = 0, search = ""): HomeDetailResponse {
-    const dataset = getDashboardLocalDataset();
-    if (!dataset) return { rows: [], truncated: false, total_matching: 0 };
-    const overrideFilters = driverOverride ? { ...gf, drivers: driverOverride } : gf;
-    const baseRows = filterDashboardRows(dataset, overrideFilters);
-    const q = search.trim().toLowerCase();
-    const matchesSearch = (r: Record<string, any>) => !q || Object.values(r).some((v) => String(v ?? "").toLowerCase().includes(q));
-    let all: Record<string, any>[] = [];
-
-    if (["valid_invoices", "total_boxes", "freezer_boxes", "normal_boxes", "not_supplied"].includes(metric)) {
-      const validInvoiceRows = baseRows.filter((r: LocalSapRow) => Number(r.boxes || 0) > 0 || Number(r.freezer_boxes || 0) > 0);
-      all = (metric === "valid_invoices" ? validInvoiceRows : baseRows).map((r: LocalSapRow) => ({ ...r }));
-    } else if (["active_drivers", "unique_customers", "active_vehicles"].includes(metric)) {
-      const field = metric === "active_drivers" ? "driver_name" : metric === "unique_customers" ? "customer_name" : "vehicle_num";
-      const map = new Map<string, { name: string; invoices: number; boxes: number; not_supplied: number }>();
-      for (const r of baseRows) {
-        const name = String((r as any)[field] || "Unknown").trim() || "Unknown";
-        const x = map.get(name) || { name, invoices: 0, boxes: 0, not_supplied: 0 };
-        x.invoices += 1; x.boxes += Number(r.boxes || 0); if (r.not_supplied_reason) x.not_supplied += 1;
-        map.set(name, x);
-      }
-      all = [...map.values()].sort((a, b) => b.boxes - a.boxes || a.name.localeCompare(b.name));
-    } else {
-      all = baseRows.map((r: LocalSapRow) => ({ ...r }));
-    }
-
-    const searched = all.filter(matchesSearch);
-    const PAGE_SIZE = 100;
-    const pageRows = searched.slice(offset, offset + PAGE_SIZE);
-    return { rows: pageRows, truncated: searched.length > offset + pageRows.length, total_matching: searched.length };
-  }
-
-  async function loadDetailBatch(metric: string, title: string, driverOverride?: string, offset = 0, search = "", append = false) {
-    if (append) setDetailLoadingMore(true); else setDetailLoading(true);
-    try {
-      // Detail data is already inside the persistent Dashboard analytical
-      // dataset. Keep KPI popups local too, so single-month and multi-month
-      // selections behave identically and opening a KPI never waits on RPCs.
-      const res = buildLocalDetail(metric, driverOverride, offset, search);
-      setDetailRows(prev => append ? [...prev, ...res.rows] : res.rows);
-      setDetailOffset(offset + res.rows.length);
-      setDetailTruncated(res.truncated);
-      setDetailTotal(res.total_matching);
-    } catch {
-      if (!append) setDetailRows([]);
-    } finally {
-      if (append) setDetailLoadingMore(false); else setDetailLoading(false);
-    }
-  }
+  // ITEM 1: same "Refresh Dashboard" bus subscription as useDashboardQuery -
+  // see hooks/dashboardRefreshBus.ts. Overview already had its own 30s
+  // auto-poll above; this only adds the on-demand button trigger.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  useEffect(() => subscribeDashboardRefresh(() => loadRef.current()), []);
 
   async function openDetail(metric: string, title: string, driverOverride?: string) {
-    setDetailMetric(metric); setDetailTitle(title); setDetailRows([]); setDetailTruncated(false); setDetailTotal(0); setDetailOffset(0); setDetailSearch("");
-    await loadDetailBatch(metric, title, driverOverride, 0, "", false);
+    // Always open the shell synchronously. The data request must never decide
+    // whether the dialog exists; this is what the old dashboard did.
+    setDetailMetric(metric);
+    setDetailTitle(title);
+    setDetailLoading(true);
+    setDetailRows([]);
+    setDetailTruncated(false);
+    setDetailTotal(0);
+    try {
+      const params: FilterParams = { driver: driverOverride ?? driver, ...gf };
+      const res = await getHomeDetailRows(metric, params) as HomeDetailResponse;
+      setDetailRows(res.rows);
+      setDetailTruncated(res.truncated);
+      setDetailTotal(res.total_matching);
+    } catch (e: any) {
+      setDetailRows([]);
+      setDetailTotal(0);
+      setError(e?.message || "Could not load KPI details.");
+    } finally {
+      setDetailLoading(false);
+    }
   }
-  async function loadMoreDetail() {
-    if (!detailMetric || detailLoading || detailLoadingMore || !detailTruncated) return;
-    await loadDetailBatch(detailMetric, detailTitle, undefined, detailOffset, detailSearch, true);
-  }
-  async function searchDetail(search: string) {
-    if (!detailMetric) return;
-    setDetailSearch(search); setDetailRows([]); setDetailOffset(0);
-    await loadDetailBatch(detailMetric, detailTitle, undefined, 0, search, false);
-  }
-  function closeDetail() { setDetailMetric(null); setDetailRows([]); setDetailOffset(0); }
 
-  return { data, error, openDetail, closeDetail, detailMetric, detailTitle, detailRows, detailLoading, detailLoadingMore, detailTruncated, detailTotal, loadMoreDetail, searchDetail };
+  function closeDetail() { setDetailMetric(null); }
+
+  return { data, error, openDetail, closeDetail, detailMetric, detailTitle, detailRows, detailLoading, detailTruncated, detailTotal };
 }
 
 /**

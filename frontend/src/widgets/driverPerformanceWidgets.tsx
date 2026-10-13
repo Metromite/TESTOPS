@@ -12,15 +12,13 @@
  * (same pattern as homeWidgets.tsx from Phase 5-6).
  */
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { useState } from "react";
-import { Route, Clock3, ChevronDown, ChevronUp } from "lucide-react";
-import { useDashboardLocalData } from "../hooks/useDashboardLocalData";
+import { useDashboardQuery } from "../hooks/useDashboardQuery";
 import { GlobalFilters } from "../types/dashboardFilters";
 import { GlassCard } from "../design-system/GlassCard";
 import { GlassPanel } from "../design-system/GlassPanel";
 import { GlassTable } from "../design-system/GlassTable";
 import { GlassBadge } from "../design-system/GlassBadge";
-import { CHART_PALETTE, chartGrid, chartAxisTick, chartAxisLine, GlassTooltip, ChartPanel, chartBarProps } from "../design-system/chartTheme";
+import { CHART_PALETTE, chartGrid, chartAxisTick, chartAxisLine, GlassTooltip } from "../design-system/chartTheme";
 
 export interface RouteCard {
   vehicle_key: string; vehicle_num: string; vehicle_model: string;
@@ -41,7 +39,7 @@ export interface PerfData {
 const methodTone: Record<string, "ok" | "neutral" | "danger"> = { vehicle: "ok", manual: "ok", name: "neutral", none: "danger" };
 
 export function useDriverPerformanceData(driver: string, globalFilters?: GlobalFilters) {
-  return useDashboardLocalData<PerfData>("/dashboard/driver-performance", globalFilters, driver);
+  return useDashboardQuery<PerfData>("/dashboard/driver-performance", driver, globalFilters);
 }
 
 export function DpKpiTile({ label, value }: { label: string; value: string | number }) {
@@ -60,62 +58,35 @@ export const DP_KPI_DEFS: { key: string; label: string; getValue: (k: PerfData["
 ];
 
 export function StopsPerDriverChart({ data }: { data: PerfData }) {
-  const [showAll, setShowAll] = useState(false);
-  const allRows = data.chart_stops.labels.map((l, i) => ({ name: l, stops: data.chart_stops.values[i] }));
-  const visibleRows = showAll ? allRows : allRows.slice(0, 8);
+  const stopsChart = data.chart_stops.labels.map((l, i) => ({ name: l, stops: data.chart_stops.values[i] }));
   return (
-    <ChartPanel
-      title="Stops per Driver"
-      icon={Route}
-      actions={allRows.length > 8 ? (
-        <button type="button" className="dispatch-chart-action" onClick={() => setShowAll((v) => !v)}>
-          {showAll ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          {showAll ? "Show top 8" : `View all ${allRows.length}`}
-        </button>
-      ) : undefined}
-    >
-      <div className={showAll ? "dispatch-chart-expanded" : "dispatch-chart-compact"}>
-        <ResponsiveContainer width="100%" height={showAll ? Math.max(300, visibleRows.length * 31) : 286}>
-          <BarChart data={visibleRows} layout="vertical" margin={{ left: 10, right: 20 }}>
-            <CartesianGrid {...chartGrid} />
-            <XAxis type="number" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} />
-            <YAxis type="category" dataKey="name" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} width={140} interval={0} />
-            <Tooltip content={<GlassTooltip />} cursor={{ fill: "var(--row-hover)" }} />
-            <Bar dataKey="stops" fill={CHART_PALETTE[1]} {...chartBarProps} barSize={16} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-    </ChartPanel>
+    <GlassPanel title="Stops per Driver">
+      <ResponsiveContainer width="100%" height={Math.max(280, stopsChart.length * 32)}>
+        <BarChart data={stopsChart} layout="vertical" margin={{ left: 10, right: 20 }}>
+          <CartesianGrid {...chartGrid} />
+          <XAxis type="number" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} />
+          <YAxis type="category" dataKey="name" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} width={140} interval={0} />
+          <Tooltip content={<GlassTooltip />} cursor={{ fill: "var(--row-hover)" }} />
+          <Bar dataKey="stops" fill={CHART_PALETTE[1]} radius={[0, 4, 4, 0]} barSize={18} />
+        </BarChart>
+      </ResponsiveContainer>
+    </GlassPanel>
   );
 }
-
 export function RouteDurationChart({ data }: { data: PerfData }) {
-  const [showAll, setShowAll] = useState(false);
-  const allRows = data.chart_route_hours.labels.map((l, i) => ({ name: l, hours: data.chart_route_hours.values[i] }));
-  const visibleRows = showAll ? allRows : allRows.slice(0, 8);
+  const hoursChart = data.chart_route_hours.labels.map((l, i) => ({ name: l, hours: data.chart_route_hours.values[i] }));
   return (
-    <ChartPanel
-      title="Route Duration (hrs)"
-      icon={Clock3}
-      actions={allRows.length > 8 ? (
-        <button type="button" className="dispatch-chart-action" onClick={() => setShowAll((v) => !v)}>
-          {showAll ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          {showAll ? "Show top 8" : `View all ${allRows.length}`}
-        </button>
-      ) : undefined}
-    >
-      <div className={showAll ? "dispatch-chart-expanded" : "dispatch-chart-compact"}>
-        <ResponsiveContainer width="100%" height={showAll ? Math.max(300, visibleRows.length * 31) : 286}>
-          <BarChart data={visibleRows} layout="vertical" margin={{ left: 10, right: 20 }}>
-            <CartesianGrid {...chartGrid} />
-            <XAxis type="number" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} />
-            <YAxis type="category" dataKey="name" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} width={140} interval={0} />
-            <Tooltip content={<GlassTooltip />} cursor={{ fill: "var(--row-hover)" }} />
-            <Bar dataKey="hours" fill={CHART_PALETTE[0]} {...chartBarProps} barSize={16} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-    </ChartPanel>
+    <GlassPanel title="Route Duration (hrs)">
+      <ResponsiveContainer width="100%" height={Math.max(280, hoursChart.length * 32)}>
+        <BarChart data={hoursChart} layout="vertical" margin={{ left: 10, right: 20 }}>
+          <CartesianGrid {...chartGrid} />
+          <XAxis type="number" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} />
+          <YAxis type="category" dataKey="name" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} width={140} interval={0} />
+          <Tooltip content={<GlassTooltip />} cursor={{ fill: "var(--row-hover)" }} />
+          <Bar dataKey="hours" fill={CHART_PALETTE[0]} radius={[0, 4, 4, 0]} barSize={18} />
+        </BarChart>
+      </ResponsiveContainer>
+    </GlassPanel>
   );
 }
 export function RouteDetailTable({ data }: { data: PerfData }) {
@@ -132,7 +103,7 @@ export function RouteDetailTable({ data }: { data: PerfData }) {
           </GlassTable.Header>
           <GlassTable.Body>
             {data.route_cards.map((r) => (
-              <tr key={`${r.vehicle_key}::${r.display_driver}::${String(r.route_start || r.route_end || "")}`}>
+              <tr key={r.vehicle_key}>
                 <GlassTable.Td>{r.vehicle_num}{r.vehicle_model && <span className="text-muted"> ({r.vehicle_model})</span>}</GlassTable.Td>
                 <GlassTable.Td>{r.display_driver}</GlassTable.Td>
                 <GlassTable.Td><GlassBadge tone={methodTone[r.match_method]}>{r.match_method}</GlassBadge></GlassTable.Td>

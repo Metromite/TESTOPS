@@ -1,5 +1,4 @@
 import { useRef, useState, useEffect } from "react";
-import { getRole } from "../api/client";
 import { deleteImportedData, getImportBatchRows, getImportBatchesForUi, labelImportBatch, previewImportFile, processImportFile, type ImportPreview } from "../services/importEngine";
 import { useOperationalRealtime } from "../hooks/useOperationalRealtime";
 import Modal from "../components/Modal";
@@ -12,12 +11,11 @@ interface JobSnap {
 }
 interface Batch {
   batch_id: string; source_type: string; filename: string; imported_by: string;
-  label: string; imported_at: string; raw_row_count: number; parsed_fact_count: number; status?: string; error_message?: string; storage_project?: string;
+  label: string; imported_at: string; raw_row_count: number; parsed_fact_count: number;
 }
 interface BatchRowsResponse { rows: { row_index: number; data: string }[] }
 
 export default function Imports() {
-  const isAdmin = getRole() === "admin";
   const [sourceType, setSourceType] = useState<"sap" | "landmark">("sap");
   const [job, setJob] = useState<JobSnap | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -63,10 +61,10 @@ export default function Imports() {
           <option value="sap">SAP Export</option>
           <option value="landmark">Landmark Export</option>
         </select>
-        {isAdmin && <><input type="file" ref={fileRef} accept=".csv,.xlsx,.xls" onChange={handleFileSelected} />
+        <input type="file" ref={fileRef} accept=".csv,.xlsx,.xls" onChange={handleFileSelected} />
         <button className="btn" onClick={handleUpload} disabled={uploading}>
           {uploading ? "Uploading..." : "Upload & Process"}
-        </button></>}
+        </button>
       </div>
 
       {previewError && <div className="glass-card error-text" style={{ marginBottom: 20 }}>{previewError}</div>}
@@ -104,12 +102,12 @@ export default function Imports() {
         </div>
       )}
 
-      <BatchManager refreshKey={job?.status} isAdmin={isAdmin} />
+      <BatchManager refreshKey={job?.status} />
     </div>
   );
 }
 
-function BatchManager({ refreshKey, isAdmin }: { refreshKey?: string; isAdmin: boolean }) {
+function BatchManager({ refreshKey }: { refreshKey?: string }) {
   const [batches, setBatches] = useState<Batch[]>([]);
   const [error, setError] = useState("");
   const [viewing, setViewing] = useState<Batch | null>(null);
@@ -145,7 +143,7 @@ function BatchManager({ refreshKey, isAdmin }: { refreshKey?: string; isAdmin: b
   }
 
   async function deleteBatch(batchId: string) {
-    if (!confirm("Delete this import batch, its raw rows, parsed facts, and the original uploaded source file? This cannot be undone.")) return;
+    if (!confirm("Delete this imported database batch (raw rows + parsed facts)? The original uploaded source file will stay in Supabase Storage.")) return;
     try {
       await deleteImportedData(batchId);
       load();
@@ -183,10 +181,10 @@ function BatchManager({ refreshKey, isAdmin }: { refreshKey?: string; isAdmin: b
       <strong>Uploaded Batches</strong>
       {error && <div className="error-text" style={{ fontSize: 12, marginTop: 8 }}>{error}</div>}
       <table className="data-table" style={{ marginTop: 10 }}>
-        <thead><tr><th>Type</th><th>Filename</th><th>Label</th><th>Uploaded</th><th>By</th><th>Raw Rows</th><th>Parsed Facts</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Type</th><th>Filename</th><th>Label</th><th>Uploaded</th><th>By</th><th>Raw Rows</th><th>Parsed Facts</th><th></th></tr></thead>
         <tbody>
           {batches.length === 0 && (
-            <tr><td colSpan={9} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No uploads yet</td></tr>
+            <tr><td colSpan={8} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No uploads yet</td></tr>
           )}
           {batches.map((b) => (
             <tr key={b.batch_id}>
@@ -208,10 +206,9 @@ function BatchManager({ refreshKey, isAdmin }: { refreshKey?: string; isAdmin: b
               <td>{b.imported_by}</td>
               <td>{b.raw_row_count}</td>
               <td>{b.parsed_fact_count}</td>
-              <td><span className={"badge " + (b.status === "failed" ? "excluded" : b.status === "processing" ? "" : "ok")}>{b.status || "completed"}</span>{b.error_message && <div className="error-text" style={{fontSize:10,marginTop:4,maxWidth:220}}>{b.error_message}</div>}</td>
               <td style={{ display: "flex", gap: 6 }}>
-                <button className="btn" onClick={() => viewBatch(b)} disabled={b.raw_row_count === 0}>View</button>
-                {isAdmin && <button className="btn" style={{background:"var(--red)"}} onClick={() => void deleteBatch(b.batch_id)}>Delete</button>}
+                <button className="btn" onClick={() => viewBatch(b)}>View</button>
+                <button className="btn" style={{ background: "var(--red)" }} onClick={() => deleteBatch(b.batch_id)}>Delete</button>
               </td>
             </tr>
           ))}

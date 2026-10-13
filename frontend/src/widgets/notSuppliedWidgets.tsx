@@ -1,89 +1,57 @@
 /**
- * Not Supplied dashboard widget.
- * Rows are intentionally grouped by driver and collapsed by default so the
- * page paints a compact driver list first instead of rendering every line.
+ * widgets/notSuppliedWidgets.tsx
+ * Round -12: atomic widgets extracted from NotSuppliedTab.tsx (2 tables).
  */
-import React, { useMemo, useState } from "react";
-import DetailWindow from "../components/DetailWindow";
-import { useDashboardLocalData } from "../hooks/useDashboardLocalData";
+import { useDashboardQuery } from "../hooks/useDashboardQuery";
 import { GlobalFilters } from "../types/dashboardFilters";
 
-export interface NsRow { driver_name: string; customer_name: string; facility_type: string; reason: string; boxes: number; invoice_date: string; dispatch_date?: string; invoice_no?: string; }
+export interface NsRow { driver_name: string; customer_name: string; facility_type: string; reason: string; boxes: number; invoice_date: string; }
 export interface ZeroRow { driver_name: string; customer_name: string; invoice_date: string; dispatch_date: string; }
-export interface NotSuppliedData { not_supplied: NsRow[]; zero_box_excluded_from_kpis: ZeroRow[]; driver_summary: { driver_name: string; total_orders: number; delivered: number; not_supplied: number }[]; }
+export interface NotSuppliedData { not_supplied: NsRow[]; zero_box_excluded_from_kpis: ZeroRow[]; }
 
 export function useNotSuppliedData(driver: string, globalFilters?: GlobalFilters) {
-  return useDashboardLocalData<NotSuppliedData>("/dashboard/not-supplied", globalFilters, driver);
+  return useDashboardQuery<NotSuppliedData>("/dashboard/not-supplied", driver, globalFilters);
 }
-
 export function NotSuppliedTable({ data }: { data: NotSuppliedData }) {
-  const [detailDriver, setDetailDriver] = useState<string | null>(null);
-  const detailRows = useMemo(() => {
-    if (!detailDriver) return [];
-    return data.not_supplied
-      .filter((row) => (row.driver_name || "Unknown") === detailDriver)
-      .map((row) => ({
-        "Invoice No": row.invoice_no || "",
-        Customer: row.customer_name,
-        "Facility Type": row.facility_type,
-        Reason: row.reason,
-        Boxes: row.boxes,
-        "Invoice Date": row.invoice_date,
-        "Dispatch Date": row.dispatch_date || "",
-      }));
-  }, [data.not_supplied, detailDriver]);
-
-  const selectedSummary = data.driver_summary.find((row) => row.driver_name === detailDriver);
-
   return (
-    <>
-      <div className="glass-card">
-        <div className="flex items-center justify-between gap-3">
-          <strong>Not Supplied</strong>
-          <span className="text-[12px] text-muted">{data.driver_summary.reduce((n,r) => n + r.total_orders, 0).toLocaleString()} orders · {data.not_supplied.length.toLocaleString()} not supplied</span>
-        </div>
-        <div className="mt-3 overflow-x-auto">
-          {data.driver_summary.length === 0 ? (
-            <div className="py-6 text-center text-muted">No orders in the current filter.</div>
-          ) : (
-            <table className="data-table">
-              <thead><tr><th>Driver</th><th>Total Orders</th><th>Delivered</th><th>Not Supplied</th></tr></thead>
-              <tbody>
-                {data.driver_summary.map((row) => (
-                  <tr key={row.driver_name} onClick={() => { if (row.not_supplied > 0) setDetailDriver(row.driver_name); }} style={{ cursor: row.not_supplied > 0 ? "pointer" : "default" }} title={row.not_supplied > 0 ? "Open not-supplied order details" : "No not-supplied orders for this driver"}>
-                    <td><strong>{row.driver_name}</strong></td>
-                    <td>{row.total_orders.toLocaleString()}</td>
-                    <td>{row.delivered.toLocaleString()}</td>
-                    <td>{row.not_supplied.toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
-
-      {detailDriver && selectedSummary && (
-        <DetailWindow
-          title={`${detailDriver} — Total ${selectedSummary.total_orders.toLocaleString()} · Delivered ${selectedSummary.delivered.toLocaleString()} · Not Supplied ${selectedSummary.not_supplied.toLocaleString()}`}
-          columns={[
-            { key: "Invoice No", label: "Invoice" },
-            { key: "Customer", label: "Customer" },
-            { key: "Facility Type", label: "Facility" },
-            { key: "Reason", label: "Reason" },
-            { key: "Boxes", label: "Boxes" },
-            { key: "Invoice Date", label: "Invoice Date" },
-            { key: "Dispatch Date", label: "Dispatch Date" },
-          ]}
-          rows={detailRows}
-          totalMatching={detailRows.length}
-          onClose={() => setDetailDriver(null)}
-        />
-      )}
-    </>
+    <div className="glass-card">
+      <strong>Not Supplied</strong>
+      <table className="data-table" style={{ marginTop: 10 }}>
+        <thead><tr><th>Driver</th><th>Customer</th><th>Facility Type</th><th>Supply Description</th><th>Boxes</th><th>Invoice Date</th></tr></thead>
+        <tbody>
+          {data.not_supplied.length === 0 ? (
+            <tr><td colSpan={6} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No not-supplied lines</td></tr>
+          ) : data.not_supplied.map((r, i) => (
+            <tr key={i} style={{ background: "rgba(239,68,68,0.08)" }}>
+              <td>{r.driver_name}</td><td>{r.customer_name}</td><td>{r.facility_type}</td>
+              <td>{r.reason}</td><td>{r.boxes}</td><td>{r.invoice_date}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
-
+export function ZeroBoxTable({ data }: { data: NotSuppliedData }) {
+  return (
+    <div className="glass-card">
+      <strong>Zero Boxes (informational — excluded from KPIs)</strong>
+      <table className="data-table" style={{ marginTop: 10 }}>
+        <thead><tr><th>Driver</th><th>Customer</th><th>Invoice Date</th><th>Dispatch Date</th><th>Note</th></tr></thead>
+        <tbody>
+          {data.zero_box_excluded_from_kpis.length === 0 ? (
+            <tr><td colSpan={5} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No zero-box rows</td></tr>
+          ) : data.zero_box_excluded_from_kpis.map((r, i) => (
+            <tr key={i}>
+              <td>{r.driver_name}</td><td>{r.customer_name}</td><td>{r.invoice_date}</td><td>{r.dispatch_date}</td>
+              <td style={{ color: "var(--muted)", fontStyle: "italic" }}>Excluded from KPIs</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 function withNsData<P extends { data: NotSuppliedData }>(Comp: (p: P) => JSX.Element) {
   return function Standalone({ driver = "", globalFilters }: { driver?: string; globalFilters?: GlobalFilters }) {
     const { data, error } = useNotSuppliedData(driver, globalFilters);
@@ -93,3 +61,4 @@ function withNsData<P extends { data: NotSuppliedData }>(Comp: (p: P) => JSX.Ele
   };
 }
 export const StandaloneNotSuppliedTable = withNsData(NotSuppliedTable);
+export const StandaloneZeroBoxTable = withNsData(ZeroBoxTable);

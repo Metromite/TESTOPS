@@ -5,7 +5,7 @@
  * several - the presentational/standalone split still applies so Control
  * Center can add it as its own card without also getting the page shell.
  */
-import { useDashboardLocalData } from "../hooks/useDashboardLocalData";
+import { useDashboardQuery } from "../hooks/useDashboardQuery";
 import { GlobalFilters } from "../types/dashboardFilters";
 
 export interface OrderSummaryData {
@@ -15,7 +15,7 @@ export interface OrderSummaryData {
   grand_total: number;
 }
 export function useOrderSummaryData(driver: string, globalFilters?: GlobalFilters) {
-  return useDashboardLocalData<OrderSummaryData>("/dashboard/order-summary", globalFilters, driver);
+  return useDashboardQuery<OrderSummaryData>("/dashboard/order-summary", driver, globalFilters);
 }
 export function OrderSummaryTable({ data }: { data: OrderSummaryData }) {
   return (

@@ -1,18 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import { saveWorkbookToDispatchFolder, type ExportProgress } from "./desktopExport";
-import {
-  getDashboardLocalDataset,
-  filterDashboardRows,
-  buildLocalHome,
-  buildLocalLeadTime,
-  buildLocalOrderSummary,
-  buildLocalArea,
-  buildLocalNotSupplied,
-  buildLocalDriverPerformance,
-  type LocalSapRow,
-} from "./dashboardLocalStore";
-import type { GlobalFilters } from "../types/dashboardFilters";
 
 interface SapFact {
   invoice_no: string; invoice_date: string | null; dispatch_date: string | null; driver_name: string; customer_name: string;
@@ -234,8 +222,8 @@ function mergeSnapshot(a: DashboardSnapshot, b: DashboardSnapshot): DashboardSna
 
 async function getDashboardSnapshot<T>(params: URLSearchParams): Promise<DashboardSnapshot> {
   return cachedAnalytics(snapshotKey(params), async()=>{
-    const { getPrimarySupabaseClient, getSecondarySupabaseClient } = await import("@/lib/supabase");
-    const clients=[getPrimarySupabaseClient(), getSecondarySupabaseClient()].filter(Boolean);
+    const { getFederatedSupabaseClients } = await import("@/lib/supabase");
+    const clients=getFederatedSupabaseClients();
     const parts=await Promise.all(clients.map(c=>fetchSnapshotFromClient(c,params)));
     return parts.reduce((acc:any,part:any)=>acc?mergeSnapshot(acc,part):part,null) as DashboardSnapshot;
   });
@@ -244,12 +232,11 @@ async function getDashboardSnapshot<T>(params: URLSearchParams): Promise<Dashboa
 async function fetchTargetedRpcFromProjects(rpc: string, params: URLSearchParams, key: keyof DashboardSnapshot): Promise<any> {
   const cacheKey = `targeted:${rpc}:${snapshotKey(params)}`;
   return cachedAnalytics(cacheKey, async () => {
-    const { getPrimarySupabaseClient, getSecondarySupabaseClient } = await import("@/lib/supabase");
-    const dashboardClients=[getPrimarySupabaseClient(), getSecondarySupabaseClient()].filter(Boolean);
+    const { getFederatedSupabaseClients } = await import("@/lib/supabase");
     const start = params.get("start_date") || null;
     const end = params.get("end_date") || null;
     const filters = leadTimeFilterJson(params);
-    const parts = await Promise.all(dashboardClients.map(async (client:any) => {
+    const parts = await Promise.all(getFederatedSupabaseClients().map(async (client:any) => {
       const { data, error } = await client.rpc(rpc, { p_start: start, p_end: end, p_filters: filters });
       if (error) throw new Error(error.message);
       return { lead_time:{}, order_summary:{}, area_analytics:{}, not_supplied:{}, driver_performance:{}, [key]: data || {} } as DashboardSnapshot;
@@ -271,35 +258,6 @@ export async function fetchDashboardEndpoint<T>(endpoint: string): Promise<T> { 
 
 
 export type DashboardExportView = "full" | "dashboard" | "driverperf" | "leadtime" | "order" | "area" | "notsupplied";
-
-function localExportData(params: URLSearchParams) {
-  const dataset = getDashboardLocalDataset();
-  if (!dataset) throw new Error("Dashboard data is still loading. Please try the Excel export again in a moment.");
-  const driver = params.get("driver") || "";
-  const selectedDrivers = values(params, "drivers");
-  if (driver && !selectedDrivers.some((d) => d.toLowerCase() === driver.toLowerCase())) selectedDrivers.push(driver);
-  const gf: GlobalFilters = {
-    drivers: selectedDrivers.join(","),
-    areas: params.get("areas") || "",
-    division: params.get("division") || "",
-    route_type: params.get("route_type") || "",
-    vehicle_type: params.get("vehicle_type") || "",
-    facility_type: params.get("facility_type") || "",
-    salesman: params.get("salesman") || "",
-    start_date: params.get("start_date") || "",
-    end_date: params.get("end_date") || "",
-    lead_time_band: params.get("lead_time_band") || "",
-    classification: params.get("classification") || "",
-  };
-  const rows = filterDashboardRows(dataset, gf);
-  const home = buildLocalHome(rows, dataset.routeCards);
-  const lead = buildLocalLeadTime(rows, gf);
-  const orders = buildLocalOrderSummary(rows);
-  const areas = buildLocalArea(rows);
-  const notSupplied = buildLocalNotSupplied(rows);
-  const perf = buildLocalDriverPerformance(rows, dataset.routeCards);
-  return { dataset, rows, home, lead, orders, areas, notSupplied, perf };
-}
 
 function appendJsonSheet(wb: XLSX.WorkBook, name: string, rows: unknown[]) {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows as any[]), name);
@@ -329,25 +287,15 @@ function kpiRows(rows: SapFact[], lead: any, perf: any) {
 }
 
 export async function exportDashboardExcel(params: URLSearchParams, filename = "dashboard_export.xlsx", onProgress?: (p: ExportProgress) => void): Promise<void> {
-  onProgress?.({ pct: 15, status: "preparing", message: "Preparing current filtered dashboard data…" });
-  const { rows, home, lead, orders, areas, notSupplied, perf } = localExportData(params);
+  onProgress?.({ pct: 15, status: "preparing", message: "Loading dashboard data…" });
+  const [rows, lead, orders, areas, notSuppliedData, perf] = await Promise.all([
+    sapRows(params), getLeadTimeDataClient<any>(params), orderSummary<any>(params), areaAnalytics<any>(params), notSupplied<any>(params), driverPerformance<any>(params),
+  ]);
   onProgress?.({ pct: 50, status: "preparing", message: "Building Full Dashboard workbook…" });
+  // Let the progress UI paint before SheetJS starts the CPU-heavy workbook build.
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   const wb = XLSX.utils.book_new();
-  appendJsonSheet(wb, "KPI Summary", [
-    { KPI: "Total Valid Invoices", Value: home.kpis.valid_invoices },
-    { KPI: "Total Boxes", Value: home.kpis.total_boxes },
-    { KPI: "Freezer Boxes", Value: home.kpis.freezer_boxes },
-    { KPI: "Normal Boxes", Value: home.kpis.normal_boxes },
-    { KPI: "Active Drivers", Value: home.kpis.active_drivers },
-    { KPI: "Not Supplied Lines", Value: home.kpis.not_supplied },
-    { KPI: "Orders per Driver", Value: home.kpis.orders_per_driver },
-    { KPI: "Avg Lead Time (Invoice→Dispatch)", Value: lead.kpis.overall_avg_days ?? 0 },
-    { KPI: "Avg Route Duration (hrs)", Value: perf.kpis.avg_route_duration_hrs ?? 0 },
-    { KPI: "GPS Vehicles", Value: perf.kpis.gps_vehicles ?? 0 },
-    { KPI: "Total GPS Stops", Value: perf.kpis.total_gps_stops ?? 0 },
-    { KPI: "Unique Customers", Value: home.kpis.unique_customers },
-  ]);
+  appendJsonSheet(wb, "KPI Summary", kpiRows(rows, lead, perf));
   appendJsonSheet(wb, "Filtered Data", rows);
   appendJsonSheet(wb, "Lead Time by Class", lead.by_classification || []);
   appendJsonSheet(wb, "Lead Time Distribution", (lead.distribution?.bins || []).map((b: string, i: number) => ({ band: b, orders: lead.distribution.counts?.[i] || 0 })));
@@ -355,33 +303,25 @@ export async function exportDashboardExcel(params: URLSearchParams, filename = "
   appendJsonSheet(wb, "Order Summary", orders.rows || []);
   appendJsonSheet(wb, "Area Analytics", areas.table || []);
   appendJsonSheet(wb, "Weekly Area", areas.weekly_table || []);
-  appendJsonSheet(wb, "Not Supplied", notSupplied.not_supplied || []);
-  appendJsonSheet(wb, "Not Supplied by Driver", notSupplied.driver_summary || []);
-  appendJsonSheet(wb, "Zero Boxes", notSupplied.zero_box_excluded_from_kpis || []);
+  appendJsonSheet(wb, "Not Supplied", notSuppliedData.not_supplied || []);
+  appendJsonSheet(wb, "Zero Boxes", notSuppliedData.zero_box_excluded_from_kpis || []);
   appendJsonSheet(wb, "Driver Performance", perf.route_cards || []);
   appendJsonSheet(wb, "GPS Stop Detail", (perf.route_cards || []).map((r: any) => ({ Driver: r.display_driver, Vehicle: r.vehicle_num, "Route Start": r.route_start, "Route End": r.route_end, "Route Duration": r.route_duration_hm, Stops: r.stops, "Avg Stop": r.avg_stop_hm, Passthrough: r.passthru_count })));
-  appendJsonSheet(wb, "Master Data", rows.map((r: LocalSapRow) => ({ "Invoice Date": r.invoice_date, "Dispatch Date": r.dispatch_date, "Invoice No": r.invoice_no, "Driver Name": r.driver_name, "Vehicle": r.vehicle_num, "Customer Name": r.customer_name, Area: r.area, Division: r.division_desc, Boxes: r.boxes, Normal: r.normal_boxes, Freezer: r.freezer_boxes, "Facility Type": r.facility_type, "Not Supplied Reason": r.not_supplied_reason })));
+  appendJsonSheet(wb, "Master Data", rows.map(r => ({ "Invoice Date": r.invoice_date, "Dispatch Date": r.dispatch_date, "Invoice No": r.invoice_no, "Driver Name": r.driver_name, "Vehicle": r.vehicle_num, "Customer Name": r.customer_name, Area: r.area, Division: r.division_desc, Boxes: r.boxes, Normal: r.normal_boxes, Freezer: r.freezer_boxes, "Facility Type": r.facility_type, "Not Supplied Reason": r.not_supplied_reason })));
   await saveWorkbookToDispatchFolder(wb, filename, (p) => onProgress?.({ ...p, pct: Math.min(95, p.pct) }));
-  onProgress?.({ pct: 100, status: "success", message: "Full Dashboard Excel export downloaded successfully." });
+  onProgress?.({ pct: 100, status: "success", message: "Full Dashboard Excel export saved successfully." });
 }
 
 export async function exportDashboardView(view: Exclude<DashboardExportView, "full">, params: URLSearchParams, filename: string, onProgress?: (p: ExportProgress) => void): Promise<void> {
-  onProgress?.({ pct: 15, status: "preparing", message: "Preparing current filtered dashboard data…" });
-  const { rows, home, lead, orders, areas, notSupplied, perf } = localExportData(params);
-  onProgress?.({ pct: 55, status: "preparing", message: "Building workbook…" });
+  onProgress?.({ pct: 15, status: "preparing", message: "Loading selected dashboard data…" });
   const wb = XLSX.utils.book_new();
+  const [rows, lead, orders, areas, ns, perf] = await Promise.all([
+    sapRows(params), getLeadTimeDataClient<any>(params), orderSummary<any>(params), areaAnalytics<any>(params), notSupplied<any>(params), driverPerformance<any>(params),
+  ]);
+  onProgress?.({ pct: 55, status: "preparing", message: "Building workbook…" });
   if (view === "dashboard") {
-    appendJsonSheet(wb, "KPI Summary", [
-      { KPI: "Total Valid Invoices", Value: home.kpis.valid_invoices },
-      { KPI: "Total Boxes", Value: home.kpis.total_boxes },
-      { KPI: "Freezer Boxes", Value: home.kpis.freezer_boxes },
-      { KPI: "Normal Boxes", Value: home.kpis.normal_boxes },
-      { KPI: "Active Drivers", Value: home.kpis.active_drivers },
-      { KPI: "Not Supplied Lines", Value: home.kpis.not_supplied },
-      { KPI: "Orders per Driver", Value: home.kpis.orders_per_driver },
-      { KPI: "Unique Customers", Value: home.kpis.unique_customers },
-    ]);
-    appendJsonSheet(wb, "Driver Overview", home.driver_overview || []);
+    appendJsonSheet(wb, "KPI Summary", kpiRows(rows, lead, perf));
+    appendJsonSheet(wb, "Driver Overview", perf.route_cards || []);
   } else if (view === "driverperf") {
     appendJsonSheet(wb, "Driver Performance", perf.route_cards || []);
     appendJsonSheet(wb, "GPS Stop Detail", (perf.route_cards || []).map((r: any) => ({ Driver: r.display_driver, Vehicle: r.vehicle_num, "Route Start": r.route_start, "Route End": r.route_end, "Route Duration": r.route_duration_hm, Stops: r.stops, "Avg Stop": r.avg_stop_hm, Passthrough: r.passthru_count })));
@@ -395,11 +335,8 @@ export async function exportDashboardView(view: Exclude<DashboardExportView, "fu
     appendJsonSheet(wb, "Area Analytics", areas.table || []);
     appendJsonSheet(wb, "Weekly Area", areas.weekly_table || []);
   } else if (view === "notsupplied") {
-    appendJsonSheet(wb, "Not Supplied", notSupplied.not_supplied || []);
-    appendJsonSheet(wb, "Not Supplied by Driver", notSupplied.driver_summary || []);
-    appendJsonSheet(wb, "Zero Boxes", notSupplied.zero_box_excluded_from_kpis || []);
+    appendJsonSheet(wb, "Not Supplied", ns.not_supplied || []);
+    appendJsonSheet(wb, "Zero Boxes", ns.zero_box_excluded_from_kpis || []);
   }
-  appendJsonSheet(wb, "Filtered Data", rows);
   await saveWorkbookToDispatchFolder(wb, filename, onProgress);
 }
-

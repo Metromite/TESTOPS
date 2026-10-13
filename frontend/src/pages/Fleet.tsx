@@ -138,9 +138,7 @@ function DriversPanel({ helperOptions }: { helperOptions: { code: string; name: 
   const [anchoredGroups, setAnchoredGroups] = useState<GroupRef[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const canWrite = Boolean(getRole());
-  const canImport = getRole() === "admin";
-  const canDelete = getRole() === "admin";
+  const canWrite = getRole() === "admin" || getRole() === "dispatcher";
 
   async function load() { try { setRows(await loadDrivers()); } catch (e: any) { setError(e.message); } }
   useEffect(() => { load(); }, []);
@@ -169,11 +167,14 @@ function DriversPanel({ helperOptions }: { helperOptions: { code: string; name: 
       cancelEdit(); load();
     } catch (e: any) { setError(e.message); }
   }
+  async function handleDelete(id: string) {
+    try { await driversService.remove(id); load(); } catch (e: any) { setError(e.message); }
+  }
 
   return (
     <div>
       <div className="glass-card" style={{ marginBottom: 20 }}>
-        <TableImportExport table="drivers" naturalKey="code" onImported={load} canWrite={canWrite} canImport={canImport} />
+        <TableImportExport table="drivers" naturalKey="code" onImported={load} canWrite={canWrite} />
       </div>
       {canWrite && (
         <form className="glass-card" onSubmit={handleSubmit} style={{ marginBottom: 20, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
@@ -222,7 +223,7 @@ function DriversPanel({ helperOptions }: { helperOptions: { code: string; name: 
       {error && <div className="glass-card error-text" style={{ marginBottom: 20 }}>{error}</div>}
       <div className="glass-card table-scroll">
         <table className="data-table">
-          <thead><tr><th>Code</th><th>Name</th><th>Vehicle(s)</th><th>Anchored Areas</th><th>Division</th><th>HC</th><th>Pref. Helper</th><th>Status</th></tr></thead>
+          <thead><tr><th>Code</th><th>Name</th><th>Vehicle(s)</th><th>Anchored Areas</th><th>Division</th><th>HC</th><th>Pref. Helper</th><th>Status</th>{canWrite && <th></th>}</tr></thead>
           <tbody>
             {rows.map((d) => (
               <tr key={d.id}>
@@ -236,10 +237,7 @@ function DriversPanel({ helperOptions }: { helperOptions: { code: string; name: 
                 <td>{d.preferred_helper || "—"}</td><td>{d.status}</td>
                 {canWrite && <td style={{ display: "flex", gap: 6 }}>
                   <button className="btn" onClick={() => startEdit(d)}>Edit</button>
-                  {canDelete && <button className="btn" style={{ background: "#8b1e2d" }} onClick={async () => {
-                    if (!window.confirm(`Delete driver ${d.code} - ${d.name}?`)) return;
-                    try { await driversService.remove(d.id); load(); } catch (e: any) { setError(e.message); }
-                  }}>Delete</button>}
+                  <button className="btn" style={{ background: "var(--red)" }} onClick={() => handleDelete(d.id)}>Delete</button>
                 </td>}
               </tr>
             ))}
@@ -258,9 +256,7 @@ function HelpersPanel() {
   const [form, setForm] = useState<HelperForm>(empty);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const canWrite = Boolean(getRole());
-  const canImport = getRole() === "admin";
-  const canDelete = getRole() === "admin";
+  const canWrite = getRole() === "admin" || getRole() === "dispatcher";
   const anchorAreaOptions = Array.from(new Set(rows.map((r) => r.anchor_area).filter(Boolean)));
 
   async function load() { try { setRows(await helpersService.list({ orderBy: "code" }) as Helper[]); } catch (e: any) { setError(e.message); } }
@@ -277,11 +273,14 @@ function HelpersPanel() {
       cancelEdit(); load();
     } catch (e: any) { setError(e.message); }
   }
+  async function handleDelete(id: string) {
+    try { await helpersService.remove(id); load(); } catch (e: any) { setError(e.message); }
+  }
 
   return (
     <div>
       <div className="glass-card" style={{ marginBottom: 20 }}>
-        <TableImportExport table="helpers" naturalKey="code" onImported={load} canWrite={canWrite} canImport={canImport} />
+        <TableImportExport table="helpers" naturalKey="code" onImported={load} canWrite={canWrite} />
       </div>
       {canWrite && (
         <form className="glass-card" onSubmit={handleSubmit} style={{ marginBottom: 20, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
@@ -304,7 +303,7 @@ function HelpersPanel() {
       {error && <div className="glass-card error-text" style={{ marginBottom: 20 }}>{error}</div>}
       <div className="glass-card table-scroll">
         <table className="data-table">
-          <thead><tr><th>Code</th><th>Name</th><th>Anchor Area</th><th>Division</th><th>HC</th><th>Status</th></tr></thead>
+          <thead><tr><th>Code</th><th>Name</th><th>Anchor Area</th><th>Division</th><th>HC</th><th>Status</th>{canWrite && <th></th>}</tr></thead>
           <tbody>
             {rows.map((h) => (
               <tr key={h.id}>
@@ -312,10 +311,7 @@ function HelpersPanel() {
                 <td>{h.division || "—"}</td><td>{h.health_card}</td><td>{h.status}</td>
                 {canWrite && <td style={{ display: "flex", gap: 6 }}>
                   <button className="btn" onClick={() => startEdit(h)}>Edit</button>
-                  {canDelete && <button className="btn" style={{ background: "#8b1e2d" }} onClick={async () => {
-                    if (!window.confirm(`Delete helper ${h.code} - ${h.name}?`)) return;
-                    try { await helpersService.remove(h.id); load(); } catch (e: any) { setError(e.message); }
-                  }}>Delete</button>}
+                  <button className="btn" style={{ background: "var(--red)" }} onClick={() => handleDelete(h.id)}>Delete</button>
                 </td>}
               </tr>
             ))}
@@ -428,9 +424,7 @@ function VehiclesPanel({ meta }: { meta: MetaOptions }) {
   const [permittedGroups, setPermittedGroups] = useState<GroupRef[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const canWrite = Boolean(getRole());
-  const canImport = getRole() === "admin";
-  const canDelete = getRole() === "admin";
+  const canWrite = getRole() === "admin" || getRole() === "dispatcher";
 
   async function load() { try { setRows(await loadVehicles()); } catch (e: any) { setError(e.message); } }
   useEffect(() => { load(); }, []);
@@ -464,11 +458,14 @@ function VehiclesPanel({ meta }: { meta: MetaOptions }) {
       cancelEdit(); load();
     } catch (e: any) { setError(e.message); }
   }
+  async function handleDelete(id: string) {
+    try { await vehiclesService.remove(id); load(); } catch (e: any) { setError(e.message); }
+  }
 
   return (
     <div>
       <div className="glass-card" style={{ marginBottom: 20 }}>
-        <TableImportExport table="vehicles" naturalKey="number" onImported={load} canWrite={canWrite} canImport={canImport} />
+        <TableImportExport table="vehicles" naturalKey="number" onImported={load} canWrite={canWrite} />
       </div>
       {canWrite && (
         <form className="glass-card" onSubmit={handleSubmit} style={{ marginBottom: 20, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
@@ -484,7 +481,7 @@ function VehiclesPanel({ meta }: { meta: MetaOptions }) {
             </select>
           </Field>
           <Field label="Capacity (tons)"><input type="number" min="0" step="0.1" value={form.capacity_tons} onChange={(e) => setForm({ ...form, capacity_tons: e.target.value })} placeholder="e.g. 10" /></Field>
-          <Field label="Pallet Capacity (Big Equivalent)"><input type="number" min="0" step="1" value={form.pallet_capacity} onChange={(e) => setForm({ ...form, pallet_capacity: e.target.value })} placeholder="e.g. 10 big pallets" /></Field>
+          <Field label="Total Big Pallet Capacity (Big Equivalent)"><input type="number" min="0" step="1" value={form.pallet_capacity} onChange={(e) => setForm({ ...form, pallet_capacity: e.target.value })} placeholder="e.g. 10 big pallets" /></Field>
           <Field label="Status">
             <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
               <option>Active</option><option>Under Service</option>
@@ -504,7 +501,7 @@ function VehiclesPanel({ meta }: { meta: MetaOptions }) {
       {error && <div className="glass-card error-text" style={{ marginBottom: 20 }}>{error}</div>}
       <div className="glass-card table-scroll">
         <table className="data-table">
-          <thead><tr><th>Number</th><th>Type</th><th>Capacity</th><th>Pallet Capacity</th><th>Division Restriction</th><th>Status</th><th>Permitted Areas</th></tr></thead>
+          <thead><tr><th>Number</th><th>Type</th><th>Capacity</th><th>Total Big Pallet Capacity</th><th>Division Restriction</th><th>Status</th><th>Permitted Areas</th>{canWrite && <th></th>}</tr></thead>
           <tbody>
             {rows.map((v) => (
               <tr key={v.id}>
@@ -516,10 +513,7 @@ function VehiclesPanel({ meta }: { meta: MetaOptions }) {
                 </td>
                 {canWrite && <td style={{ display: "flex", gap: 6 }}>
                   <button className="btn" onClick={() => startEdit(v)}>Edit</button>
-                  {canDelete && <button className="btn" style={{ background: "#8b1e2d" }} onClick={async () => {
-                    if (!window.confirm(`Delete vehicle ${v.number}?`)) return;
-                    try { await vehiclesService.remove(v.id); load(); } catch (e: any) { setError(e.message); }
-                  }}>Delete</button>}
+                  <button className="btn" style={{ background: "var(--red)" }} onClick={() => handleDelete(v.id)}>Delete</button>
                 </td>}
               </tr>
             ))}
@@ -622,9 +616,7 @@ function AreasPanel({ meta }: { meta: MetaOptions }) {
   const [anchoredVehicles, setAnchoredVehiclesSel] = useState<AnchoredVehicleRef[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const canWrite = Boolean(getRole());
-  const canImport = getRole() === "admin";
-  const canDelete = getRole() === "admin";
+  const canWrite = getRole() === "admin" || getRole() === "dispatcher";
 
   async function load() { try { setRows(await loadAreas()); } catch (e: any) { setError(e.message); } }
   useEffect(() => { load(); }, []);
@@ -643,27 +635,21 @@ function AreasPanel({ meta }: { meta: MetaOptions }) {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault(); setError("");
     try {
-      // Areas exist in both the canonical (name/code) and legacy-compatible
-      // (area_name/area_code) columns in the live schema. Send both pairs so
-      // the database never receives a NULL area_name/area_code when creating
-      // a new area. No other Fleet behavior is changed.
-      const areaPayload = {
-        ...form,
-        area_name: form.name.trim(),
-        area_code: form.code.trim(),
-      };
       const saved = editingId
-        ? await areasService.update(editingId, areaPayload as any)
-        : await areasService.create(areaPayload as any);
+        ? await areasService.update(editingId, form)
+        : await areasService.create(form);
       await setAnchoredVehicles(saved.id, anchoredVehicles.map((v) => v.id));
       cancelEdit(); load();
     } catch (e: any) { setError(e.message); }
+  }
+  async function handleDelete(id: string) {
+    try { await areasService.remove(id); load(); } catch (e: any) { setError(e.message); }
   }
 
   return (
     <div>
       <div className="glass-card" style={{ marginBottom: 20 }}>
-        <TableImportExport table="areas" naturalKey="code" onImported={load} canWrite={canWrite} canImport={canImport} />
+        <TableImportExport table="areas" naturalKey="code" onImported={load} canWrite={canWrite} />
       </div>
       {canWrite && (
         <form className="glass-card" onSubmit={handleSubmit} style={{ marginBottom: 20, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
@@ -708,7 +694,7 @@ function AreasPanel({ meta }: { meta: MetaOptions }) {
           <thead>
             <tr>
               <th>Code</th><th>Name</th><th>Division</th><th>Driver Req.</th><th>Helper Req.</th>
-              <th>Vehicle Type</th><th>Anchored Vehicle(s)</th><th>Route Type</th>
+              <th>Vehicle Type</th><th>Anchored Vehicle(s)</th><th>Route Type</th>{canWrite && <th></th>}
             </tr>
           </thead>
           <tbody>
@@ -722,10 +708,7 @@ function AreasPanel({ meta }: { meta: MetaOptions }) {
                 <td><span className={"badge " + (a.route_type === "Main Route" ? "ok" : "")}>{a.route_type}</span></td>
                 {canWrite && <td style={{ display: "flex", gap: 6 }}>
                   <button className="btn" onClick={() => startEdit(a)}>Edit</button>
-                  {canDelete && <button className="btn" style={{ background: "#8b1e2d" }} onClick={async () => {
-                    if (!window.confirm(`Delete area ${a.code} - ${a.name}?`)) return;
-                    try { await areasService.remove(a.id); load(); } catch (e: any) { setError(e.message); }
-                  }}>Delete</button>}
+                  <button className="btn" style={{ background: "var(--red)" }} onClick={() => handleDelete(a.id)}>Delete</button>
                 </td>}
               </tr>
             ))}
@@ -766,8 +749,7 @@ function AreaGroupsPanel() {
   const [memberAreas, setMemberAreas] = useState<AreaRef[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const canWrite = Boolean(getRole());
-  const canDelete = getRole() === "admin";
+  const canWrite = getRole() === "admin" || getRole() === "dispatcher";
 
   async function load() { try { setRows(await loadAreaGroups()); } catch (e: any) { setError(e.message); } }
   useEffect(() => { load(); }, []);
@@ -789,6 +771,10 @@ function AreaGroupsPanel() {
       cancelEdit(); load();
     } catch (e: any) { setError(e.message); }
   }
+  async function handleDelete(id: string) {
+    if (!confirm("Delete this Area Group? Vehicles/Drivers referencing it will lose that group (their individual Areas, if any, are unaffected).")) return;
+    try { await areaGroupsService.remove(id); load(); } catch (e: any) { setError(e.message); }
+  }
 
   return (
     <div>
@@ -809,7 +795,7 @@ function AreaGroupsPanel() {
       {error && <div className="glass-card error-text" style={{ marginBottom: 20 }}>{error}</div>}
       <div className="glass-card table-scroll">
         <table className="data-table">
-          <thead><tr><th>Group Name</th><th>Areas</th></tr></thead>
+          <thead><tr><th>Group Name</th><th>Areas</th>{canWrite && <th></th>}</tr></thead>
           <tbody>
             {rows.map((g) => (
               <tr key={g.id}>
@@ -817,10 +803,7 @@ function AreaGroupsPanel() {
                 <td>{g.areas?.length ? g.areas.map((a) => a.code).join(", ") : "—"}</td>
                 {canWrite && <td style={{ display: "flex", gap: 6 }}>
                   <button className="btn" onClick={() => startEdit(g)}>Edit</button>
-                  {canDelete && <button className="btn" style={{ background: "#8b1e2d" }} onClick={async () => {
-                    if (!window.confirm(`Delete area group ${g.name}?`)) return;
-                    try { await areaGroupsService.remove(g.id); load(); } catch (e: any) { setError(e.message); }
-                  }}>Delete</button>}
+                  <button className="btn" style={{ background: "var(--red)" }} onClick={() => handleDelete(g.id)}>Delete</button>
                 </td>}
               </tr>
             ))}

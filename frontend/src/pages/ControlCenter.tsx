@@ -768,6 +768,7 @@ export default function ControlCenter() {
                       </select>
                     )}
                     <button className="btn" onClick={() => duplicatePlaylist(editingPlaylist.id)}>⧉ Duplicate</button>
+                    <button className="btn" style={{ color: "var(--red)" }} onClick={() => deletePlaylist(editingPlaylist.id)} disabled={config.playlists.length <= 1}>Delete</button>
                   </div>
 
                   {editingPlaylist.mode === "rotation" ? (
@@ -927,6 +928,7 @@ export default function ControlCenter() {
                   <select value={entry.playlistId} onChange={(e) => updateScheduleEntry(entry.id, { playlistId: e.target.value })}>
                     {config.playlists.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
+                  <button className="btn" style={{ color: "var(--red)" }} onClick={() => removeScheduleEntry(entry.id)}>Remove</button>
                 </div>
               ))}
               <button className="btn" onClick={addScheduleEntry}>+ Add time slot</button>
@@ -966,6 +968,7 @@ export default function ControlCenter() {
                   <select value={playlistId} onChange={(e) => setAssignment(name, e.target.value)}>
                     {config.playlists.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
+                  <button className="btn" style={{ color: "var(--red)" }} onClick={() => removeAssignment(name)}>Remove</button>
                 </div>
               ))}
               <NewAssignmentRow playlists={config.playlists} onAdd={setAssignment} />

@@ -99,25 +99,13 @@ const READ_METHODS = new Set([
   "csv","maybeSingle","single","throwOnError"
 ]);
 
-const FEDERATED_FACT_TABLES = new Set([
-  "sap_invoice_facts","landmark_visit_facts","import_batches","raw_import_rows","correlation_results","identity_review_items"
-]);
-const SECONDARY_OWNED_TABLE_PREFIXES = ["price_change_"];
-const TERTIARY_OWNED_TABLE_PREFIXES = ["bulk_organizer_","department_portal_","department_dispatch_"];
-function readClientsForTable(table:string): SupabaseClient[] {
-  if (SECONDARY_OWNED_TABLE_PREFIXES.some(prefix=>table.startsWith(prefix))) return secondaryClient ? [secondaryClient] : [primaryClient];
-  if (TERTIARY_OWNED_TABLE_PREFIXES.some(prefix=>table.startsWith(prefix))) return tertiaryClient ? [tertiaryClient] : [primaryClient];
-  // Operational/master data is canonical on Primary. Only true fact/import tables
-  // remain federated because imports can legitimately overflow into Secondary.
-  if (FEDERATED_FACT_TABLES.has(table)) return [primaryClient, ...(secondaryClient ? [secondaryClient] : [])];
-  return [primaryClient];
-}
-
 class MultiReadQueryState {
   builders: any[];
   singleMode: "single" | "maybeSingle" | null = null;
   constructor(table: string) {
-    this.builders = readClientsForTable(table).map(client=>client.from(table));
+    this.builders = [primaryClient.from(table)];
+    if (secondaryClient) this.builders.push(secondaryClient.from(table));
+    if (tertiaryClient) this.builders.push(tertiaryClient.from(table));
   }
   async resolve(): Promise<any> {
     const results = await Promise.all(this.builders.map((b) => Promise.resolve(b)));

@@ -20,23 +20,20 @@
  * dependency array for no reason. Everything else about it (api client,
  * dashboardFilterParams, the same in-memory dashboardCache) is reused as-is.
  */
-
+import { useEffect, useRef, useState } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { useEffect, useState } from "react";
-import { useDashboardLocalData } from "../hooks/useDashboardLocalData";
-import DetailWindow from "../components/DetailWindow";
-import { buildLocalLeadTimeDetails, filterDashboardRows, getDashboardLocalDataset } from "../services/dashboardLocalStore";
-
-
-
-import type { GlobalFilters } from "../types/dashboardFilters";
+import { useDashboardQuery } from "../hooks/useDashboardQuery";
+import { getLeadTimeData } from "../services/dashboardAnalytics";
+import { getCached, setCached } from "../hooks/dashboardCache";
+import { subscribeDashboardRefresh } from "../hooks/dashboardRefreshBus";
+import { GlobalFilters, EMPTY_GLOBAL_FILTERS, dashboardFilterParams } from "../types/dashboardFilters";
+import Modal from "../components/Modal";
 import { GlassCard } from "../design-system/GlassCard";
 import { GlassPanel } from "../design-system/GlassPanel";
 import { GlassTable } from "../design-system/GlassTable";
 import MultiSelectSlicer from "../components/MultiSelectSlicer";
 import { GlassFilterBar } from "../design-system/GlassFilter";
-import { CHART_PALETTE, chartGrid, chartAxisTick, chartAxisLine, GlassTooltip, ChartPanel, chartBarProps } from "../design-system/chartTheme";
-import { Timer, BarChart3 } from "lucide-react";
+import { CHART_PALETTE, chartGrid, chartAxisTick, chartAxisLine, GlassTooltip } from "../design-system/chartTheme";
 
 export interface DetailRow { invoice_no: string; driver_name: string; customer_name: string; invoice_date: string; dispatch_date: string; days: number; }
 export interface BandClassificationMatrix {
@@ -65,9 +62,41 @@ export interface LeadTimeData {
  * fields only this tab and Export care about would touch every tab's
  * fetch timing for no reason. */
 export function useLeadTimeData(driver: string, globalFilters?: GlobalFilters) {
-  return useDashboardLocalData<LeadTimeData>("/dashboard/lead-time", globalFilters, driver);
+  const gf = globalFilters || EMPTY_GLOBAL_FILTERS;
+  const params = new URLSearchParams(dashboardFilterParams(driver, gf));
+  const cacheKey = `/dashboard/lead-time?${params.toString()}`;
+  const [data, setData] = useState<LeadTimeData | null>(() => getCached<LeadTimeData>(cacheKey) ?? null);
+  const [error, setError] = useState("");
+
+  async function load() {
+    try {
+      const d: LeadTimeData = await getLeadTimeData<LeadTimeData>(params);
+      setData(d);
+      setCached(cacheKey, d);
+      setError("");
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [driver, gf.drivers, gf.areas, gf.division, gf.route_type,
+      gf.vehicle_type, gf.facility_type, gf.salesman, gf.start_date, gf.end_date,
+      gf.lead_time_band, gf.classification]);
+
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  useEffect(() => subscribeDashboardRefresh(() => loadRef.current()), []);
+
+  return { data, error };
 }
 
+/** Lead Time Band + Classification slicer bar - the two filters at
+ * minimum required to affect the Lead Time Dashboard's own KPIs/charts/
+ * tables, on top of the existing Dispatch Date (Global Filters date
+ * range, unchanged) and every other Global Filters slicer. */
 export function LeadTimeFilterBar({
   data, band, setBand, classification, setClassification,
 }: {
@@ -90,103 +119,26 @@ export function LeadTimeFilterBar({
   );
 }
 
-function LeadTimeDetailModal({
-  kind,
-  driver,
-  globalFilters,
-  data,
-  onClose,
-}: {
-  kind: "fastest" | "longest";
-  driver: string;
-  globalFilters?: GlobalFilters;
-  data: LeadTimeData;
-  onClose: () => void;
-}) {
-  const initialRows = kind === "fastest" ? data.fastest_detail : data.longest_detail;
-  const [rows, setRows] = useState<DetailRow[]>(() => initialRows);
-  const [loading, setLoading] = useState(initialRows.length === 0);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [truncated, setTruncated] = useState(false);
-  const [total, setTotal] = useState(initialRows.length);
-  const [offset, setOffset] = useState(initialRows.length);
-
-  const effectiveFilters: GlobalFilters = {
-    ...(globalFilters || {
-      drivers: "", areas: "", division: "", route_type: "", vehicle_type: "",
-      facility_type: "", salesman: "", start_date: "", end_date: "",
-      lead_time_band: "", classification: "",
-    }),
-    drivers: driver
-      ? [...new Set([driver, ...String(globalFilters?.drivers || "").split(",").map((x) => x.trim()).filter(Boolean)])].join(",")
-      : String(globalFilters?.drivers || ""),
-  };
-
-  function loadBatch(nextOffset: number, append: boolean) {
-    const dataset = getDashboardLocalDataset();
-    if (!dataset) {
-      setLoading(false);
-      return;
-    }
-
-    if (append) setLoadingMore(true); else setLoading(true);
-    try {
-      const filtered = filterDashboardRows(dataset, effectiveFilters);
-      const result = buildLocalLeadTimeDetails(filtered, effectiveFilters, kind, nextOffset, 100);
-      setRows((prev) => append ? [...prev, ...result.rows] : result.rows);
-      setOffset(nextOffset + result.rows.length);
-      setTruncated(result.truncated);
-      setTotal(result.total);
-    } finally {
-      if (append) setLoadingMore(false); else setLoading(false);
-    }
-  }
-
-  // The KPI data already contains the exact first 100 Lead Time rows used by
-  // the visible card. Use those rows immediately so opening the popup cannot
-  // lose the data while re-reading the local dataset. Additional rows still
-  // come from the same local dataset in 100-row batches.
-  useEffect(() => {
-    const dataset = getDashboardLocalDataset();
-    if (!dataset) {
-      setLoading(false);
-      return;
-    }
-    const filtered = filterDashboardRows(dataset, effectiveFilters);
-    const result = buildLocalLeadTimeDetails(filtered, effectiveFilters, kind, 0, 100);
-    setTotal(result.total);
-    setTruncated(initialRows.length < result.total);
-    if (!initialRows.length && result.rows.length) {
-      setRows(result.rows);
-      setOffset(result.rows.length);
-    }
-    setLoading(false);
-  // The popup is mounted for one specific KPI/filter state; don't reset its
-  // loaded rows on parent re-renders.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
+function DetailModal({ kind, rows, onClose }: { kind: "fastest" | "longest"; rows: DetailRow[]; onClose: () => void }) {
   return (
-    <DetailWindow
-      title={kind === "fastest" ? "Fastest Invoices" : "Longest Lead Time Invoices"}
-      columns={[
-        { key: "invoice_no", label: "Invoice" },
-        { key: "driver_name", label: "Driver" },
-        { key: "customer_name", label: "Customer" },
-        { key: "invoice_date", label: "Invoice Date" },
-        { key: "dispatch_date", label: "Dispatch Date" },
-        { key: "days", label: "Days" },
-      ]}
-      rows={rows}
-      loading={loading}
-      loadingMore={loadingMore}
-      truncated={truncated}
-      totalMatching={total}
-      onLoadMore={() => {
-        if (!loadingMore && truncated) loadBatch(offset, true);
-      }}
-      onClose={onClose}
-    />
+    <Modal title={kind === "fastest" ? "Fastest Invoices" : "Longest Lead Time Invoices"} onClose={onClose}>
+      <GlassTable.Wrap>
+        <GlassTable.Root>
+          <GlassTable.Header>
+            <tr><GlassTable.Th>Invoice</GlassTable.Th><GlassTable.Th>Driver</GlassTable.Th><GlassTable.Th>Customer</GlassTable.Th><GlassTable.Th>Invoice Date</GlassTable.Th><GlassTable.Th>Dispatch Date</GlassTable.Th><GlassTable.Th>Days</GlassTable.Th></tr>
+          </GlassTable.Header>
+          <GlassTable.Body>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <GlassTable.Td>{r.invoice_no}</GlassTable.Td><GlassTable.Td>{r.driver_name}</GlassTable.Td><GlassTable.Td>{r.customer_name}</GlassTable.Td>
+                <GlassTable.Td>{r.invoice_date}</GlassTable.Td><GlassTable.Td>{r.dispatch_date}</GlassTable.Td>
+                <GlassTable.Td className="font-mono font-bold tabular-nums">{r.days}</GlassTable.Td>
+              </tr>
+            ))}
+          </GlassTable.Body>
+        </GlassTable.Root>
+      </GlassTable.Wrap>
+    </Modal>
   );
 }
 
@@ -205,37 +157,37 @@ export function TotalInvoicesKpi({ data }: { data: LeadTimeData }) {
 export function OverallAvgKpi({ data }: { data: LeadTimeData }) {
   return <KpiTile value={data.kpis.overall_avg_days ?? "N/A"} label="Overall Avg Lead Time" />;
 }
-export function FastestKpi({ data, driver = "", globalFilters }: { data: LeadTimeData; driver?: string; globalFilters?: GlobalFilters }) {
+export function FastestKpi({ data }: { data: LeadTimeData }) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <KpiTile value={data.kpis.fastest_days ?? "N/A"} label="Fastest (days)" onClick={() => setOpen(true)} />
-      {open && <LeadTimeDetailModal kind="fastest" driver={driver} globalFilters={globalFilters} data={data} onClose={() => setOpen(false)} />}
+      {open && <DetailModal kind="fastest" rows={data.fastest_detail} onClose={() => setOpen(false)} />}
     </>
   );
 }
-export function LongestKpi({ data, driver = "", globalFilters }: { data: LeadTimeData; driver?: string; globalFilters?: GlobalFilters }) {
+export function LongestKpi({ data }: { data: LeadTimeData }) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <KpiTile value={data.kpis.longest_days ?? "N/A"} label="Longest (days)" onClick={() => setOpen(true)} />
-      {open && <LeadTimeDetailModal kind="longest" driver={driver} globalFilters={globalFilters} data={data} onClose={() => setOpen(false)} />}
+      {open && <DetailModal kind="longest" rows={data.longest_detail} onClose={() => setOpen(false)} />}
     </>
   );
 }
 export function AvgByClassificationChart({ data }: { data: LeadTimeData }) {
   return (
-    <ChartPanel title="Avg Lead Time by Classification" icon={Timer}>
+    <GlassPanel title="⏱ Avg Lead Time by Classification">
       <ResponsiveContainer width="100%" height={260}>
         <BarChart data={data.by_classification} layout="vertical">
           <CartesianGrid {...chartGrid} />
           <XAxis type="number" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} />
           <YAxis type="category" dataKey="name" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} width={100} />
           <Tooltip content={<GlassTooltip />} cursor={{ fill: "var(--row-hover)" }} />
-          <Bar dataKey="avg_days" fill={CHART_PALETTE[1]} {...chartBarProps} />
+          <Bar dataKey="avg_days" fill={CHART_PALETTE[1]} radius={[0, 4, 4, 0]} />
         </BarChart>
       </ResponsiveContainer>
-    </ChartPanel>
+    </GlassPanel>
   );
 }
 export function DistributionChart({ data }: { data: LeadTimeData }) {
@@ -244,17 +196,17 @@ export function DistributionChart({ data }: { data: LeadTimeData }) {
   // appending "day(s)" onto a raw numeric bin like "0"/"7+".
   const distChart = data.distribution.bins.map((b, i) => ({ name: b, count: data.distribution.counts[i] }));
   return (
-    <ChartPanel title="Lead Time Distribution" icon={BarChart3}>
+    <GlassPanel title="📊 Lead Time Distribution">
       <ResponsiveContainer width="100%" height={260}>
         <BarChart data={distChart}>
           <CartesianGrid {...chartGrid} />
           <XAxis dataKey="name" tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} />
           <YAxis tick={chartAxisTick} axisLine={chartAxisLine} tickLine={false} />
           <Tooltip content={<GlassTooltip />} cursor={{ fill: "var(--row-hover)" }} />
-          <Bar dataKey="count" fill={CHART_PALETTE[0]} {...chartBarProps} radius={[4, 4, 0, 0]} />
+          <Bar dataKey="count" fill={CHART_PALETTE[0]} radius={[4, 4, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
-    </ChartPanel>
+    </GlassPanel>
   );
 }
 export function ByClassificationTable({ data }: { data: LeadTimeData }) {
@@ -328,7 +280,7 @@ function withLeadTimeData<P extends { data: LeadTimeData }>(Comp: (p: P) => JSX.
     const { data, error } = useLeadTimeData(driver, globalFilters);
     if (error) return <div className="glass-card error-text">{error}</div>;
     if (!data) return <div>Loading...</div>;
-    return <Comp {...({ ...(rest as unknown as P), data, driver, globalFilters } as P)} />;
+    return <Comp {...(rest as unknown as P)} data={data} />;
   };
 }
 export const StandaloneTotalInvoicesKpi = withLeadTimeData(TotalInvoicesKpi);

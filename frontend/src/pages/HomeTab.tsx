@@ -56,7 +56,7 @@ function SectionSkeleton({ label }: { label: string }) {
 }
 
 export default function HomeTab({ driver, onSelectDriver, onDriverListLoaded, globalFilters }: Props) {
-  const { data, error, openDetail, closeDetail, detailMetric, detailTitle, detailRows, detailLoading, detailLoadingMore, detailTruncated, detailTotal, loadMoreDetail, searchDetail } =
+  const { data, error, openDetail, closeDetail, detailMetric, detailTitle, detailRows, detailLoading, detailTruncated, detailTotal } =
     useHomeData(driver, globalFilters, onDriverListLoaded);
   // The full Overview response is now a compact server-side RPC, so a
   // second parallel KPI request is no longer necessary.
@@ -97,9 +97,6 @@ export default function HomeTab({ driver, onSelectDriver, onDriverListLoaded, gl
           loading={detailLoading}
           truncated={detailTruncated}
           totalMatching={detailTotal}
-          loadingMore={detailLoadingMore}
-          onLoadMore={loadMoreDetail}
-          onSearch={searchDetail}
           onClose={closeDetail}
         />
       )}

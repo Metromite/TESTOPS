@@ -1,7 +1,11 @@
 import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTheme } from "./theme/ThemeProvider";
-import { loginAppUser } from "./services/appAuth";
+
+const ACCOUNTS = {
+  admin: { password: "0000", role: "admin" },
+  user: { password: "0000", role: "user" },
+} as const;
 
 export default function Login() {
   const navigate = useNavigate();
@@ -12,7 +16,7 @@ export default function Login() {
   );
 
   const [password, setPassword] = useState(
-    ""
+    localStorage.getItem("dispatchops-remembered-password") || ""
   );
 
   const [remember, setRemember] = useState(
@@ -21,27 +25,55 @@ export default function Login() {
 
   const [error, setError] = useState("");
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
-    try {
-      const account = await loginAppUser(username.trim(), password);
-      sessionStorage.setItem("dispatchops-auth", "true");
-      sessionStorage.setItem("dispatchops-role", account.role);
-      sessionStorage.setItem("dispatchops-username", account.username);
-      sessionStorage.setItem("dispatchops-user-id", account.id);
-      window.dispatchEvent(new Event("dispatchops-auth-change"));
-      if (remember) {
-        localStorage.setItem("dispatchops-remembered-username", account.username);
-        localStorage.setItem("dispatchops-remember-me", "true");
-      } else {
-        localStorage.removeItem("dispatchops-remembered-username");
-        localStorage.removeItem("dispatchops-remember-me");
-      }
-      navigate("/", { replace: true });
-    } catch (e:any) {
-      setError(e?.message || "Invalid username or password.");
+
+    const cleanUsername = username.trim();
+
+    const account = ACCOUNTS[cleanUsername as keyof typeof ACCOUNTS];
+    if (!account || password !== account.password) {
+      setError("Invalid username or password.");
+      return;
     }
+
+    sessionStorage.setItem("dispatchops-auth", "true");
+    sessionStorage.setItem("dispatchops-role", account.role);
+
+window.dispatchEvent(
+  new Event("dispatchops-auth-change")
+);
+
+if (remember) {
+      localStorage.setItem(
+        "dispatchops-remembered-username",
+        cleanUsername
+      );
+
+      localStorage.setItem(
+        "dispatchops-remembered-password",
+        password
+      );
+
+      localStorage.setItem(
+        "dispatchops-remember-me",
+        "true"
+      );
+    } else {
+      localStorage.removeItem(
+        "dispatchops-remembered-username"
+      );
+
+      localStorage.removeItem(
+        "dispatchops-remembered-password"
+      );
+
+      localStorage.removeItem(
+        "dispatchops-remember-me"
+      );
+    }
+
+    navigate("/", { replace: true });
   }
 
   return (

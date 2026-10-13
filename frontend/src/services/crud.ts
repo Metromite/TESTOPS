@@ -13,7 +13,6 @@
 
 import { supabase, getPrimarySupabaseClient, getSecondarySupabaseClient, getTertiarySupabaseClient } from "@/lib/supabase";
 import type { PostgrestError } from "@supabase/supabase-js";
-import { recordRecentAudit } from "./system";
 
 function raise(error: PostgrestError | null, context: string): never | void {
   if (error) {
@@ -58,18 +57,15 @@ export function makeCrudService<Row extends { id: string }, Insert = Partial<Row
       if (mirror && data) {
         for (const target of [secondary, tertiary].filter(Boolean) as any[]) { const { error: mirrorError } = await target.from(table).upsert(data as object, { onConflict: "id" }); raise(mirrorError, `Failed to mirror create ${table}`); }
       }
-      if (data) { try { await recordRecentAudit(table, String((data as any).id ?? ""), "create", {}, data, { source: "crud" }); } catch {} }
       return data as Row;
     },
 
     async update(id: string, patch: Update): Promise<Row> {
-      const before = await primary.from(table).select("*").eq("id", id).maybeSingle();
       const { data, error } = await primary.from(table).update(patch as object).eq("id", id).select().single();
       raise(error, `Failed to update ${table}/${id}`);
       if (mirror && data) {
         for (const target of [secondary, tertiary].filter(Boolean) as any[]) { const { error: mirrorError } = await target.from(table).upsert(data as object, { onConflict: "id" }); raise(mirrorError, `Failed to mirror update ${table}/${id}`); }
       }
-      if (data) { try { await recordRecentAudit(table, id, "update", before.data ?? {}, data, { source: "crud" }); } catch {} }
       return data as Row;
     },
 

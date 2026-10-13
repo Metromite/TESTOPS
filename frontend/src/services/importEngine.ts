@@ -279,11 +279,7 @@ async function updateDailyDivisions(facts: JsonRow[], client = supabase): Promis
   const counts=new Map<string,{person_code:string;person_name:string;work_date:string;consumer:number;pharma:number}>();
   for(const f of facts){const date=clean(f.dispatch_date);if(!date)continue;const sm=clean(f.salesman);const isConsumer=consumers.has(normalizeExperienceMatch(sm));for(const [type,codeRaw,nameRaw] of [["Driver",f.driver_code,f.driver_name],["Helper",f.helper_code,f.helper_name] as const]){const code=clean(codeRaw).toUpperCase();if(!code)continue;const k=`${type}|${code}|${date}`;const x=counts.get(k)||{person_code:code,person_name:clean(nameRaw),work_date:date,consumer:0,pharma:0};if(isConsumer)x.consumer++;else x.pharma++;counts.set(k,x)}}
   // driver_daily_divisions has a legacy name but now intentionally contains both roles.
-  // IMPORTANT: never upsert one row at a time here. A normal SAP export can create
-  // thousands of person/day rows; single-row network calls made the browser appear
-  // frozen and prevented import_batches from ever reaching finalize.
-  const payload=[...counts.values()].map(x=>({person_code:x.person_code,person_name:x.person_name,work_date:x.work_date,division:x.consumer>x.pharma?"Consumer":"Pharma",consumer_invoices:x.consumer,pharma_invoices:x.pharma}));
-  for(let i=0;i<payload.length;i+=250){const{error}=await client.from("driver_daily_divisions").upsert(payload.slice(i,i+250),{onConflict:"person_code,work_date"});if(error)throw new Error(error.message)}
+  for(const x of counts.values()){const payload={person_code:x.person_code,person_name:x.person_name,work_date:x.work_date,division:x.consumer>x.pharma?"Consumer":"Pharma",consumer_invoices:x.consumer,pharma_invoices:x.pharma};const{error}=await client.from("driver_daily_divisions").upsert(payload,{onConflict:"person_code,work_date"});if(error)throw new Error(error.message)}
 }
 
 export async function processExperienceExport(
@@ -299,18 +295,6 @@ export async function processExperienceExport(
   progress({ current_step: "Reading Fleet, People, Areas and Consumer Salesmen masters", progress_pct: 5, total_units: rows.length });
 
   const clients=getFederatedSupabaseClients();
-  // Experience is cumulative. Snapshot the existing history before processing the
-  // new workbook so an upload can never replace/erase older months. New rows are
-  // merged with this history below; rows with the same stable key may be refreshed.
-  const existingExperienceByClient=await Promise.all(clients.map(async client=>{
-    const all:any[]=[]; const pageSize=1000;
-    for(let from=0;;from+=pageSize){
-      const {data,error}=await client.from("experience_history").select("*").range(from,from+pageSize-1);
-      if(error) throw new Error(`Experience history read failed: ${error.message}`);
-      const page=data||[]; all.push(...page); if(page.length<pageSize) break;
-    }
-    return all;
-  }));
   const masterResults=await Promise.all(clients.map(async client=>Promise.all([
     client.from("drivers").select("code,name"),
     client.from("helpers").select("code,name"),
@@ -381,46 +365,9 @@ export async function processExperienceExport(
     }else payloadByConflictKey.set(key,r);
   }
   const payload=[...payloadByConflictKey.values()]; progress({current_step:"Saving unified daily Experience records",progress_pct:70,processed_units:payload.length,total_units:payload.length});
-  for(let projectIndex=0;projectIndex<clients.length;projectIndex++){
-    const client=clients[projectIndex];
-    const oldRows=existingExperienceByClient[projectIndex]||[];
-    const merged=mergeExperienceRowsWithExisting(payload,oldRows);
-    for(let i=0;i<merged.length;i+=250){
-      const batch=merged.slice(i,i+250);
-      const {error}=await client.from("experience_history").upsert(batch,{onConflict:"id"});
-      if(error)throw new Error(`Experience save failed: ${error.message}`);
-    }
-  }
-  progress({status:"completed",current_step:"Experience upload complete",progress_pct:100,processed_units:payload.length,total_units:payload.length,log:`${payload.length} new/updated daily Experience records merged with the existing accumulated history. Older months were preserved.`});
+  for(const client of clients){for(let i=0;i<payload.length;i+=250){const batch=payload.slice(i,i+250);const {error}=await client.from("experience_history").upsert(batch,{onConflict:"experience_key"});if(error)throw new Error(`Experience save failed: ${error.message}`);}}
+  progress({status:"completed",current_step:"Experience upload complete",progress_pct:100,processed_units:payload.length,total_units:payload.length,log:`${payload.length} exact daily unified experience records saved. The uploaded workbook was processed in memory only; it was not imported into SAP Dashboard data or retained as an SAP import.`});
   return {rows:payload.length,days:new Set(payload.map(x=>`${x.person_type}|${x.person_code}|${x.date}`)).size,people:new Set(payload.map(x=>`${x.person_type}|${x.person_code}`)).size};
-}
-
-function experienceStableKey(r:any): string {
-  return `${clean(r.person_code).toUpperCase()}|${clean(r.person_type).toUpperCase()}|${clean(r.date)}|${normalizeAreaKey(clean(r.area_code) && clean(r.area_code).toUpperCase()!=="UNKNOWN" ? r.area_code : r.area)}|${normalizeVehicle(r.vehicle_number)}`;
-}
-function experienceDailyKey(r:any): string {
-  return `${clean(r.person_code).toUpperCase()}|${clean(r.person_type).toUpperCase()}|${clean(r.date)}|${clean(r.area)}|${clean(r.vehicle_number)}`;
-}
-function mergeExperienceRowsWithExisting(incoming:any[], existing:any[]): any[] {
-  const byStable=new Map<string,any>(); const byDaily=new Map<string,any>();
-  for(const row of existing){
-    if(row?.id){
-      byStable.set(experienceStableKey(row),row);
-      byDaily.set(experienceDailyKey(row),row);
-    }
-  }
-  const seenStable=new Set<string>(); const seenDaily=new Set<string>(); const merged:any[]=[];
-  for(const row of incoming){
-    const stable=experienceStableKey(row); const daily=experienceDailyKey(row);
-    // Stable key is the canonical identity, while the daily key is the database's
-    // second unique constraint. Reuse an existing row id before upserting so neither
-    // unique index can be hit by an UPDATE/INSERT conflict.
-    const existingRow=byDaily.get(daily)||byStable.get(stable);
-    if(seenStable.has(stable) || seenDaily.has(daily)) continue;
-    seenStable.add(stable); seenDaily.add(daily);
-    merged.push(existingRow?.id ? {...row,id:existingRow.id} : row);
-  }
-  return merged;
 }
 
 function normalizeAreaKey(value: unknown): string { return clean(value).toUpperCase().replace(/[^A-Z0-9]/g, ""); }
@@ -574,19 +521,7 @@ export async function importExperienceDataExport(file: File, onProgress?: (p: Im
   // on the canonical stored Area + Vehicle Number values.
   const dedupe=new Map<string,any>(); for(const r of payload){const k=`${clean(r.person_code).toUpperCase()}|${clean(r.person_type)}|${clean(r.date)}|${clean(r.area)}|${clean(r.vehicle_number)}`; const old=dedupe.get(k); if(old){old.order_count=Math.max(Number(old.order_count||0),Number(r.order_count||0));old.consumer_orders=Math.max(Number(old.consumer_orders||0),Number(r.consumer_orders||0));old.pharma_orders=Math.max(Number(old.pharma_orders||0),Number(r.pharma_orders||0));}else dedupe.set(k,r);}
   const cleanPayload=[...dedupe.values()]; progress({current_step:"Merging Experience without duplicates",progress_pct:70,processed_units:0,total_units:cleanPayload.length});
-  for(const c of clients){
-    const existing:any[]=[]; const pageSize=1000;
-    for(let from=0;;from+=pageSize){
-      const {data,error}=await c.from("experience_history").select("*").range(from,from+pageSize-1);
-      if(error) throw new Error(`Experience history read failed: ${error.message}`);
-      const page=data||[]; existing.push(...page); if(page.length<pageSize) break;
-    }
-    const merged=mergeExperienceRowsWithExisting(cleanPayload,existing);
-    for(let i=0;i<merged.length;i+=250){
-      const {error}=await c.from("experience_history").upsert(merged.slice(i,i+250),{onConflict:"id"});
-      if(error) throw new Error(`Experience backup import failed: ${error.message}`);
-    }
-  }
+  for(const c of clients) for(let i=0;i<cleanPayload.length;i+=250){const {error}=await c.from("experience_history").upsert(cleanPayload.slice(i,i+250),{onConflict:"experience_key"});if(error) throw new Error(`Experience backup import failed: ${error.message}`);}
   progress({status:"completed",current_step:"Experience backup import complete",progress_pct:100,processed_units:cleanPayload.length,total_units:cleanPayload.length,log:`${cleanPayload.length} records merged. ${skipped} records were skipped because the Driver/Helper code is not currently in the master.`});
   return {rows:cleanPayload.length,skipped_people:skipped};
 }
@@ -611,11 +546,7 @@ export async function processImportFile(
       throw new Error(errors.join("\n"));
     }
     progress({ current_step: "Saving raw audit rows", processed_units: 0, total_units: rows.length, progress_pct: 25 });
-    await insertRawImportRows(
-      rows.map((row, index) => ({ source_type: sourceType, batch_id: batch!.id, source_filename: file.name, row_index: index, row_json: row, imported_by: "", label: "" })),
-      importClient,
-      (processed, total) => progress({ current_step: `Saving raw audit rows (${processed.toLocaleString()}/${total.toLocaleString()})`, processed_units: processed, total_units: total, progress_pct: 25 + Math.round((processed / Math.max(total, 1)) * 20) })
-    );
+    await insertRawImportRows(rows.map((row, index) => ({ source_type: sourceType, batch_id: batch!.id, source_filename: file.name, row_index: index, row_json: row, imported_by: "", label: "" })), importClient);
     let facts: JsonRow[] = [], rejected: string[] = [];
     if (sourceType === "sap") {
       ({ facts, rejected } = parseSapFacts(rows, batch.id, file.name));
@@ -646,61 +577,33 @@ export async function processImportFile(
 }
 
 export async function getImportBatchesForUi() {
-  const clients = getFederatedSupabaseClients();
-  const projectNames = ["primary", "secondary", "tertiary"] as const;
-  const all: any[] = [];
-  for (let i = 0; i < clients.length; i++) {
-    const client = clients[i];
-    const { data, error } = await client.from("import_batches").select("*").is("deleted_at", null).order("imported_at", { ascending: false });
-    if (error) throw new Error(error.message);
-    for (const b of data || []) {
-      const table = b.source_type === "sap" ? "sap_invoice_facts" : "landmark_visit_facts";
-      const [{ count: rawCount }, { count: factCount }] = await Promise.all([
-        client.from("raw_import_rows").select("id", { count: "exact", head: true }).eq("batch_id", b.id),
-        client.from(table).select("id", { count: "exact", head: true }).eq("batch_id", b.id),
-      ]);
-      all.push({
-        batch_id: b.id, source_type: b.source_type, filename: b.original_filename || b.file_name || "",
-        imported_by: b.imported_by || "", label: b.label || "", imported_at: b.imported_at || b.created_at,
-        // The batch metadata is the authoritative persisted count. The direct COUNT query can
-        // legitimately return 0 when a client cannot see the child rows even though the import
-        // completed successfully, so never display a false zero when the batch recorded rows.
-        raw_row_count: Math.max(Number(rawCount || 0), Number(b.row_count || 0)),
-        parsed_fact_count: Math.max(Number(factCount || 0), Number(b.success_count || 0)),
-        status: b.status, error_message: b.error_message || "", storage_project: projectNames[i],
-      });
-    }
-  }
-  return all.sort((a, b) => String(b.imported_at || "").localeCompare(String(a.imported_at || "")));
+  const batches = await listImportHistory();
+  return Promise.all(batches.map(async (b) => {
+    const table = b.source_type === "sap" ? "sap_invoice_facts" : "landmark_visit_facts";
+    const { count } = await supabase.from(table).select("id", { count: "exact", head: true }).eq("batch_id", b.id);
+    return { batch_id: b.id, source_type: b.source_type, filename: b.original_filename, imported_by: b.imported_by, label: (b as ImportBatch & { label?: string }).label || "", imported_at: b.imported_at, raw_row_count: b.row_count, parsed_fact_count: count || b.success_count, storage_path: b.storage_path };
+  }));
 }
 
 export async function getImportBatchRows(batchId: string, limit = 25) {
-  let owner: any = null;
-  for (const c of getFederatedSupabaseClients()) { const r = await c.from("import_batches").select("storage_project").eq("id", batchId).maybeSingle(); if (r.error) throw new Error(r.error.message); if (r.data) { owner = r.data; break; } }
-  const client = getSupabaseClientByProject(owner?.storage_project === "secondary" ? "secondary" : owner?.storage_project === "tertiary" ? "tertiary" : "primary");
-  const { data, error, count } = await client.from("raw_import_rows").select("row_index,row_json", { count: "exact" }).eq("batch_id", batchId).order("row_index").limit(limit);
+  const { data, error, count } = await supabase.from("raw_import_rows").select("row_index,row_json", { count: "exact" }).eq("batch_id", batchId).order("row_index").limit(limit);
   if (error) throw new Error(error.message);
   return { total: count || 0, limit, offset: 0, rows: (data || []).map((r) => ({ row_index: r.row_index, data: JSON.stringify(r.row_json) })) };
 }
 
 export async function labelImportBatch(batchId: string, label: string) {
-  let batch: any = null;
-  for (const c of getFederatedSupabaseClients()) { const r = await c.from("import_batches").select("storage_project").eq("id", batchId).maybeSingle(); if (r.error) throw new Error(r.error.message); if (r.data) { batch = r.data; break; } }
-  const client = getSupabaseClientByProject(batch?.storage_project === "secondary" ? "secondary" : batch?.storage_project === "tertiary" ? "tertiary" : "primary");
-  const { error } = await client.from("import_batches").update({ label }).eq("id", batchId);
-  if (error) throw new Error(error.message);
+  const { data: batch, error: findError } = await supabase.from("import_batches").select("storage_project").eq("id", batchId).maybeSingle();
+  if (findError) throw new Error(findError.message);
+  const client = getSupabaseClientByProject((batch?.storage_project as any) || "primary");
+  const { error } = await client.from("import_batches").update({ label }).eq("id", batchId); if (error) throw new Error(error.message);
   await client.from("raw_import_rows").update({ label }).eq("batch_id", batchId);
 }
 
 export async function deleteImportedData(batchId: string) {
-  let batch: any = null;
-  for (const c of getFederatedSupabaseClients()) { const r = await c.from("import_batches").select("storage_project,storage_bucket,storage_path").eq("id", batchId).maybeSingle(); if (r.error) throw new Error(r.error.message); if (r.data) { batch = r.data; break; } }
-  if (!batch) throw new Error("Import batch not found");
-  const client = getSupabaseClientByProject(batch.storage_project === "secondary" ? "secondary" : batch.storage_project === "tertiary" ? "tertiary" : "primary");
-  if (batch.storage_path) {
-    const { error: storageError } = await client.storage.from(batch.storage_bucket || "dispatchops-files").remove([batch.storage_path]);
-    if (storageError) throw new Error(`Storage: ${storageError.message}`);
-  }
+  // Delete from the project that owns the batch. Reads remain federated.
+  const { data: batch, error: findError } = await supabase.from("import_batches").select("storage_project").eq("id", batchId).maybeSingle();
+  if (findError) throw new Error(findError.message);
+  const client = getSupabaseClientByProject((batch?.storage_project as any) || "primary");
   for (const table of ["sap_invoice_facts", "landmark_visit_facts", "raw_import_rows"] as const) {
     const { error } = await client.from(table).delete().eq("batch_id", batchId);
     if (error) throw new Error(`${table}: ${error.message}`);

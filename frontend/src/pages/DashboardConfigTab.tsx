@@ -199,7 +199,7 @@ export default function DashboardConfigTab() {
                       <td>{r.negate ? "Yes" : "—"}</td>
                       <td>{r.logic || "OR"}</td>
                       <td>{r.note || "—"}</td>
-                      <td></td>
+                      <td><button className="btn" style={{ background: "var(--red)" }} onClick={() => deleteRule(r.id)}>Remove</button></td>
                     </tr>
                   );
                 })}
@@ -348,7 +348,7 @@ function SalesmanCategorization() {
           {assigned.map((a) => (
             <tr key={a.id}>
               <td>{a.name}</td><td>{a.assigned_by || "—"}</td>
-              <td></td>
+              <td><button className="btn" style={{ background: "var(--red)" }} onClick={() => unassign(a.id)}>Remove</button></td>
             </tr>
           ))}
         </tbody>
