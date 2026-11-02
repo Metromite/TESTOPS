@@ -126,7 +126,10 @@ export default function Dashboard() {
   const preloadedRange = getPreloadedDashboardRange();
   const [dateFrom, setDateFrom] = useState(preloadedRange?.start || "");
   const [dateTo, setDateTo] = useState(preloadedRange?.end || "");
-  const [latestRangeReady, setLatestRangeReady] = useState(() => Boolean(preloadedRange?.start && preloadedRange?.end));
+  // Always verify the cached month against the live imported SAP data on each Dashboard mount.
+  // A cached September range must not suppress the latest-month lookup after October (or any
+  // future month) has been uploaded. The cached range remains a fast initial display only.
+  const [latestRangeReady, setLatestRangeReady] = useState(false);
   const [localDataset, setLocalDataset] = useState(() => getDashboardLocalDataset());
   const [initialLoadingProgress, setInitialLoadingProgress] = useState(() => getDashboardLocalLoadingProgress());
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);

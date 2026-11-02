@@ -491,7 +491,12 @@ export function buildLocalHome(rows: LocalSapRow[], routeCards: RouteCard[]): Ho
     boxes += r.boxes; normal += r.normal_boxes; freezer += r.freezer_boxes;
     if (r.not_supplied_reason) notSupplied++;
     if (r.customer_name) customers.add(r.customer_name);
-    if (r.vehicle_key) vehicles.add(r.vehicle_key);
+    // October imports can contain a valid vehicle_num while vehicle_key is blank.
+    // Count by the canonical key when present, otherwise fall back to the source
+    // vehicle number; normalize formatting so duplicate spellings do not inflate
+    // the KPI and valid vehicles are not silently omitted.
+    const vehicleIdentity = normalizeMatchKey(r.vehicle_key || r.vehicle_num);
+    if (vehicleIdentity) vehicles.add(vehicleIdentity);
     if (r.facility_type) facilities.set(r.facility_type, (facilities.get(r.facility_type) || 0) + 1);
     if (r.vehicle_type) { const v = vehicleTypes.get(r.vehicle_type) || { normal: 0, freezer: 0 }; v.normal += r.normal_boxes; v.freezer += r.freezer_boxes; vehicleTypes.set(r.vehicle_type, v); }
     if (r.driver_name) {
