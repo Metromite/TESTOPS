@@ -67,14 +67,22 @@ async function fetchAllFromProjects<T>(table: string, columns: string, filters: 
       let q = client.from(table).select(columns);
       q = filters(q);
       const { data, error } = await q.range(from, from + pageSize - 1);
-      if (error) throw new Error(error.message);
+      if (error) {
+        if (out.length) break;
+        throw new Error(error.message);
+      }
       const page = (data || []) as T[];
       out.push(...page);
       if (page.length < pageSize) break;
     }
     return out;
   };
-  const chunks = await Promise.all(clients.map(fetchOne));
+  const settled = await Promise.allSettled(clients.map(fetchOne));
+  const chunks = settled.filter((item): item is PromiseFulfilledResult<T[]> => item.status === "fulfilled").map((item) => item.value);
+  if (!chunks.length) {
+    const failure = settled.find((item): item is PromiseRejectedResult => item.status === "rejected");
+    throw new Error(failure?.reason?.message || `Unable to read ${table} from any configured database.`);
+  }
   return chunks.flat();
 }
 
@@ -83,12 +91,17 @@ async function getRouteAreaNames(selectedRouteTypes: string[]): Promise<Set<stri
   const key = `route-areas:${selectedRouteTypes.slice().sort().join("|")}`;
   return cachedAnalytics(key, async () => {
     const { getFederatedSupabaseClients } = await import("@/lib/supabase");
-    const rows: any[] = [];
-    for (const client of getFederatedSupabaseClients()) {
+    const settled = await Promise.allSettled(getFederatedSupabaseClients().map(async (client) => {
       const { data, error } = await client.from("areas").select("code,name,route_type");
       if (error) throw new Error(error.message);
-      rows.push(...(data || []));
+      return data || [];
+    }));
+    const successful = settled.filter((item): item is PromiseFulfilledResult<any[]> => item.status === "fulfilled");
+    if (!successful.length) {
+      const failed = settled.find((item): item is PromiseRejectedResult => item.status === "rejected");
+      throw new Error(failed?.reason?.message || "Unable to read areas from configured databases.");
     }
+    const rows = successful.flatMap((item) => item.value);
     const wanted = new Set(selectedRouteTypes);
     return new Set(rows.filter(r => wanted.has(String(r.route_type || ""))).flatMap(r => [r.code, r.name]).filter(Boolean).map(String));
   });
@@ -137,8 +150,11 @@ async function landmarkRows(params: URLSearchParams, sap: SapFact[]): Promise<Lm
     if (!selectedDrivers.size && !singleDriver) return raw;
     const allowedDrivers = new Set<string>(selectedDrivers);
     if (singleDriver) allowedDrivers.add(singleDriver);
-    const allowedVehicles = new Set(sap.filter(r => allowedDrivers.has(String(r.driver_name || ""))).map(r => String(r.vehicle_key || "")).filter(Boolean));
-    return raw.filter(r => allowedVehicles.has(String(r.vehicle_key || "")) || allowedDrivers.has(String(r.driver_name || "")));
+    const allowedVehicles = new Set(sap.filter(r => allowedDrivers.has(String(r.driver_name || ""))).flatMap(r => [r.vehicle_key, r.vehicle_num]).map(value => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "")).filter(Boolean));
+    return raw.filter(r =>
+      [r.vehicle_key, r.vehicle_raw].some(value => allowedVehicles.has(String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""))) ||
+      allowedDrivers.has(String(r.driver_name || ""))
+    );
   });
 }
 
@@ -214,29 +230,46 @@ function mergeSnapshot(a: DashboardSnapshot, b: DashboardSnapshot): DashboardSna
 
   const ns=[...(a.not_supplied?.not_supplied||[]),...(b.not_supplied?.not_supplied||[])];
   const zero=[...(a.not_supplied?.zero_box_excluded_from_kpis||[]),...(b.not_supplied?.zero_box_excluded_from_kpis||[])];
-  const perfCards=[...(a.driver_performance?.route_cards||[]),...(b.driver_performance?.route_cards||[])];
-  // Route detail remains vehicle-level, but all performance charts are DRIVER-level.
-  // A driver can use multiple vehicles during the selected period, so aggregate all
-  // vehicle cards under the resolved driver name before building chart series.
+  const rawPerfCards=[...(a.driver_performance?.route_cards||[]),...(b.driver_performance?.route_cards||[])];
+  const routeKey=(r:any)=>`${String(r.vehicle_key||r.vehicle_num||"").toLowerCase().replace(/[^a-z0-9]/g,"")}::${String(r.route_start||r.route_end||"").slice(0,10)}::${String(r.display_driver||r.driver_name||"").toLowerCase().replace(/[^a-z0-9]/g,"")}`;
+  const routeMap=new Map<string,any>();
+  for(const r of rawPerfCards){const key=routeKey(r);if(key!=="::::"&&!routeMap.has(key))routeMap.set(key,r);}
+  const perfCards=[...routeMap.values()];
+  // KPI tiles, charts and route details must use the same de-duplicated routes.
+  const cardHours=(r:any)=>{const hm=String(r.route_duration_hm||"").match(/(\d+)h\s+(\d+)m/);return hm?Number(hm[1])+Number(hm[2])/60:num(r._hours);};
   const driverChartMap=new Map<string,{stops:number;hours:number}>();
   for(const r of perfCards){
     const driver=String(r.display_driver||r.driver_name||'Unknown').trim()||'Unknown';
     const old=driverChartMap.get(driver)||{stops:0,hours:0};
     old.stops+=num(r.stops);
-    old.hours+=num(r._hours);
+    old.hours+=cardHours(r);
     driverChartMap.set(driver,old);
   }
   const driverChartRows=[...driverChartMap.entries()].map(([driver,v])=>({driver,stops:v.stops,hours:Math.round(v.hours*100)/100})).sort((x,y)=>y.stops-x.stops);
   const perf={...a.driver_performance,kpis:{...a.driver_performance?.kpis},route_cards:perfCards,chart_stops:{labels:driverChartRows.map(r=>r.driver),values:driverChartRows.map(r=>r.stops)},chart_route_hours:{labels:driverChartRows.map(r=>r.driver),values:driverChartRows.map(r=>r.hours)}};
-  if(perf.kpis){perf.kpis.gps_vehicles=num(a.driver_performance?.kpis?.gps_vehicles)+num(b.driver_performance?.kpis?.gps_vehicles);perf.kpis.total_gps_stops=num(a.driver_performance?.kpis?.total_gps_stops)+num(b.driver_performance?.kpis?.total_gps_stops);perf.kpis.sap_orders=num(a.driver_performance?.kpis?.sap_orders)+num(b.driver_performance?.kpis?.sap_orders);perf.kpis.sap_total_boxes=num(a.driver_performance?.kpis?.sap_total_boxes)+num(b.driver_performance?.kpis?.sap_total_boxes);}
+  if(perf.kpis){
+    const gpsVehicles=new Set(perfCards.map((r:any)=>String(r.vehicle_key||r.vehicle_num||"").toLowerCase().replace(/[^a-z0-9]/g,"")).filter(Boolean)).size;
+    const totalStops=perfCards.reduce((sum:number,r:any)=>sum+num(r.stops),0);
+    const routeHours=perfCards.map(cardHours).filter((n:number)=>n>0);
+    perf.kpis.gps_vehicles=gpsVehicles;
+    perf.kpis.total_gps_stops=totalStops;
+    perf.kpis.avg_stops_per_vehicle=gpsVehicles?Math.round(totalStops/gpsVehicles*100)/100:0;
+    perf.kpis.avg_route_duration_hrs=routeHours.length?Math.round(routeHours.reduce((sum:number,n:number)=>sum+n,0)/routeHours.length*100)/100:null;
+    perf.kpis.sap_orders=num(a.driver_performance?.kpis?.sap_orders)+num(b.driver_performance?.kpis?.sap_orders);
+    perf.kpis.sap_total_boxes=num(a.driver_performance?.kpis?.sap_total_boxes)+num(b.driver_performance?.kpis?.sap_total_boxes);
+  }
   return {lead_time:lead,order_summary:{facility_types:facilities,rows:[...orderMap.values()],facility_totals:facilities.map((_,i)=>[...orderMap.values()].reduce((n,r)=>n+num(r.by_facility?.[i]),0)),grand_total:[...orderMap.values()].reduce((n,r)=>n+num(r.total),0)},area_analytics:area,not_supplied:{not_supplied:ns,zero_box_excluded_from_kpis:zero},driver_performance:perf};
 }
 
 async function getDashboardSnapshot<T>(params: URLSearchParams): Promise<DashboardSnapshot> {
   return cachedAnalytics(snapshotKey(params), async()=>{
-    const { getPrimarySupabaseClient, getSecondarySupabaseClient } = await import("@/lib/supabase");
-    const clients=[getPrimarySupabaseClient(), getSecondarySupabaseClient()].filter(Boolean);
-    const parts=await Promise.all(clients.map(c=>fetchSnapshotFromClient(c,params)));
+    const { getFederatedSupabaseClients } = await import("@/lib/supabase");
+    const settled = await Promise.allSettled(getFederatedSupabaseClients().map((client) => fetchSnapshotFromClient(client, params)));
+    const parts = settled.filter((item): item is PromiseFulfilledResult<DashboardSnapshot> => item.status === "fulfilled").map((item) => item.value);
+    if (!parts.length) {
+      const failed = settled.find((item): item is PromiseRejectedResult => item.status === "rejected");
+      throw new Error(failed?.reason?.message || "Dashboard snapshot unavailable from all configured databases.");
+    }
     return parts.reduce((acc:any,part:any)=>acc?mergeSnapshot(acc,part):part,null) as DashboardSnapshot;
   });
 }
@@ -244,16 +277,21 @@ async function getDashboardSnapshot<T>(params: URLSearchParams): Promise<Dashboa
 async function fetchTargetedRpcFromProjects(rpc: string, params: URLSearchParams, key: keyof DashboardSnapshot): Promise<any> {
   const cacheKey = `targeted:${rpc}:${snapshotKey(params)}`;
   return cachedAnalytics(cacheKey, async () => {
-    const { getPrimarySupabaseClient, getSecondarySupabaseClient } = await import("@/lib/supabase");
-    const dashboardClients=[getPrimarySupabaseClient(), getSecondarySupabaseClient()].filter(Boolean);
+    const { getFederatedSupabaseClients } = await import("@/lib/supabase");
+    const dashboardClients = getFederatedSupabaseClients();
     const start = params.get("start_date") || null;
     const end = params.get("end_date") || null;
     const filters = leadTimeFilterJson(params);
-    const parts = await Promise.all(dashboardClients.map(async (client:any) => {
+    const settled = await Promise.allSettled(dashboardClients.map(async (client:any) => {
       const { data, error } = await client.rpc(rpc, { p_start: start, p_end: end, p_filters: filters });
       if (error) throw new Error(error.message);
       return { lead_time:{}, order_summary:{}, area_analytics:{}, not_supplied:{}, driver_performance:{}, [key]: data || {} } as DashboardSnapshot;
     }));
+    const parts = settled.filter((item): item is PromiseFulfilledResult<DashboardSnapshot> => item.status === "fulfilled").map((item) => item.value);
+    if (!parts.length) {
+      const failed = settled.find((item): item is PromiseRejectedResult => item.status === "rejected");
+      throw new Error(failed?.reason?.message || `${rpc} unavailable from all configured databases.`);
+    }
     if (parts.length === 1) return parts[0][key];
     return parts.reduce((acc:any,part:any)=>acc?mergeSnapshot(acc,part):part,null)[key];
   });
@@ -264,12 +302,12 @@ async function orderSummary<T>(params: URLSearchParams): Promise<T> { return fet
 async function areaAnalytics<T>(params: URLSearchParams): Promise<T> { return fetchTargetedRpcFromProjects("dispatchops_dashboard_area_snapshot", params, "area_analytics") as Promise<T>; }
 async function notSupplied<T>(params: URLSearchParams): Promise<T> { return fetchTargetedRpcFromProjects("dispatchops_dashboard_not_supplied_snapshot", params, "not_supplied") as Promise<T>; }
 async function driverPerformance<T>(params: URLSearchParams): Promise<T> {
-  // The two operational projects are allowed to have independent import/RPC
-  // health. A timeout or missing function in one project must not erase the
-  // valid GPS route cards returned by the other (especially in Private mode,
-  // where there is no local cached fallback).
-  const { getPrimarySupabaseClient, getSecondarySupabaseClient } = await import("@/lib/supabase");
-  const clients = [getPrimarySupabaseClient(), getSecondarySupabaseClient()].filter(Boolean);
+  // Each configured project can have independent import/RPC health. A timeout
+  // or missing function in one project must not erase valid GPS route cards
+  // returned by the other projects (especially in Private mode, where there is
+  // no local cached fallback).
+  const { getFederatedSupabaseClients } = await import("@/lib/supabase");
+  const clients = getFederatedSupabaseClients();
   const start = params.get("start_date") || null;
   const end = params.get("end_date") || null;
   const filters = leadTimeFilterJson(params);

@@ -115,6 +115,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
 
         const remoteStops: { labels: string[]; values: number[] } = { labels: [], values: [] };
         const remoteHours: { labels: string[]; values: number[] } = { labels: [], values: [] };
+        const remoteCards: any[] = [];
         for (const remote of remotes) {
           if (!remote) continue;
           const stops = (remote as any)?.chart_stops;
@@ -127,6 +128,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
             remoteHours.labels.push(...hours.labels);
             remoteHours.values.push(...(Array.isArray(hours.values) ? hours.values : []));
           }
+          if (Array.isArray((remote as any)?.route_cards)) remoteCards.push(...(remote as any).route_cards);
         }
 
         const mergeChart = (local: any, remoteChart: any) => {
@@ -144,18 +146,62 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
           return { labels, values };
         };
 
+        // The previous fallback enriched chart labels only, leaving KPI tiles
+        // and Route Detail empty even when the same remote driver RPC returned
+        // real route cards. Merge those cards into the canonical result so all
+        // four KPI tiles, both charts and the detail table describe one dataset.
+        const localCards = Array.isArray((data as any)?.route_cards) ? (data as any).route_cards : [];
+        const routeKey = (card: any) => `${normalize(card?.vehicle_key || card?.vehicle_num)}::${String(card?.route_start || card?.route_end || "").slice(0, 10)}::${normalize(card?.display_driver || card?.driver_name)}`;
+        const mergedCards = [...localCards];
+        const seenCards = new Set(localCards.map(routeKey));
+        for (const card of remoteCards) {
+          const key = routeKey(card);
+          if (key.replace(/:/g, "") && !seenCards.has(key)) {
+            seenCards.add(key);
+            mergedCards.push(card);
+          }
+        }
+
+        if (mergedCards.length > localCards.length) {
+          const stopsTotal = mergedCards.reduce((sum, card) => sum + Number(card?.stops || 0), 0);
+          const gpsVehicles = new Set(mergedCards.map((card) => normalize(card?.vehicle_key || card?.vehicle_num)).filter(Boolean)).size;
+          const routeHours = mergedCards.map((card) => {
+            const m = String(card?.route_duration_hm || "").match(/(\d+)h\s+(\d+)m/);
+            return m ? Number(m[1]) + Number(m[2]) / 60 : 0;
+          }).filter((value) => value > 0);
+          const byDriver = new Map<string, { stops: number; hours: number }>();
+          for (const card of mergedCards) {
+            const name = String(card?.display_driver || card?.driver_name || "Unknown").trim() || "Unknown";
+            const item = byDriver.get(name) || { stops: 0, hours: 0 };
+            item.stops += Number(card?.stops || 0);
+            const m = String(card?.route_duration_hm || "").match(/(\d+)h\s+(\d+)m/);
+            if (m) item.hours += Number(m[1]) + Number(m[2]) / 60;
+            byDriver.set(name, item);
+          }
+          const chartRows = [...byDriver.entries()].map(([name, value]) => ({ name, ...value })).sort((x, y) => y.stops - x.stops);
+          setDriverFallback({
+            ...(data as any),
+            route_cards: mergedCards,
+            kpis: {
+              ...(data as any).kpis,
+              gps_vehicles: gpsVehicles,
+              total_gps_stops: stopsTotal,
+              avg_stops_per_vehicle: gpsVehicles ? Math.round(stopsTotal / gpsVehicles * 100) / 100 : 0,
+              avg_route_duration_hrs: routeHours.length ? Math.round(routeHours.reduce((sum, value) => sum + value, 0) / routeHours.length * 100) / 100 : null,
+            },
+            chart_stops: { labels: chartRows.map((row) => row.name), values: chartRows.map((row) => row.stops) },
+            chart_route_hours: { labels: chartRows.map((row) => row.name), values: chartRows.map((row) => row.hours) },
+          } as T);
+          return;
+        }
+
         const mergedStops = mergeChart(localStops, remoteStops);
         const mergedHours = mergeChart(localHours, remoteHours);
         if (mergedStops.labels.length <= localStops.labels.length && mergedHours.labels.length <= localHours.labels.length) {
           setDriverFallback(null);
           return;
         }
-
-        setDriverFallback({
-          ...(data as any),
-          chart_stops: mergedStops,
-          chart_route_hours: mergedHours,
-        } as T);
+        setDriverFallback({ ...(data as any), chart_stops: mergedStops, chart_route_hours: mergedHours } as T);
       });
       return () => {
         if (seq === driverFallbackSeq.current) driverFallbackSeq.current += 1;

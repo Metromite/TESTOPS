@@ -218,7 +218,10 @@ async function fetchRowsForClient(client: any, start = "", end = "", onPage?: (r
     if (start) q = q.gte("dispatch_date", start);
     if (end) q = q.lte("dispatch_date", end);
     const { data, error } = await q.range(from, from + PAGE - 1);
-    if (error) throw new Error(error.message);
+    if (error) {
+      if (out.length) break;
+      throw new Error(error.message);
+    }
     const page = (data || []).map(normalizeRow);
     out.push(...page);
     onPage?.(page.length);
@@ -838,7 +841,9 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
             const { data, error } = await q.range(from, from + 999);
             if (error) break;
             const page = data || [];
-            lmRows.push(...page.filter((row: any) => hydratedVehicleSet.has(normalizeMatchKey(row.vehicle_key))));
+            lmRows.push(...page.filter((row: any) =>
+              [row.vehicle_key, row.vehicle_raw].some((alias: unknown) => hydratedVehicleSet.has(normalizeMatchKey(alias)))
+            ));
             if (page.length < 1000) break;
           } catch {
             break;
@@ -857,10 +862,13 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
       };
       const gps = new Map<string, GpsBucket>();
       for (const row of lmRows) {
-        const vehicle = normalizeMatchKey(row.vehicle_key);
+        const vehicleAliases = [...new Set([row.vehicle_key, row.vehicle_raw].map(normalizeMatchKey).filter(Boolean))];
         const date = String(row.visit_date || "").slice(0, 10);
-        if (!vehicle || !date) continue;
+        if (!vehicleAliases.length || !date) continue;
         const rawDriver = normalizeDriverIdentity(row.driver_name) || "unknown";
+        // vehicle_key can be blank or stale in a Landmark export; vehicle_raw
+        // often contains the actual vehicle number. Match either alias to SAP.
+        const vehicle = vehicleAliases.find((alias) => ownersByVehicleDay.has(alias)) || vehicleAliases[0];
         const k = `${vehicle}::${date}::${rawDriver}`;
         const item = gps.get(k) || {
           vehicle, date, rawDriver, vehicle_raw: String(row.vehicle_raw || ""),

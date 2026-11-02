@@ -69,7 +69,7 @@ export function saveSupabaseProfiles(profiles: SupabaseProfile[]): void {
 }
 
 export function activateSupabaseProfile(id: string): void {
-  // The federated application always uses Primary + Secondary together.
+  // The federated application reads fact data from Primary + Secondary + Tertiary together.
   // Keep this API for backwards compatibility with the existing Settings UI,
   // but never let it disable the primary/secondary federation.
   localStorage.setItem(ACTIVE_KEY, id);
@@ -107,9 +107,8 @@ const TERTIARY_OWNED_TABLE_PREFIXES = ["bulk_organizer_","department_portal_","d
 function readClientsForTable(table:string): SupabaseClient[] {
   if (SECONDARY_OWNED_TABLE_PREFIXES.some(prefix=>table.startsWith(prefix))) return secondaryClient ? [secondaryClient] : [primaryClient];
   if (TERTIARY_OWNED_TABLE_PREFIXES.some(prefix=>table.startsWith(prefix))) return tertiaryClient ? [tertiaryClient] : [primaryClient];
-  // Operational/master data is canonical on Primary. Only true fact/import tables
-  // remain federated because imports can legitimately overflow into Secondary.
-  if (FEDERATED_FACT_TABLES.has(table)) return [primaryClient, ...(secondaryClient ? [secondaryClient] : [])];
+  // Fact/import data may land in ANY configured project.
+  if (FEDERATED_FACT_TABLES.has(table)) return [primaryClient, ...(secondaryClient ? [secondaryClient] : []), ...(tertiaryClient ? [tertiaryClient] : [])];
   return [primaryClient];
 }
 
@@ -120,17 +119,25 @@ class MultiReadQueryState {
     this.builders = readClientsForTable(table).map(client=>client.from(table));
   }
   async resolve(): Promise<any> {
-    const results = await Promise.all(this.builders.map((b) => Promise.resolve(b)));
-    const errors = results.map((r) => r?.error).filter(Boolean);
-    if (errors.length) return { data: null, error: errors[0], count: null, status: results[0]?.status, statusText: results[0]?.statusText };
-    if (this.singleMode) {
-      const rows = results.flatMap((r) => r?.data == null ? [] : [r.data]).filter(Boolean);
-      if (this.singleMode === "maybeSingle") {
-        return { ...results.find((r) => r?.data != null) ?? results[0], data: rows[0] ?? null, count: results.reduce((s,r)=>s+(r?.count ?? 0),0) || null };
-      }
-      return { ...results[0], data: rows[0] ?? null, count: results.reduce((s,r)=>s+(r?.count ?? 0),0) || null };
+    const settled = await Promise.allSettled(this.builders.map((b) => Promise.resolve(b)));
+    const results = settled.filter((item): item is PromiseFulfilledResult<any> => item.status === "fulfilled").map((item) => item.value);
+    const errors = [
+      ...settled.filter((item): item is PromiseRejectedResult => item.status === "rejected").map((item) => item.reason),
+      ...results.map((r) => r?.error).filter(Boolean),
+    ];
+    // Keep valid rows from healthy projects even when another project is offline.
+    if (!results.length || results.every((r) => r?.error)) {
+      return { data: null, error: errors[0] ?? new Error("All configured database reads failed."), count: null, status: results[0]?.status, statusText: results[0]?.statusText };
     }
-    const rawData = results.flatMap((r) => Array.isArray(r?.data) ? r.data : []);
+    const successfulResults = results.filter((r) => !r?.error);
+    if (this.singleMode) {
+      const rows = successfulResults.flatMap((r) => r?.data == null ? [] : [r.data]).filter(Boolean);
+      if (this.singleMode === "maybeSingle") {
+        return { ...successfulResults.find((r) => r?.data != null) ?? successfulResults[0], data: rows[0] ?? null, count: successfulResults.reduce((s,r)=>s+(r?.count ?? 0),0) || null };
+      }
+      return { ...successfulResults[0], data: rows[0] ?? null, count: successfulResults.reduce((s,r)=>s+(r?.count ?? 0),0) || null };
+    }
+    const rawData = successfulResults.flatMap((r) => Array.isArray(r?.data) ? r.data : []);
     const seen = new Set<string>();
     const data = rawData.filter((row: any) => {
       if (!row || typeof row !== "object") return true;
@@ -141,8 +148,8 @@ class MultiReadQueryState {
       seen.add(k);
       return true;
     });
-    const count = results.some((r) => typeof r?.count === "number") ? results.reduce((s,r)=>s+(typeof r?.count === "number" ? r.count : 0),0) : null;
-    return { ...results[0], data, count };
+    const count = successfulResults.some((r) => typeof r?.count === "number") ? successfulResults.reduce((s,r)=>s+(typeof r?.count === "number" ? r.count : 0),0) : null;
+    return { ...successfulResults[0], data, count };
   }
 }
 
@@ -178,7 +185,7 @@ function createMultiReadQuery(table: string): any {
 }
 /**
  * Stable proxy used by the existing application services.
- * SELECT/read chains are transparently federated across both projects.
+ * SELECT/read chains are transparently federated across all configured projects.
  * Mutations remain on the active/primary project; import-specific writes use
  * getSupabaseClientForImport() so an entire import stays in one project.
  */
