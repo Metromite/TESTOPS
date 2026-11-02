@@ -299,7 +299,22 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     const primaryRows = valueAt(0, [] as LocalSapRow[]);
     const secondaryRows = valueAt(1, [] as LocalSapRow[]);
     const tertiaryRows = valueAt(2, [] as LocalSapRow[]);
-    const routeResult = valueAt(3, { route_cards: [] } as PerfData);
+    const routeResult = valueAt(3, {
+      standalone_mode: false,
+      validation_results: [],
+      kpis: {
+        gps_vehicles: 0,
+        total_gps_stops: 0,
+        avg_stops_per_vehicle: 0,
+        avg_route_duration_hrs: null,
+        avg_stop_duration: "N/A",
+        sap_orders: 0,
+        sap_total_boxes: 0,
+      },
+      chart_stops: { labels: [], values: [] },
+      chart_route_hours: { labels: [], values: [] },
+      route_cards: [],
+    } satisfies PerfData);
     const fleetVehicles = valueAt(4, { data: [], error: null } as any);
     const sapSourceResults = [settled[0], ...(secondary ? [settled[1]] : []), ...(tertiary ? [settled[2]] : [])];
     if (sapSourceResults.every((item) => item.status === "rejected")) {
@@ -803,7 +818,8 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
   // Always query the original database values so `o72506` still matches `O72506`.
   const hydratedVehicleSet = new Set(hydratedVehicles);
 
-  const hydrationPromise = (async () => {
+  let hydrationPromise!: Promise<void>;
+  hydrationPromise = (async () => {
     try {
       const clients = getFederatedSupabaseClients();
       const lmRows: any[] = [];
