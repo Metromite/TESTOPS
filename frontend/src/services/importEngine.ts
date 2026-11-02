@@ -1,3 +1,4 @@
+import { invalidateDashboardLocalDataset } from "./dashboardLocalStore";
 import * as XLSX from "xlsx";
 import { supabase, getSupabaseClientByProject, getFederatedSupabaseClients } from "@/lib/supabase";
 import facilityKeywordMap from "@/lib/facility_keyword_map.json";
@@ -632,6 +633,8 @@ export async function processImportFile(
     }
     const failed = rejected.length;
     const finished = await finalizeImportBatch(batch.id, { row_count: rows.length, success_count: facts.length, failed_count: failed, validation_errors: rejected.slice(0, 200) });
+    // The dashboard's IndexedDB snapshot must not hide a newly imported month.
+    await invalidateDashboardLocalDataset();
     progress({ status: failed ? "partial" : "completed", current_step: "Import complete", progress_pct: 100, processed_units: rows.length, total_units: rows.length, log: `${facts.length} parsed facts stored. Original file retained in Supabase Storage.` });
     return finished;
   } catch (error) {
@@ -694,17 +697,41 @@ export async function labelImportBatch(batchId: string, label: string) {
 
 export async function deleteImportedData(batchId: string) {
   let batch: any = null;
-  for (const c of getFederatedSupabaseClients()) { const r = await c.from("import_batches").select("storage_project,storage_bucket,storage_path").eq("id", batchId).maybeSingle(); if (r.error) throw new Error(r.error.message); if (r.data) { batch = r.data; break; } }
+  for (const c of getFederatedSupabaseClients()) {
+    const r = await c.from("import_batches").select("storage_project,storage_bucket,storage_path").eq("id", batchId).maybeSingle();
+    if (r.error) throw new Error(r.error.message);
+    if (r.data) { batch = r.data; break; }
+  }
   if (!batch) throw new Error("Import batch not found");
   const client = getSupabaseClientByProject(batch.storage_project === "secondary" ? "secondary" : batch.storage_project === "tertiary" ? "tertiary" : "primary");
+
+  // Delete child facts in small, bounded transactions. A single DELETE over
+  // 80k+ Landmark rows can exceed Supabase's statement timeout; deleting by
+  // selected primary keys in batches avoids changing schema or timeout settings.
+  const deleteBatchRows = async (table: "sap_invoice_facts" | "landmark_visit_facts" | "raw_import_rows") => {
+    const CHUNK = 250;
+    while (true) {
+      const { data: ids, error: readError } = await client.from(table)
+        .select("id").eq("batch_id", batchId).limit(CHUNK);
+      if (readError) throw new Error(`${table}: ${readError.message}`);
+      const keys = (ids || []).map((row: any) => row.id).filter(Boolean);
+      if (!keys.length) break;
+      const { data: removed, error: deleteError } = await client.from(table)
+        .delete().in("id", keys).select("id");
+      if (deleteError) throw new Error(`${table}: ${deleteError.message}`);
+      if (!removed?.length) throw new Error(`${table}: deletion made no progress; remaining rows were left untouched.`);
+    }
+  };
+
+  await deleteBatchRows("sap_invoice_facts");
+  await deleteBatchRows("landmark_visit_facts");
+  await deleteBatchRows("raw_import_rows");
+
   if (batch.storage_path) {
     const { error: storageError } = await client.storage.from(batch.storage_bucket || "dispatchops-files").remove([batch.storage_path]);
     if (storageError) throw new Error(`Storage: ${storageError.message}`);
   }
-  for (const table of ["sap_invoice_facts", "landmark_visit_facts", "raw_import_rows"] as const) {
-    const { error } = await client.from(table).delete().eq("batch_id", batchId);
-    if (error) throw new Error(`${table}: ${error.message}`);
-  }
   const { error } = await client.from("import_batches").delete().eq("id", batchId);
   if (error) throw new Error(error.message);
+  await invalidateDashboardLocalDataset();
 }

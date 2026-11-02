@@ -67,7 +67,7 @@ const LOCAL_DB_NAME = "dispatchops-dashboard-local-v3";
 const LOCAL_DB_STORE = "dataset";
 const LOCAL_DB_KEY = "all-history";
 const LOCAL_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
-const LOCAL_DATASET_VERSION = 3;
+const LOCAL_DATASET_VERSION = 4;
 
 function openLocalDb(): Promise<IDBDatabase | null> {
   if (typeof indexedDB === "undefined") return Promise.resolve(null);
@@ -110,6 +110,39 @@ async function writePersistentDataset(value: DashboardLocalDataset): Promise<voi
       tx.onerror = tx.onabort = () => { db.close(); resolve(); };
     } catch { db.close(); resolve(); }
   });
+}
+
+/** Invalidate the persisted all-history snapshot after a successful source import. */
+export async function invalidateDashboardLocalDataset(): Promise<void> {
+  current = null;
+  baseRouteCards = [];
+  sharedVehicleHydrationKey = "";
+  const db = await openLocalDb();
+  if (!db) { emit(); return; }
+  await new Promise<void>((resolve) => {
+    try {
+      const tx = db.transaction(LOCAL_DB_STORE, "readwrite");
+      tx.objectStore(LOCAL_DB_STORE).delete(LOCAL_DB_KEY);
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onerror = tx.onabort = () => { db.close(); resolve(); };
+    } catch { db.close(); resolve(); }
+  });
+  emit();
+}
+
+async function hasImportNewerThan(snapshotTime: number): Promise<boolean> {
+  const clients = getFederatedSupabaseClients();
+  const results = await Promise.all(clients.map(async (client) => {
+    try {
+      const { data, error } = await client.from("import_batches")
+        .select("imported_at,created_at").is("deleted_at", null)
+        .order("imported_at", { ascending: false }).limit(1);
+      if (error) return false;
+      const stamp = Date.parse(String(data?.[0]?.imported_at || data?.[0]?.created_at || ""));
+      return Number.isFinite(stamp) && stamp > snapshotTime;
+    } catch { return false; }
+  }));
+  return results.some(Boolean);
 }
 
 const UNKNOWN = new Set(["", "unknown", "unclassified", "n/a", "na", "not available", "not available/unknown"]);
@@ -228,7 +261,9 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     resetLoadingProgress(3);
     if (!force) {
       const persisted = await readPersistentDataset();
-      if (persisted && Date.now() - Number(persisted.loadedAt || 0) < LOCAL_CACHE_TTL_MS && persisted.rows.length) {
+      const persistedIsFresh = persisted && Date.now() - Number(persisted.loadedAt || 0) < LOCAL_CACHE_TTL_MS
+        && !(await hasImportNewerThan(Number(persisted.loadedAt || 0)));
+      if (persisted && persistedIsFresh && persisted.rows.length) {
         current = { ...persisted, key };
         baseRouteCards = [...(persisted.routeCards || [])];
         setLoadingProgress(100);
@@ -244,22 +279,29 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     const clients = getFederatedSupabaseClients();
     const primary = clients[0];
     const secondary = clients[1];
+    const tertiary = clients[2];
     let primaryRowsLoaded = 0;
-    let secondaryRowsLoaded = 0;
+    let overflowRowsLoaded = 0;
     const primaryPromise = fetchRowsForClient(primary, "", "", (n) => {
       primaryRowsLoaded += n;
-      setLoadingProgress(Math.min(55, 5 + Math.round(Math.log10(primaryRowsLoaded + 1) * 22)));
+      setLoadingProgress(Math.min(45, 5 + Math.round(Math.log10(primaryRowsLoaded + 1) * 18)));
     });
     const secondaryPromise = secondary
       ? fetchRowsForClient(secondary, "", "", (n) => {
-          secondaryRowsLoaded += n;
-          setLoadingProgress(Math.min(65, 28 + Math.round(Math.log10(primaryRowsLoaded + secondaryRowsLoaded + 1) * 22)));
+          overflowRowsLoaded += n;
+          setLoadingProgress(Math.min(62, 25 + Math.round(Math.log10(primaryRowsLoaded + overflowRowsLoaded + 1) * 20)));
+        })
+      : Promise.resolve([] as LocalSapRow[]);
+    const tertiaryPromise = tertiary
+      ? fetchRowsForClient(tertiary, "", "", (n) => {
+          overflowRowsLoaded += n;
+          setLoadingProgress(Math.min(72, 35 + Math.round(Math.log10(primaryRowsLoaded + overflowRowsLoaded + 1) * 20)));
         })
       : Promise.resolve([] as LocalSapRow[]);
     const routePromise = fetchDashboardEndpoint<PerfData>(`/dashboard/driver-performance`);
     const fleetPromise = primary.from("vehicles").select("number,type,status");
-    const [primaryRows, secondaryRows, routeResult, fleetVehicles] = await Promise.all([
-      primaryPromise, secondaryPromise, routePromise, fleetPromise,
+    const [primaryRows, secondaryRows, tertiaryRows, routeResult, fleetVehicles] = await Promise.all([
+      primaryPromise, secondaryPromise, tertiaryPromise, routePromise, fleetPromise,
     ]);
     setLoadingProgress(82);
     // Fleet vehicle metadata is used only to canonicalize Pickup/Van. If the
@@ -272,8 +314,12 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     // does not contain. This preserves the app's Primary -> Secondary model.
     const typedPrimaryRows = primaryRows as LocalSapRow[];
     const typedSecondaryRows = secondaryRows as LocalSapRow[];
+    const typedTertiaryRows = tertiaryRows as LocalSapRow[];
     const primaryDates = new Set(typedPrimaryRows.map((r: LocalSapRow) => String(r.dispatch_date || "")).filter(Boolean));
-    const rowsRaw: LocalSapRow[] = typedPrimaryRows.concat(typedSecondaryRows.filter((r: LocalSapRow) => !primaryDates.has(String(r.dispatch_date || ""))));
+    const secondaryDates = new Set(typedSecondaryRows.map((r: LocalSapRow) => String(r.dispatch_date || "")).filter(Boolean));
+    const rowsRaw: LocalSapRow[] = typedPrimaryRows
+      .concat(typedSecondaryRows.filter((r: LocalSapRow) => !primaryDates.has(String(r.dispatch_date || ""))))
+      .concat(typedTertiaryRows.filter((r: LocalSapRow) => !primaryDates.has(String(r.dispatch_date || "")) && !secondaryDates.has(String(r.dispatch_date || ""))));
 
     // Keep every real SAP driver/area represented in the analytical dataset.
     // The master tables are still loaded for the existing app architecture, but
