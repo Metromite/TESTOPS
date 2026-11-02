@@ -263,7 +263,37 @@ async function getLeadTimeDataClient<T>(params: URLSearchParams): Promise<T> { r
 async function orderSummary<T>(params: URLSearchParams): Promise<T> { return fetchTargetedRpcFromProjects("dispatchops_dashboard_order_summary_snapshot", params, "order_summary") as Promise<T>; }
 async function areaAnalytics<T>(params: URLSearchParams): Promise<T> { return fetchTargetedRpcFromProjects("dispatchops_dashboard_area_snapshot", params, "area_analytics") as Promise<T>; }
 async function notSupplied<T>(params: URLSearchParams): Promise<T> { return fetchTargetedRpcFromProjects("dispatchops_dashboard_not_supplied_snapshot", params, "not_supplied") as Promise<T>; }
-async function driverPerformance<T>(params: URLSearchParams): Promise<T> { return fetchTargetedRpcFromProjects("dispatchops_dashboard_driver_performance_snapshot", params, "driver_performance") as Promise<T>; }
+async function driverPerformance<T>(params: URLSearchParams): Promise<T> {
+  // The two operational projects are allowed to have independent import/RPC
+  // health. A timeout or missing function in one project must not erase the
+  // valid GPS route cards returned by the other (especially in Private mode,
+  // where there is no local cached fallback).
+  const { getPrimarySupabaseClient, getSecondarySupabaseClient } = await import("@/lib/supabase");
+  const clients = [getPrimarySupabaseClient(), getSecondarySupabaseClient()].filter(Boolean);
+  const start = params.get("start_date") || null;
+  const end = params.get("end_date") || null;
+  const filters = leadTimeFilterJson(params);
+  const settled = await Promise.allSettled(clients.map(async (client: any) => {
+    const { data, error } = await client.rpc("dispatchops_dashboard_driver_performance_snapshot", {
+      p_start: start, p_end: end, p_filters: filters,
+    });
+    if (error) throw new Error(error.message);
+    return data || {};
+  }));
+  const successful = settled.filter((item): item is PromiseFulfilledResult<any> => item.status === "fulfilled");
+  if (!successful.length) {
+    const failed = settled.find((item): item is PromiseRejectedResult => item.status === "rejected");
+    throw new Error(failed?.reason?.message || "Driver Performance GPS data is unavailable from the configured projects.");
+  }
+  if (successful.length === 1) return successful[0].value as T;
+  const empty: DashboardSnapshot = { lead_time: {}, order_summary: {}, area_analytics: {}, not_supplied: {}, driver_performance: {} };
+  const first: DashboardSnapshot = { ...empty, driver_performance: successful[0].value as any };
+  const merged = successful.slice(1).reduce(
+    (acc, item) => mergeSnapshot(acc, { ...empty, driver_performance: item.value as any }),
+    first,
+  );
+  return merged.driver_performance as T;
+}
 
 export function invalidateDashboardAnalyticsCache(): void { analyticsCache.clear(); }
 

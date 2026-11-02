@@ -5,9 +5,9 @@
  * slicer changes are pure JavaScript over that dataset - no Supabase round
  * trip, no per-tab RPC fan-out, and no loading state between filter clicks.
  *
- * Landmark/GPS data stays server-side because it is much larger; the base
- * Driver Performance snapshot is loaded once and its already-aggregated route
- * cards are filtered locally by the SAP vehicles affected by the slicers.
+ * SAP facts are federated across all configured projects and merged by invoice,
+ * not by dispatch date. Landmark/GPS facts are paged for the selected period,
+ * then joined locally by normalized vehicle aliases and daily driver ownership.
  */
 import { getFederatedSupabaseClients, getPrimarySupabaseClient } from "../lib/supabase";
 import { fetchDashboardEndpoint } from "./dashboardAnalytics";
@@ -63,11 +63,11 @@ let current: DashboardLocalDataset | null = null;
 let baseRouteCards: RouteCard[] = [];
 let loading: Promise<DashboardLocalDataset> | null = null;
 let loadingProgress = 0;
+let lastLiveDatasetRefreshAt = 0;
 const LOCAL_DB_NAME = "dispatchops-dashboard-local-v3";
 const LOCAL_DB_STORE = "dataset";
 const LOCAL_DB_KEY = "all-history";
-const LOCAL_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
-const LOCAL_DATASET_VERSION = 4;
+const LOCAL_DATASET_VERSION = 5;
 
 function openLocalDb(): Promise<IDBDatabase | null> {
   if (typeof indexedDB === "undefined") return Promise.resolve(null);
@@ -115,8 +115,10 @@ async function writePersistentDataset(value: DashboardLocalDataset): Promise<voi
 /** Invalidate the persisted all-history snapshot after a successful source import. */
 export async function invalidateDashboardLocalDataset(): Promise<void> {
   current = null;
+  lastLiveDatasetRefreshAt = 0;
   baseRouteCards = [];
-  sharedVehicleHydrationKey = "";
+  completedVehicleHydrationKeys.clear();
+  vehicleHydrationPromises.clear();
   const db = await openLocalDb();
   if (!db) { emit(); return; }
   await new Promise<void>((resolve) => {
@@ -128,21 +130,6 @@ export async function invalidateDashboardLocalDataset(): Promise<void> {
     } catch { db.close(); resolve(); }
   });
   emit();
-}
-
-async function hasImportNewerThan(snapshotTime: number): Promise<boolean> {
-  const clients = getFederatedSupabaseClients();
-  const results = await Promise.all(clients.map(async (client) => {
-    try {
-      const { data, error } = await client.from("import_batches")
-        .select("imported_at,created_at").is("deleted_at", null)
-        .order("imported_at", { ascending: false }).limit(1);
-      if (error) return false;
-      const stamp = Date.parse(String(data?.[0]?.imported_at || data?.[0]?.created_at || ""));
-      return Number.isFinite(stamp) && stamp > snapshotTime;
-    } catch { return false; }
-  }));
-  return results.some(Boolean);
 }
 
 const UNKNOWN = new Set(["", "unknown", "unclassified", "n/a", "na", "not available", "not available/unknown"]);
@@ -243,14 +230,14 @@ async function fetchRowsForClient(client: any, start = "", end = "", onPage?: (r
 /**
  * Load one persistent all-history analytical dataset. Date/month selection is
  * deliberately NOT part of the network key: it is a pure local filter after
- * this dataset is available. Primary is authoritative for any dispatch date
- * it contains; Secondary is fallback for dates that Primary does not own.
+ * this dataset is available. Primary, Secondary and Tertiary can all contain
+ * different invoices for the same dispatch date, so all sources are merged.
  */
 export async function preloadDashboardLocalDataset(_start = "", _end = "", force = false): Promise<DashboardLocalDataset> {
   const key = "ALL";
-  if (!force && current?.key === key && current.rows.length) {
+  if (!force && current?.key === key && current.rows.length && Date.now() - lastLiveDatasetRefreshAt < 60_000) {
     current.routeCards = [...baseRouteCards];
-    sharedVehicleHydrationKey = "";
+    completedVehicleHydrationKeys.clear();
     void hydrateSharedVehicleDriverCards(current, _start, _end);
     setLoadingProgress(100);
     return current;
@@ -260,19 +247,17 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
   loading = (async () => {
     resetLoadingProgress(3);
     if (!force) {
+      // IndexedDB is a paint-first snapshot, never the authority for the current
+      // fleet. Normal and Private browser profiles have different storage, and
+      // import-batch timestamps can be delayed or unavailable on one project.
+      // Paint any saved snapshot immediately, then always continue to the live
+      // federated reads below and replace it with the current SAP/GPS data.
       const persisted = await readPersistentDataset();
-      const persistedIsFresh = persisted && Date.now() - Number(persisted.loadedAt || 0) < LOCAL_CACHE_TTL_MS
-        && !(await hasImportNewerThan(Number(persisted.loadedAt || 0)));
-      if (persisted && persistedIsFresh && persisted.rows.length) {
+      if (persisted && persisted.rows.length) {
         current = { ...persisted, key };
         baseRouteCards = [...(persisted.routeCards || [])];
-        setLoadingProgress(100);
+        setLoadingProgress(18);
         emit();
-        void hydrateSharedVehicleDriverCards(current, _start, _end);
-        // Return the persistent snapshot immediately. A background refresh is
-        // intentionally handled by the realtime/manual Refresh path.
-        loading = null;
-        return current;
       }
     }
 
@@ -300,26 +285,52 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
       : Promise.resolve([] as LocalSapRow[]);
     const routePromise = fetchDashboardEndpoint<PerfData>(`/dashboard/driver-performance`);
     const fleetPromise = primary.from("vehicles").select("number,type,status");
-    const [primaryRows, secondaryRows, tertiaryRows, routeResult, fleetVehicles] = await Promise.all([
+    // A failed overflow project must not cancel valid rows from the other
+    // projects (a common difference between normal and Private browser
+    // profiles). Keep every successful source and retain the last good local
+    // snapshot if all SAP sources are temporarily unavailable.
+    const settled = await Promise.allSettled([
       primaryPromise, secondaryPromise, tertiaryPromise, routePromise, fleetPromise,
     ]);
+    const valueAt = <T,>(index: number, fallback: T): T => {
+      const item = settled[index];
+      return item.status === "fulfilled" ? item.value as T : fallback;
+    };
+    const primaryRows = valueAt(0, [] as LocalSapRow[]);
+    const secondaryRows = valueAt(1, [] as LocalSapRow[]);
+    const tertiaryRows = valueAt(2, [] as LocalSapRow[]);
+    const routeResult = valueAt(3, { route_cards: [] } as PerfData);
+    const fleetVehicles = valueAt(4, { data: [], error: null } as any);
+    const sapSourceResults = [settled[0], ...(secondary ? [settled[1]] : []), ...(tertiary ? [settled[2]] : [])];
+    if (sapSourceResults.every((item) => item.status === "rejected")) {
+      throw new Error("Unable to read SAP facts from any configured DispatchOPS data project.");
+    }
     setLoadingProgress(82);
     // Fleet vehicle metadata is used only to canonicalize Pickup/Van. If the
     // master table is temporarily unavailable, keep the analytical dataset
     // usable and fall back to the SAP vehicle type already present on each row.
     const fleetVehicleRows = fleetVehicles.error ? [] : (fleetVehicles.data || []);
 
-    // Fallback semantics: when Primary owns a dispatch date, do not double-count
-    // Secondary rows from that same date. Secondary contributes dates Primary
-    // does not contain. This preserves the app's Primary -> Secondary model.
+    // Imports can be split across Primary/Secondary on the SAME dispatch day.
+    // Date-level fallback discarded every Secondary invoice whenever Primary
+    // had even one row for that date; this is why October could show only a
+    // subset of vehicles/drivers while September (owned by one project) looked
+    // correct. Merge all projects and suppress only true duplicate invoices.
+    // Primary wins only when the same invoice is genuinely present twice.
     const typedPrimaryRows = primaryRows as LocalSapRow[];
     const typedSecondaryRows = secondaryRows as LocalSapRow[];
     const typedTertiaryRows = tertiaryRows as LocalSapRow[];
-    const primaryDates = new Set(typedPrimaryRows.map((r: LocalSapRow) => String(r.dispatch_date || "")).filter(Boolean));
-    const secondaryDates = new Set(typedSecondaryRows.map((r: LocalSapRow) => String(r.dispatch_date || "")).filter(Boolean));
-    const rowsRaw: LocalSapRow[] = typedPrimaryRows
-      .concat(typedSecondaryRows.filter((r: LocalSapRow) => !primaryDates.has(String(r.dispatch_date || ""))))
-      .concat(typedTertiaryRows.filter((r: LocalSapRow) => !primaryDates.has(String(r.dispatch_date || "")) && !secondaryDates.has(String(r.dispatch_date || ""))));
+    const seenInvoices = new Set<string>();
+    const rowsRaw: LocalSapRow[] = [];
+    for (const row of [...typedPrimaryRows, ...typedSecondaryRows, ...typedTertiaryRows]) {
+      const invoice = String(row.invoice_no || "").trim().toLowerCase();
+      const dispatch = String(row.dispatch_date || "").slice(0, 10);
+      const customer = normalizeMatchKey(row.customer_name);
+      const dedupeKey = invoice ? `${dispatch}::${invoice}::${customer}` : `row::${JSON.stringify(row)}`;
+      if (seenInvoices.has(dedupeKey)) continue;
+      seenInvoices.add(dedupeKey);
+      rowsRaw.push(row);
+    }
 
     // Keep every real SAP driver/area represented in the analytical dataset.
     // The master tables are still loaded for the existing app architecture, but
@@ -334,17 +345,17 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     setLoadingProgress(94);
     baseRouteCards = [...(routeResult.route_cards || [])];
     current = { key, rows, routeCards: [...baseRouteCards], loadedAt: Date.now(), datasetVersion: LOCAL_DATASET_VERSION };
+    lastLiveDatasetRefreshAt = Date.now();
     setLoadingProgress(100);
     loading = null;
     emit();
 
-    // Driver Performance exception: the dashboard RPC is intentionally kept
-    // vehicle-level for the normal fast path. If the same vehicle has multiple
-    // SAP drivers in the selected period, hydrate only those vehicles from the
-    // existing Landmark facts and split their GPS performance by driver. This
-    // is application-side only; no RPC, table, schema, or database data is
-    // modified. The split runs after the normal dashboard dataset is ready so
-    // it cannot reintroduce the old Dashboard loading stall.
+    // Driver Performance exception: the existing RPC remains the fast base
+    // snapshot, then the app rebuilds the selected period from paged Landmark
+    // facts using all SAP vehicle aliases. This recovers vehicles the SQL join
+    // misses when vehicle_key is blank/stale, and resolves shared vehicles by
+    // daily driver. This is application-side only; no RPC, table, schema, or
+    // database data is modified. It runs after the main dataset is ready.
     void hydrateSharedVehicleDriverCards(current, _start, _end);
 
     void writePersistentDataset(current);
@@ -480,23 +491,19 @@ function routeInDateRange(route: RouteCard, start?: string, end?: string): boole
   return true;
 }
 
-export function buildLocalHome(rows: LocalSapRow[], routeCards: RouteCard[]): HomeDashboard {
+export function buildLocalHome(rows: LocalSapRow[], routeCards: RouteCard[], vehicleRows: LocalSapRow[] = rows): HomeDashboard {
   const drivers = new Map<string, { driver_name: string; vehicle_num: string; vehicle_type: string; orders: number; boxes: number; freezer: number; not_supplied: number }>();
   const facilities = new Map<string, number>();
   const vehicleTypes = new Map<string, { normal: number; freezer: number }>();
   const customers = new Set<string>();
-  const vehicles = new Set<string>();
+  // Active vehicles are counted from every SAP dispatch row in the selected
+  // period, not only rows that pass the invoice-box KPI validity test.
+  const vehicles = new Set(vehicleRows.map((r) => normalizeMatchKey(r.vehicle_num || r.vehicle_key)).filter(Boolean));
   let boxes = 0, normal = 0, freezer = 0, notSupplied = 0, leadTotal = 0, leadCount = 0;
   for (const r of rows) {
     boxes += r.boxes; normal += r.normal_boxes; freezer += r.freezer_boxes;
     if (r.not_supplied_reason) notSupplied++;
     if (r.customer_name) customers.add(r.customer_name);
-    // October imports can contain a valid vehicle_num while vehicle_key is blank.
-    // Count by the canonical key when present, otherwise fall back to the source
-    // vehicle number; normalize formatting so duplicate spellings do not inflate
-    // the KPI and valid vehicles are not silently omitted.
-    const vehicleIdentity = normalizeMatchKey(r.vehicle_key || r.vehicle_num);
-    if (vehicleIdentity) vehicles.add(vehicleIdentity);
     if (r.facility_type) facilities.set(r.facility_type, (facilities.get(r.facility_type) || 0) + 1);
     if (r.vehicle_type) { const v = vehicleTypes.get(r.vehicle_type) || { normal: 0, freezer: 0 }; v.normal += r.normal_boxes; v.freezer += r.freezer_boxes; vehicleTypes.set(r.vehicle_type, v); }
     if (r.driver_name) {
@@ -510,9 +517,12 @@ export function buildLocalHome(rows: LocalSapRow[], routeCards: RouteCard[]): Ho
     const days = dayDiff(r.invoice_date, r.dispatch_date); if (days !== null && days >= 0) { leadTotal += days; leadCount++; }
   }
   const driverRows = [...drivers.values()].sort((a, b) => b.boxes - a.boxes);
-  const selectedVehicles = new Set(rows.map((r) => r.vehicle_key).filter(Boolean));
+  const selectedVehicles = new Set(rows.flatMap((r) => [r.vehicle_key, r.vehicle_num].map(normalizeMatchKey).filter(Boolean)));
   const rowDates = rows.map((r) => String(r.dispatch_date || "")).filter(Boolean).sort();
-  const perf = routeCards.filter((r) => selectedVehicles.has(String(r.vehicle_key || "")) && routeInDateRange(r, rowDates[0], rowDates[rowDates.length - 1]));
+  const perf = routeCards.filter((r) => {
+    const aliases = [r.vehicle_key, r.vehicle_num].map(normalizeMatchKey).filter(Boolean);
+    return aliases.some((alias) => selectedVehicles.has(alias)) && routeInDateRange(r, rowDates[0], rowDates[rowDates.length - 1]);
+  });
   const routeHours = perf.map((r) => {
     const h = String(r.route_duration_hm || "").match(/(\d+)h\s+(\d+)m/); return h ? Number(h[1]) + Number(h[2]) / 60 : 0;
   }).filter((n) => n > 0);
@@ -713,15 +723,17 @@ function resolveDriverName(candidate: string, preferred: Map<string, { display: 
   return pickBest([...global.values()]);
 }
 
-let sharedVehicleHydrationKey = "";
-let sharedVehicleHydrationPromise: Promise<void> | null = null;
+const completedVehicleHydrationKeys = new Set<string>();
+const vehicleHydrationPromises = new Map<string, Promise<void>>();
 
 async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, start: string, end: string): Promise<void> {
   const periodStart = String(start || "");
   const periodEnd = String(end || "");
   if (!periodStart && !periodEnd) return;
   const key = `${periodStart}::${periodEnd}`;
-  if (sharedVehicleHydrationKey === key || sharedVehicleHydrationPromise) return;
+  if (completedVehicleHydrationKeys.has(key)) return;
+  const existingHydration = vehicleHydrationPromises.get(key);
+  if (existingHydration) return existingHydration;
 
   // SAP is the order/driver roster and Landmark is the actual GPS route stream.
   // Build ownership by vehicle + day, but never collapse a vehicle to one driver.
@@ -752,27 +764,29 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
 
   for (const row of dataset.rows) {
     const date = String(row.dispatch_date || "").slice(0, 10);
-    const vehicle = normalizeMatchKey(row.vehicle_key || row.vehicle_num);
+    const vehicles = [...new Set([row.vehicle_key, row.vehicle_num].map(normalizeMatchKey).filter(Boolean))];
     const identity = normalizeDriverIdentity(row.driver_name);
-    if (!date || !vehicle || !identity || (periodStart && date < periodStart) || (periodEnd && date > periodEnd)) continue;
+    if (!date || !vehicles.length || !identity || (periodStart && date < periodStart) || (periodEnd && date > periodEnd)) continue;
     const display = String(row.driver_name || identity).trim() || identity;
     globalDrivers.set(identity, { display });
-    const byDate = ownersByVehicleDay.get(vehicle) || new Map<string, Map<string, Owner>>();
-    const byDriver = byDate.get(date) || new Map<string, Owner>();
-    const owner = byDriver.get(identity) || { display, identity, invoices: 0, boxes: 0, freezer: 0 };
-    owner.invoices += 1;
-    owner.boxes += Number(row.boxes || 0);
-    owner.freezer += Number(row.freezer_boxes || 0);
-    byDriver.set(identity, owner);
-    byDate.set(date, byDriver);
-    ownersByVehicleDay.set(vehicle, byDate);
+    for (const vehicle of vehicles) {
+      const byDate = ownersByVehicleDay.get(vehicle) || new Map<string, Map<string, Owner>>();
+      const byDriver = byDate.get(date) || new Map<string, Owner>();
+      const owner = byDriver.get(identity) || { display, identity, invoices: 0, boxes: 0, freezer: 0 };
+      owner.invoices += 1;
+      owner.boxes += Number(row.boxes || 0);
+      owner.freezer += Number(row.freezer_boxes || 0);
+      byDriver.set(identity, owner);
+      byDate.set(date, byDriver);
+      ownersByVehicleDay.set(vehicle, byDate);
 
-    const sapKey = `${vehicle}::${date}::${identity}`;
-    const sap = sapByVehicleDayDriver.get(sapKey) || { invoices: 0, boxes: 0, freezer: 0 };
-    sap.invoices += 1;
-    sap.boxes += Number(row.boxes || 0);
-    sap.freezer += Number(row.freezer_boxes || 0);
-    sapByVehicleDayDriver.set(sapKey, sap);
+      const sapKey = `${vehicle}::${date}::${identity}`;
+      const sap = sapByVehicleDayDriver.get(sapKey) || { invoices: 0, boxes: 0, freezer: 0 };
+      sap.invoices += 1;
+      sap.boxes += Number(row.boxes || 0);
+      sap.freezer += Number(row.freezer_boxes || 0);
+      sapByVehicleDayDriver.set(sapKey, sap);
+    }
   }
 
   // Rebuild driver-aware GPS for EVERY SAP vehicle in the selected period.
@@ -782,42 +796,36 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
   // card's representative date. This is application-side only: no database
   // query/function/schema is changed.
   const hydratedVehicles = [...ownersByVehicleDay.keys()];
-  if (!hydratedVehicles.length) { sharedVehicleHydrationKey = key; return; }
+  if (!hydratedVehicles.length) { completedVehicleHydrationKeys.add(key); return; }
 
   // IMPORTANT: `hydratedVehicles` is an internal normalized key (lowercase,
   // punctuation removed). Supabase equality on vehicle_key is case-sensitive.
   // Always query the original database values so `o72506` still matches `O72506`.
-  const hydratedVehicleDbKeys = [...new Set(
-    dataset.rows
-      .filter(row => hydratedVehicles.includes(normalizeMatchKey(row.vehicle_key || row.vehicle_num)))
-      .map(row => String(row.vehicle_key || row.vehicle_num || '').trim())
-      .filter(Boolean)
-  )];
+  const hydratedVehicleSet = new Set(hydratedVehicles);
 
-  sharedVehicleHydrationPromise = (async () => {
+  const hydrationPromise = (async () => {
     try {
       const clients = getFederatedSupabaseClients();
       const lmRows: any[] = [];
-      const chunks: string[][] = [];
-      for (let i = 0; i < hydratedVehicleDbKeys.length; i += 80) chunks.push(hydratedVehicleDbKeys.slice(i, i + 80));
-
-      // Read all federated GPS sources. A single project/chunk must never
-      // abort the driver reconstruction for the other projects. This is
-      // especially important for the Primary -> Secondary -> Tertiary model:
-      // one empty/slow/unavailable overflow project must not erase valid GPS
-      // cards that already exist in another project.
+      // Fetch the selected GPS period in pages, then join in JavaScript using
+      // normalized aliases. Filtering by raw SAP vehicle_key alone was brittle:
+      // October exports may carry vehicle_num while vehicle_key is a legacy or
+      // differently formatted value. The former single-page `.in()` query also
+      // silently stopped at PostgREST's 1,000-row default.
       for (const client of clients) {
-        for (const chunk of chunks) {
+        for (let from = 0; ; from += 1000) {
           let q = client.from("landmark_visit_facts")
-            .select("vehicle_key,vehicle_raw,driver_name,customer_name,visit_date,arrival,departure,minutes,is_passthrough,is_depot")
-            .in("vehicle_key", chunk);
+            .select("vehicle_key,vehicle_raw,driver_name,customer_name,visit_date,arrival,departure,minutes,is_passthrough,is_depot");
           if (periodStart) q = q.gte("visit_date", periodStart);
           if (periodEnd) q = q.lte("visit_date", periodEnd);
           try {
-            const { data, error } = await q;
-            if (!error) lmRows.push(...(data || []));
+            const { data, error } = await q.range(from, from + 999);
+            if (error) break;
+            const page = data || [];
+            lmRows.push(...page.filter((row: any) => hydratedVehicleSet.has(normalizeMatchKey(row.vehicle_key))));
+            if (page.length < 1000) break;
           } catch {
-            // Keep the successful federated sources.
+            break;
           }
         }
       }
@@ -934,8 +942,11 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
       // Replace vehicle-level cards only for shared vehicles/days for which we
       // have a driver-aware GPS reconstruction. All unrelated cards stay intact.
       const covered = new Set([...resolved.values()].map((card) => `${normalizeMatchKey(card.vehicle_key)}::${String(card.route_start || card.route_end).slice(0, 10)}`));
+      // Do not let an older in-flight month overwrite a newly loaded dataset.
+      if (!current || current.loadedAt !== dataset.loadedAt) return;
+      const latestCards = current.routeCards;
       const next: RouteCard[] = [];
-      for (const base of dataset.routeCards) {
+      for (const base of latestCards) {
         const vehicle = normalizeMatchKey(base.vehicle_key || base.vehicle_num);
         const date = String(base.route_start || base.route_end || "").slice(0, 10);
         if (vehicle && date && hydratedVehicles.includes(vehicle) && covered.has(`${vehicle}::${date}`)) continue;
@@ -949,16 +960,17 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
       // even though GPS hydration had already produced the correct cards.
       // Publish a NEW dataset object and keep baseRouteCards immutable.
       current = { ...dataset, routeCards: next };
-      sharedVehicleHydrationKey = key;
+      completedVehicleHydrationKeys.add(key);
       emit();
     } catch {
       // Optional driver-aware enrichment must never break the working Dashboard.
-      sharedVehicleHydrationKey = key;
+      // Do not mark failed hydration complete; a later refresh can retry it.
     } finally {
-      sharedVehicleHydrationPromise = null;
+      if (vehicleHydrationPromises.get(key) === hydrationPromise) vehicleHydrationPromises.delete(key);
     }
   })();
-  await sharedVehicleHydrationPromise;
+  vehicleHydrationPromises.set(key, hydrationPromise);
+  await hydrationPromise;
 }
 
 export function buildLocalDriverPerformance(rows: LocalSapRow[], routeCards: RouteCard[], gf?: GlobalFilters, ownershipRows: LocalSapRow[] = rows): PerfData {
@@ -1153,5 +1165,12 @@ export function buildLocalForEndpoint(endpoint: string, dataset: DashboardLocalD
   if(e.includes("order-summary")) return buildLocalOrderSummary(rows);
   if(e.includes("area-analytics")) return buildLocalArea(rows);
   if(e.includes("not-supplied")) return buildLocalNotSupplied(rows);
-  return buildLocalHome(rows,dataset.routeCards);
+  const filters = gf || EMPTY;
+  const allDispatchRows = dataset.rows.filter((r) => {
+    const date = String(r.dispatch_date || "");
+    if (filters.start_date && (!date || date < filters.start_date)) return false;
+    if (filters.end_date && (!date || date > filters.end_date)) return false;
+    return matches(r, filters);
+  });
+  return buildLocalHome(rows,dataset.routeCards,allDispatchRows);
 }

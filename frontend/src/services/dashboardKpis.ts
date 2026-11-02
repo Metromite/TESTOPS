@@ -517,17 +517,6 @@ async function fetchValidAreas(): Promise<AreaRow[]> {
   return (data ?? []) as AreaRow[];
 }
 
-/** Direct port of _valid_vehicle_keys() - restricts which vehicle
- * identities count as "active"/listed to real, currently-registered
- * Fleet Database vehicles (see that function's docstring in the Python
- * original for why this is scoped to just the active_vehicles KPI rather
- * than a row-level filter on every query). */
-async function fetchValidVehicleKeys(): Promise<Set<string>> {
-  const { data, error } = await supabase.from("vehicles").select("number");
-  if (error) throw new Error(error.message);
-  return new Set((data ?? []).map((v: any) => normalizeVehicle(v.number)).filter(Boolean));
-}
-
 async function fetchFleetVehicleMap(): Promise<Map<string, { number: string; type: string }>> {
   const { data, error } = await supabase.from("vehicles").select("number,type");
   if (error) throw new Error(error.message);
@@ -804,8 +793,10 @@ export async function computeHomeKpisFast(f: FilterParams): Promise<Kpis> {
   const notSuppliedCount = sapRows.filter((r) => r.not_supplied_reason).length;
   const uniqueCustomers = new Set(sapRows.map((r) => r.customer_name).filter(Boolean)).size;
 
-  const validVehicleKeys = await fetchValidVehicleKeys();
-  const activeVehicles = new Set(sapRows.filter((r) => r.vehicle_key && validVehicleKeys.has(r.vehicle_key)).map((r) => r.vehicle_key)).size;
+  // Count the SAP source vehicle identity first. October imports may carry a
+  // populated vehicle_num with a blank, stale, or differently normalized
+  // vehicle_key; requiring an exact Fleet-master key silently undercounts.
+  const activeVehicles = new Set(sapRows.map((r) => normalizeVehicle(r.vehicle_num || r.vehicle_key)).filter(Boolean)).size;
 
   return {
     valid_invoices: totalInvoices,
@@ -854,8 +845,7 @@ export async function computeHomeDashboard(f: FilterParams): Promise<HomeDashboa
   const activeDrivers = new Set(sapRows.map((r) => r.driver_name).filter(Boolean)).size;
   const notSuppliedCount = sapRows.filter((r) => r.not_supplied_reason).length;
   const uniqueCustomers = new Set(sapRows.map((r) => r.customer_name).filter(Boolean)).size;
-  const validVehicleKeys = await fetchValidVehicleKeys();
-  const activeVehicles = new Set(sapRows.filter((r) => r.vehicle_key && validVehicleKeys.has(r.vehicle_key)).map((r) => r.vehicle_key)).size;
+  const activeVehicles = new Set(sapRows.map((r) => normalizeVehicle(r.vehicle_num || r.vehicle_key)).filter(Boolean)).size;
   const avgLeadTimeDays = computeLeadTimeDays(sapRows);
 
   const routeMap = buildLmRouteMap(lmRows);
