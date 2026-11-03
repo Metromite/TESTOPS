@@ -56,30 +56,34 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
 
   const data = useMemo(() => {
     if (!dataset || dataset.key !== "ALL") return null;
-    if (endpoint.includes("driver-performance") && [gf.drivers, gf.areas, gf.division, gf.vehicle_type, gf.facility_type, gf.salesman].some((value) => String(value || "").trim())) {
-      // Driver Performance needs a tolerant driver-name match. The shared
-      // dashboard filter intentionally uses exact SAP values for the other
-      // tabs; GPS route ownership can carry harmless spacing/punctuation or
-      // abbreviated-name differences, so applying that exact filter before
-      // ownership resolution can remove every SAP row and make the tab zero.
-      // Driver Performance gets its own resilient filter pass. Slicer values
-      // may come from Fleet metadata while October SAP rows carry harmless
-      // case, whitespace, or punctuation differences. Normalize every
-      // dimension here without changing the other dashboard tabs.
-      const baseRows = filterDashboardRows(dataset, { ...gf, drivers: "", areas: "", division: "", vehicle_type: "", facility_type: "", salesman: "" });
+
+    // Preserve the known-good unfiltered Driver Performance reconstruction
+    // exactly. The resilient path below is used only when a real slicer value
+    // is selected, so an empty/default filter state cannot turn the page to 0.
+    const hasSelectedValue = (value: unknown) =>
+      String(value || "").split(",").map((item) => item.trim().toLowerCase())
+        .some((item) => item && item !== "all" && item !== "(all)" && item !== "select all");
+    const hasDriverPerformanceFilter = endpoint.includes("driver-performance") &&
+      [gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman]
+        .some(hasSelectedValue);
+
+    if (hasDriverPerformanceFilter) {
+      // Keep the established local dataset and date filtering, but apply the
+      // Driver Performance slicers with normalized comparisons. Other tabs
+      // continue using their original shared filter implementation.
+      const baseRows = filterDashboardRows(dataset, {
+        ...gf, drivers: "", areas: "", division: "", route_type: "",
+        vehicle_type: "", facility_type: "", salesman: "",
+      });
       const selected = String(gf.drivers || "").split(",").map((value) => value.trim()).filter(Boolean);
       const normalize = (value: unknown) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
       const compact = (value: unknown) => normalize(value).replace(/\s+/g, "");
-      const selectedValues = (value: unknown) => String(value || "").split(",").map((item) => normalize(item)).filter(Boolean);
+      const selectedValues = (value: unknown) => String(value || "").split(",").map((item) => normalize(item)).filter((item) => item && item !== "all" && item !== "(all)" && item !== "select all");
       const matchesValue = (candidate: unknown, wantedValues: string[]) => {
         if (!wantedValues.length) return true;
         const candidateNorm = normalize(candidate);
         const candidateCompact = compact(candidate);
-        return wantedValues.some((wanted) => {
-          if (candidateNorm === wanted) return true;
-          const wantedCompact = wanted.replace(/\s+/g, "");
-          return !!candidateCompact && candidateCompact === wantedCompact;
-        });
+        return wantedValues.some((wanted) => candidateNorm === wanted || (!!candidateCompact && candidateCompact === wanted.replace(/\s+/g, "")));
       };
       const matchesDriver = (candidate: string, wanted: string) => {
         const a = normalize(candidate), b = normalize(wanted);
@@ -96,20 +100,25 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
       const vehicleValues = selectedValues(gf.vehicle_type);
       const facilityValues = selectedValues(gf.facility_type);
       const salesmanValues = selectedValues(gf.salesman);
+      const routeValues = selectedValues(gf.route_type);
       const dimensionRows = baseRows.filter((row) =>
         matchesValue(row.area, areaValues) &&
         matchesValue(row.division_desc, divisionValues) &&
         matchesValue(row.vehicle_type, vehicleValues) &&
         matchesValue(row.facility_type, facilityValues) &&
-        matchesValue(row.salesman, salesmanValues)
+        matchesValue(row.salesman, salesmanValues) &&
+        matchesValue((row as any).route_type, routeValues)
       );
       const driverRows = selected.length
         ? dimensionRows.filter((row) => selected.some((wanted) => matchesDriver(row.driver_name, wanted)))
         : dimensionRows;
       const resolvedDrivers = [...new Set(driverRows.map((row) => row.driver_name).filter(Boolean))];
-      const performanceFilters = { ...gf, drivers: resolvedDrivers.join(",") };
+      const performanceFilters = { ...gf, drivers: selected.length ? resolvedDrivers.join(",") : "" };
       return buildLocalDriverPerformance(driverRows, dataset.routeCards, performanceFilters, dataset.rows) as T;
     }
+
+    // This is the exact pre-filter-fix path that previously displayed the full
+    // Driver Performance data correctly when no slicer was selected.
     return buildLocalForEndpoint(endpoint, dataset, gf) as T;
   }, [dataset, endpoint, driver, gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.start_date, gf.end_date, gf.lead_time_band, gf.classification]);
 
@@ -130,7 +139,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
       facility_type: gf.facility_type || "", salesman: gf.salesman || "",
       lead_time_band: gf.lead_time_band || "", classification: gf.classification || "",
     };
-    return `dispatchops:driver-performance:v2:${encodeURIComponent(JSON.stringify(cacheFilters))}`;
+    return `dispatchops:driver-performance:v1:${encodeURIComponent(JSON.stringify(cacheFilters))}`;
   }, [endpoint, selectedDriverKey, gf.start_date, gf.end_date, gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.lead_time_band, gf.classification]);
   const [driverFallback, setDriverFallback] = useState<T | null>(() => driverPerformanceCacheKey ? readDriverPerformanceCache<T>(driverPerformanceCacheKey) : null);
   const driverFallbackSeq = useRef(0);
