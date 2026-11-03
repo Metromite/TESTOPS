@@ -416,12 +416,15 @@ export default function Dashboard() {
       <DashboardTabs tabs={TABS} active={tab} onChange={selectTab} />
 
       {tab === "home" && <HomeTab driver={driver} onSelectDriver={(name) => { setDriver(name); setSelDrivers([]); }} onDriverListLoaded={setDriverList} globalFilters={globalFilters} />}
-      {/* Keep Driver Performance mounted with the Dashboard, just like the shared
-          dashboard dataset. Its local reconstruction and additive RPC hydration
-          must finish before the user opens the tab, rather than starting on click. */}
-      <div style={{ display: tab === "driver-performance" ? "block" : "none" }}>
-        <DriverPerformanceTab driver={driver} globalFilters={globalFilters} />
-      </div>
+      {/* Start Driver Performance in the background only after the shared
+          dashboard dataset and the latest imported date range are ready. Mounting
+          it earlier lets its local calculation run against an uninitialized range,
+          which can briefly produce an all-zero result and poison the first view. */}
+      {localDataset && latestRangeReady && initialLoadComplete && (
+        <div style={{ display: tab === "driver-performance" ? "block" : "none" }}>
+          <DriverPerformanceTab driver={driver} globalFilters={globalFilters} />
+        </div>
+      )}
       {tab === "lead-time" && <LeadTimeTab driver={driver} globalFilters={globalFilters} setLeadTimeBand={setSelLeadTimeBand} setClassification={setSelClassification} />}
       {tab === "order-summary" && <OrderSummaryTab driver={driver} globalFilters={globalFilters} />}
       {tab === "area-analytics" && <AreaAnalyticsTab driver={driver} globalFilters={globalFilters} />}
