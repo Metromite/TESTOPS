@@ -37,7 +37,7 @@ function writeDriverPerformanceCache<T>(key: string, value: T) {
   try { window.localStorage.setItem(key, JSON.stringify({ savedAt: Date.now(), value })); } catch { /* storage may be unavailable or full */ }
 }
 
-export function useDashboardLocalData<T>(endpoint: string, globalFilters?: GlobalFilters, driver = ""): { data: T | null; error: string } {
+export function useDashboardLocalData<T>(endpoint: string, globalFilters?: GlobalFilters, driver = "", driverSlicerValues: string[] = []): { data: T | null; error: string } {
   const baseFilters = globalFilters || EMPTY_GLOBAL_FILTERS;
   const gf = useMemo<GlobalFilters>(() => {
     if (!driver) return baseFilters;
@@ -75,7 +75,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
         ...gf, drivers: "", areas: "", division: "", route_type: "",
         vehicle_type: "", facility_type: "", salesman: "",
       });
-      const selected = String(gf.drivers || "").split(",").map((value) => value.trim()).filter(Boolean);
+      const selected = [...new Set([...String(gf.drivers || "").split(","), ...driverSlicerValues].map((value) => value.trim()).filter(Boolean))];
       const normalize = (value: unknown) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
       const compact = (value: unknown) => normalize(value).replace(/\s+/g, "");
       const selectedValues = (value: unknown) => String(value || "").split(",").map((item) => normalize(item)).filter((item) => item && item !== "all" && item !== "(all)" && item !== "select all");
@@ -120,7 +120,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
     // This is the exact pre-filter-fix path that previously displayed the full
     // Driver Performance data correctly when no slicer was selected.
     return buildLocalForEndpoint(endpoint, dataset, gf) as T;
-  }, [dataset, endpoint, driver, gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.start_date, gf.end_date, gf.lead_time_band, gf.classification]);
+  }, [dataset, endpoint, driver, driverSlicerValues, gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.start_date, gf.end_date, gf.lead_time_band, gf.classification]);
 
   // Driver Performance only: if the local reconstruction returns zero for an
   // explicitly selected driver, ask the existing proven Driver Performance

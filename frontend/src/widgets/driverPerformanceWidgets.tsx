@@ -40,8 +40,8 @@ export interface PerfData {
 }
 const methodTone: Record<string, "ok" | "neutral" | "danger"> = { vehicle: "ok", manual: "ok", name: "neutral", none: "danger" };
 
-export function useDriverPerformanceData(driver: string, globalFilters?: GlobalFilters) {
-  return useDashboardLocalData<PerfData>("/dashboard/driver-performance", globalFilters, driver);
+export function useDriverPerformanceData(driver: string, globalFilters?: GlobalFilters, driverSlicerValues: string[] = []) {
+  return useDashboardLocalData<PerfData>("/dashboard/driver-performance", globalFilters, driver, driverSlicerValues);
 }
 
 export function DpKpiTile({ label, value }: { label: string; value: string | number }) {

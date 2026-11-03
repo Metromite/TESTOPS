@@ -422,7 +422,7 @@ export default function Dashboard() {
           which can briefly produce an all-zero result and poison the first view. */}
       {localDataset && latestRangeReady && initialLoadComplete && (
         <div style={{ display: tab === "driver-performance" ? "block" : "none" }}>
-          <DriverPerformanceTab driver={driver} globalFilters={globalFilters} />
+          <DriverPerformanceTab driver={driver} globalFilters={globalFilters} driverSlicerValues={selDrivers} />
         </div>
       )}
       {tab === "lead-time" && <LeadTimeTab driver={driver} globalFilters={globalFilters} setLeadTimeBand={setSelLeadTimeBand} setClassification={setSelClassification} />}

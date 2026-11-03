@@ -10,8 +10,8 @@ import {
   StopsPerDriverChart, RouteDurationChart, RouteDetailTable,
 } from "../widgets/driverPerformanceWidgets";
 
-export default function DriverPerformanceTab({ driver = "", globalFilters }: { driver?: string; globalFilters?: GlobalFilters }) {
-  const { data, error } = useDriverPerformanceData(driver, globalFilters);
+export default function DriverPerformanceTab({ driver = "", globalFilters, driverSlicerValues = [] }: { driver?: string; globalFilters?: GlobalFilters; driverSlicerValues?: string[] }) {
+  const { data, error } = useDriverPerformanceData(driver, globalFilters, driverSlicerValues);
 
   if (error) return <div className="glass-card error-text">{error}</div>;
   if (!data) return <div>Loading...</div>;
