@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { EMPTY_GLOBAL_FILTERS, type GlobalFilters } from "../types/dashboardFilters";
 import {
   buildLocalForEndpoint,
+  buildLocalDriverPerformance,
+  filterDashboardRows,
   getLocalFilterOptions,
   getDashboardLocalDataset,
   preloadDashboardLocalDataset,
@@ -54,6 +56,29 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
 
   const data = useMemo(() => {
     if (!dataset || dataset.key !== "ALL") return null;
+    if (endpoint.includes("driver-performance") && String(gf.drivers || "").trim()) {
+      // Driver Performance needs a tolerant driver-name match. The shared
+      // dashboard filter intentionally uses exact SAP values for the other
+      // tabs; GPS route ownership can carry harmless spacing/punctuation or
+      // abbreviated-name differences, so applying that exact filter before
+      // ownership resolution can remove every SAP row and make the tab zero.
+      const allFilteredRows = filterDashboardRows(dataset, { ...gf, drivers: "" });
+      const selected = String(gf.drivers || "").split(",").map((value) => value.trim()).filter(Boolean);
+      const normalize = (value: unknown) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+      const compact = (value: unknown) => normalize(value).replace(/\s+/g, "");
+      const matchesDriver = (candidate: string, wanted: string) => {
+        const a = normalize(candidate), b = normalize(wanted);
+        if (!a || !b) return false;
+        if (a === b) return true;
+        const ca = compact(a), cb = compact(b);
+        if (Math.min(ca.length, cb.length) >= 5 && (ca.startsWith(cb) || cb.startsWith(ca))) return true;
+        const at = new Set(a.split(" ").filter((part) => part.length > 1));
+        const bt = b.split(" ").filter((part) => part.length > 1);
+        return bt.length > 0 && bt.filter((part) => at.has(part)).length / bt.length >= 0.8;
+      };
+      const driverRows = allFilteredRows.filter((row) => selected.some((wanted) => matchesDriver(row.driver_name, wanted)));
+      return buildLocalDriverPerformance(driverRows, dataset.routeCards, gf, dataset.rows) as T;
+    }
     return buildLocalForEndpoint(endpoint, dataset, gf) as T;
   }, [dataset, endpoint, driver, gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.start_date, gf.end_date, gf.lead_time_band, gf.classification]);
 
