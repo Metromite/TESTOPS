@@ -105,7 +105,8 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
     // the endpoint.
     if (!selectedDriverKey) {
       if (!data || !dataset || dataset.key !== "ALL") {
-        updateDriverFallback(null);
+        // Keep the matching hydrated snapshot while the shared local dataset
+        // is momentarily unavailable or being refreshed.
         return;
       }
 
@@ -134,7 +135,8 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
       const missingDrivers = roster.filter((driverName) => !present.has(normalize(driverName)));
 
       if (!missingDrivers.length) {
-        updateDriverFallback(null);
+        // Keep any matching cached/hydrated result. The local snapshot may be
+        // intentionally smaller than the previously hydrated full result.
         return;
       }
       // A recent browser snapshot already contains the hydrated Driver Performance
@@ -249,7 +251,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
         const mergedStops = mergeChart(localStops, remoteStops);
         const mergedHours = mergeChart(localHours, remoteHours);
         if (mergedStops.labels.length <= localStops.labels.length && mergedHours.labels.length <= localHours.labels.length) {
-          updateDriverFallback(null);
+          // No new remote rows is not a reason to erase a valid cached result.
           return;
         }
         updateDriverFallback({ ...(data as any), chart_stops: mergedStops, chart_route_hours: mergedHours } as T);
@@ -288,14 +290,15 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
     // only request the missing drivers individually. This keeps the fast local
     // path intact and makes the fallback additive rather than destructive.
     if (!localDriverIsEmpty && selectedDriverKeys.length === 1 && missingDrivers.length === 0) {
-      updateDriverFallback(null);
+      // Preserve the matching cached/hydrated result; local cards can be a
+      // partial reconstruction even when the selected driver appears locally.
       return;
     }
     if (!localDriverIsEmpty && selectedDriverKeys.length === 1 && missingDrivers.length === 1) {
       // handled below as one additive card set; do not use the old whole-result replacement.
     }
     if (!missingDrivers.length) {
-      updateDriverFallback(null);
+      // Do not replace a complete cached result with a smaller local result.
       return;
     }
     if (driverPerformanceCacheKey && isFreshDriverPerformanceCache(driverPerformanceCacheKey)) return;
@@ -323,7 +326,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
       if (seq !== driverFallbackSeq.current) return;
       const valid = remotes.filter((remote) => !!remote && (Number((remote as any)?.kpis?.gps_vehicles || 0) > 0 || (Array.isArray((remote as any)?.route_cards) && (remote as any).route_cards.length > 0)));
       if (!valid.length) {
-        updateDriverFallback(null);
+        // An empty fallback response must never erase already valid cached data.
         return;
       }
 
