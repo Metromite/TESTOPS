@@ -56,16 +56,31 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
 
   const data = useMemo(() => {
     if (!dataset || dataset.key !== "ALL") return null;
-    if (endpoint.includes("driver-performance") && String(gf.drivers || "").trim()) {
+    if (endpoint.includes("driver-performance") && [gf.drivers, gf.areas, gf.division, gf.vehicle_type, gf.facility_type, gf.salesman].some((value) => String(value || "").trim())) {
       // Driver Performance needs a tolerant driver-name match. The shared
       // dashboard filter intentionally uses exact SAP values for the other
       // tabs; GPS route ownership can carry harmless spacing/punctuation or
       // abbreviated-name differences, so applying that exact filter before
       // ownership resolution can remove every SAP row and make the tab zero.
-      const allFilteredRows = filterDashboardRows(dataset, { ...gf, drivers: "" });
+      // Driver Performance gets its own resilient filter pass. Slicer values
+      // may come from Fleet metadata while October SAP rows carry harmless
+      // case, whitespace, or punctuation differences. Normalize every
+      // dimension here without changing the other dashboard tabs.
+      const baseRows = filterDashboardRows(dataset, { ...gf, drivers: "", areas: "", division: "", vehicle_type: "", facility_type: "", salesman: "" });
       const selected = String(gf.drivers || "").split(",").map((value) => value.trim()).filter(Boolean);
       const normalize = (value: unknown) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
       const compact = (value: unknown) => normalize(value).replace(/\s+/g, "");
+      const selectedValues = (value: unknown) => String(value || "").split(",").map((item) => normalize(item)).filter(Boolean);
+      const matchesValue = (candidate: unknown, wantedValues: string[]) => {
+        if (!wantedValues.length) return true;
+        const candidateNorm = normalize(candidate);
+        const candidateCompact = compact(candidate);
+        return wantedValues.some((wanted) => {
+          if (candidateNorm === wanted) return true;
+          const wantedCompact = wanted.replace(/\s+/g, "");
+          return !!candidateCompact && candidateCompact === wantedCompact;
+        });
+      };
       const matchesDriver = (candidate: string, wanted: string) => {
         const a = normalize(candidate), b = normalize(wanted);
         if (!a || !b) return false;
@@ -76,8 +91,24 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
         const bt = b.split(" ").filter((part) => part.length > 1);
         return bt.length > 0 && bt.filter((part) => at.has(part)).length / bt.length >= 0.8;
       };
-      const driverRows = allFilteredRows.filter((row) => selected.some((wanted) => matchesDriver(row.driver_name, wanted)));
-      return buildLocalDriverPerformance(driverRows, dataset.routeCards, gf, dataset.rows) as T;
+      const areaValues = selectedValues(gf.areas);
+      const divisionValues = selectedValues(gf.division);
+      const vehicleValues = selectedValues(gf.vehicle_type);
+      const facilityValues = selectedValues(gf.facility_type);
+      const salesmanValues = selectedValues(gf.salesman);
+      const dimensionRows = baseRows.filter((row) =>
+        matchesValue(row.area, areaValues) &&
+        matchesValue(row.division_desc, divisionValues) &&
+        matchesValue(row.vehicle_type, vehicleValues) &&
+        matchesValue(row.facility_type, facilityValues) &&
+        matchesValue(row.salesman, salesmanValues)
+      );
+      const driverRows = selected.length
+        ? dimensionRows.filter((row) => selected.some((wanted) => matchesDriver(row.driver_name, wanted)))
+        : dimensionRows;
+      const resolvedDrivers = [...new Set(driverRows.map((row) => row.driver_name).filter(Boolean))];
+      const performanceFilters = { ...gf, drivers: resolvedDrivers.join(",") };
+      return buildLocalDriverPerformance(driverRows, dataset.routeCards, performanceFilters, dataset.rows) as T;
     }
     return buildLocalForEndpoint(endpoint, dataset, gf) as T;
   }, [dataset, endpoint, driver, gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.start_date, gf.end_date, gf.lead_time_band, gf.classification]);
@@ -99,7 +130,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
       facility_type: gf.facility_type || "", salesman: gf.salesman || "",
       lead_time_band: gf.lead_time_band || "", classification: gf.classification || "",
     };
-    return `dispatchops:driver-performance:v1:${encodeURIComponent(JSON.stringify(cacheFilters))}`;
+    return `dispatchops:driver-performance:v2:${encodeURIComponent(JSON.stringify(cacheFilters))}`;
   }, [endpoint, selectedDriverKey, gf.start_date, gf.end_date, gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.lead_time_band, gf.classification]);
   const [driverFallback, setDriverFallback] = useState<T | null>(() => driverPerformanceCacheKey ? readDriverPerformanceCache<T>(driverPerformanceCacheKey) : null);
   const driverFallbackSeq = useRef(0);
