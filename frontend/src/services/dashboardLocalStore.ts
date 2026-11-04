@@ -217,13 +217,12 @@ async function fetchRowsForClient(client: any, start = "", end = "", onPage?: (r
     );
     if (start) q = q.gte("dispatch_date", start);
     if (end) q = q.lte("dispatch_date", end);
-    // Supabase range pagination follows the query order. The primary key makes
-    // every page deterministic across all three federated projects.
-    q = q.order("id", { ascending: true });
     const { data, error } = await q.range(from, from + PAGE - 1);
-    // Never accept a partial project as a successful read. A failure on page 2+
-    // used to silently keep page 1 and replace the last complete dataset.
-    if (error) throw new Error(error.message);
+    if (error) {
+      // Never present a partial project read as a complete SAP month. The caller
+      // can still use other healthy projects, but this source is marked failed.
+      throw new Error(`SAP facts page ${from}-${from + PAGE - 1}: ${error.message}`);
+    }
     const page = (data || []).map(normalizeRow);
     out.push(...page);
     onPage?.(page.length);
@@ -272,45 +271,28 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     const tertiary = clients[2];
     let primaryRowsLoaded = 0;
     let overflowRowsLoaded = 0;
-    const fetchProjectRows = async (
-      client: any,
-      projectName: string,
-      onPage: (count: number) => void,
-    ): Promise<LocalSapRow[]> => {
-      let lastError: unknown = null;
-      // Brief retries handle transient network/API failures without allowing a
-      // failed source to be mistaken for an empty source.
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          return await fetchRowsForClient(client, "", "", onPage);
-        } catch (error) {
-          lastError = error;
-          if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
-        }
-      }
-      const detail = lastError instanceof Error ? lastError.message : String(lastError || "Unknown read error");
-      throw new Error(`${projectName} SAP read failed after 3 attempts: ${detail}`);
-    };
-    const primaryPromise = fetchProjectRows(primary, "Primary", (n) => {
+    const primaryPromise = fetchRowsForClient(primary, "", "", (n) => {
       primaryRowsLoaded += n;
       setLoadingProgress(Math.min(45, 5 + Math.round(Math.log10(primaryRowsLoaded + 1) * 18)));
     });
     const secondaryPromise = secondary
-      ? fetchProjectRows(secondary, "Secondary", (n) => {
+      ? fetchRowsForClient(secondary, "", "", (n) => {
           overflowRowsLoaded += n;
           setLoadingProgress(Math.min(62, 25 + Math.round(Math.log10(primaryRowsLoaded + overflowRowsLoaded + 1) * 20)));
         })
       : Promise.resolve([] as LocalSapRow[]);
     const tertiaryPromise = tertiary
-      ? fetchProjectRows(tertiary, "Tertiary", (n) => {
+      ? fetchRowsForClient(tertiary, "", "", (n) => {
           overflowRowsLoaded += n;
           setLoadingProgress(Math.min(72, 35 + Math.round(Math.log10(primaryRowsLoaded + overflowRowsLoaded + 1) * 20)));
         })
       : Promise.resolve([] as LocalSapRow[]);
     const routePromise = fetchDashboardEndpoint<PerfData>(`/dashboard/driver-performance`);
     const fleetPromise = primary.from("vehicles").select("number,type,status");
-    // SAP reads are evaluated as one federated dataset below. A failed
-    // configured project must not be silently treated as an empty project.
+    // A failed overflow project must not cancel valid rows from the other
+    // projects (a common difference between normal and Private browser
+    // profiles). Keep every successful source and retain the last good local
+    // snapshot if all SAP sources are temporarily unavailable.
     const settled = await Promise.allSettled([
       primaryPromise, secondaryPromise, tertiaryPromise, routePromise, fleetPromise,
     ]);
@@ -339,18 +321,8 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     } satisfies PerfData);
     const fleetVehicles = valueAt(4, { data: [], error: null } as any);
     const sapSourceResults = [settled[0], ...(secondary ? [settled[1]] : []), ...(tertiary ? [settled[2]] : [])];
-    const failedSapSources = sapSourceResults
-      .map((item, index) => item.status === "rejected" ? ({ index, reason: item.reason }) : null)
-      .filter(Boolean) as Array<{ index: number; reason: unknown }>;
-    if (failedSapSources.length) {
-      // The three projects are one logical SAP dataset. Do not publish a
-      // Primary-only/partial snapshot when Secondary or Tertiary failed: keep
-      // the last complete in-memory/IndexedDB snapshot and retry on next load.
-      const detail = failedSapSources.map(({ index, reason }) => {
-        const name = index === 0 ? "Primary" : index === 1 && secondary ? "Secondary" : "Tertiary";
-        return `${name}: ${reason instanceof Error ? reason.message : String(reason)}`;
-      }).join("; ");
-      throw new Error(`Federated SAP dataset is incomplete; previous complete snapshot retained. ${detail}`);
+    if (sapSourceResults.every((item) => item.status === "rejected")) {
+      throw new Error("Unable to read SAP facts from any configured DispatchOPS data project.");
     }
     setLoadingProgress(82);
     // Fleet vehicle metadata is used only to canonicalize Pickup/Van. If the
@@ -388,9 +360,6 @@ export async function preloadDashboardLocalDataset(_start = "", _end = "", force
     const rows = applyFleetVehicleTypes(rowsRaw.filter((r: LocalSapRow) =>
       !isUnknown(r.division_desc) && !isUnknown(classification(r))
     ), fleetVehicleRows);
-    if (!rows.length && current?.rows.length) {
-      throw new Error("All federated SAP reads completed but returned zero usable rows; previous complete snapshot retained.");
-    }
 
     setLoadingProgress(94);
     baseRouteCards = [...(routeResult.route_cards || [])];
@@ -858,6 +827,7 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
     try {
       const clients = getFederatedSupabaseClients();
       const lmRows: any[] = [];
+      let landmarkReadIncomplete = false;
       // Fetch the selected GPS period in pages, then join in JavaScript using
       // normalized aliases. Filtering by raw SAP vehicle_key alone was brittle:
       // October exports may carry vehicle_num while vehicle_key is a legacy or
@@ -871,16 +841,25 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
           if (periodEnd) q = q.lte("visit_date", periodEnd);
           try {
             const { data, error } = await q.range(from, from + 999);
-            if (error) break;
+            if (error) {
+              landmarkReadIncomplete = true;
+              break;
+            }
             const page = data || [];
             lmRows.push(...page.filter((row: any) =>
               [row.vehicle_key, row.vehicle_raw].some((alias: unknown) => hydratedVehicleSet.has(normalizeMatchKey(alias)))
             ));
             if (page.length < 1000) break;
           } catch {
+            landmarkReadIncomplete = true;
             break;
           }
         }
+      }
+      if (landmarkReadIncomplete) {
+        // A partial read is not evidence that a driver had zero GPS activity.
+        // Leave the hydration key open so a later dashboard refresh can retry.
+        throw new Error("Landmark GPS read was incomplete; retry required.");
       }
 
       const parseTime = (value: unknown) => {

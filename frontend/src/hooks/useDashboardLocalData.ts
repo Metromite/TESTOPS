@@ -9,6 +9,32 @@ import {
 } from "../services/dashboardLocalStore";
 
 
+function readDriverPerformanceCache<T>(key: string): T | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || Date.now() - Number(parsed.savedAt || 0) > 7 * 24 * 60 * 60 * 1000) {
+      window.localStorage.removeItem(key);
+      return null;
+    }
+    return parsed.value as T;
+  } catch { return null; }
+}
+
+function isFreshDriverPerformanceCache(key: string): boolean {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return !!parsed?.value && Date.now() - Number(parsed.savedAt || 0) < 30 * 60 * 1000;
+  } catch { return false; }
+}
+
+function writeDriverPerformanceCache<T>(key: string, value: T) {
+  try { window.localStorage.setItem(key, JSON.stringify({ savedAt: Date.now(), value })); } catch { /* storage may be unavailable or full */ }
+}
+
 export function useDashboardLocalData<T>(endpoint: string, globalFilters?: GlobalFilters, driver = ""): { data: T | null; error: string } {
   const baseFilters = globalFilters || EMPTY_GLOBAL_FILTERS;
   const gf = useMemo<GlobalFilters>(() => {
@@ -38,22 +64,31 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
   // remains unchanged. The request is guarded by a key so stale responses can
   // never replace a newer driver selection.
   const selectedDriverKey = String(gf.drivers || driver || "").trim();
-  // Scope every in-memory fallback to the exact current filters AND the live
-  // dataset generation. A fallback from a previous month/filter/data refresh
-  // must never render while the new local result is being calculated.
-  const fallbackScopeKey = useMemo(() => JSON.stringify({
-    endpoint, loadedAt: dataset?.loadedAt || 0, driver: selectedDriverKey,
-    start: gf.start_date || "", end: gf.end_date || "",
-    drivers: gf.drivers || "", areas: gf.areas || "", division: gf.division || "",
-    route_type: gf.route_type || "", vehicle_type: gf.vehicle_type || "",
-    facility_type: gf.facility_type || "", salesman: gf.salesman || "",
-    lead_time_band: gf.lead_time_band || "", classification: gf.classification || "",
-  }), [endpoint, dataset?.loadedAt, selectedDriverKey, gf.start_date, gf.end_date, gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.lead_time_band, gf.classification]);
-  const [driverFallback, setDriverFallback] = useState<{ scopeKey: string; value: T } | null>(null);
+  const driverPerformanceCacheKey = useMemo(() => {
+    if (!endpoint.includes("driver-performance")) return "";
+    const cacheFilters = {
+      endpoint, driver: selectedDriverKey,
+      start: gf.start_date || "", end: gf.end_date || "",
+      drivers: gf.drivers || "", areas: gf.areas || "", division: gf.division || "",
+      route_type: gf.route_type || "", vehicle_type: gf.vehicle_type || "",
+      facility_type: gf.facility_type || "", salesman: gf.salesman || "",
+      lead_time_band: gf.lead_time_band || "", classification: gf.classification || "",
+      dataset_loaded_at: dataset?.loadedAt || 0,
+    };
+    // A new live dataset load gets a new loadedAt value. Including it prevents
+    // a 30-minute cached zero from masking newly imported October records.
+    return `dispatchops:driver-performance:v2:${encodeURIComponent(JSON.stringify(cacheFilters))}`;
+  }, [endpoint, selectedDriverKey, dataset?.loadedAt, gf.start_date, gf.end_date, gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.lead_time_band, gf.classification]);
+  const [driverFallback, setDriverFallback] = useState<T | null>(() => driverPerformanceCacheKey ? readDriverPerformanceCache<T>(driverPerformanceCacheKey) : null);
   const driverFallbackSeq = useRef(0);
   const updateDriverFallback = (value: T | null) => {
-    setDriverFallback(value ? { scopeKey: fallbackScopeKey, value } : null);
+    setDriverFallback(value);
+    if (value && driverPerformanceCacheKey) writeDriverPerformanceCache(driverPerformanceCacheKey, value);
   };
+  useEffect(() => {
+    if (driverPerformanceCacheKey) setDriverFallback(readDriverPerformanceCache<T>(driverPerformanceCacheKey));
+    else setDriverFallback(null);
+  }, [driverPerformanceCacheKey]);
   const selectedDriverKeys = selectedDriverKey.split(",").map((x) => x.trim()).filter(Boolean);
   const localDriverIsEmpty = endpoint.includes("driver-performance") && !!selectedDriverKey && !!data && Number((data as any)?.kpis?.gps_vehicles || 0) === 0 && Array.isArray((data as any)?.route_cards) && (data as any).route_cards.length === 0;
 
@@ -108,6 +143,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
       // A recent browser snapshot already contains the hydrated Driver Performance
       // result. Reuse it instead of repeating the same federated requests whenever
       // the user leaves and reopens this tab.
+      if (driverPerformanceCacheKey && isFreshDriverPerformanceCache(driverPerformanceCacheKey)) return;
 
       const loadOne = async (wanted: string) => {
         const params = new URLSearchParams();
@@ -265,6 +301,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
       updateDriverFallback(null);
       return;
     }
+    if (driverPerformanceCacheKey && isFreshDriverPerformanceCache(driverPerformanceCacheKey)) return;
 
     const loadOne = async (wanted: string) => {
       const params = new URLSearchParams();
@@ -342,8 +379,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
     return () => {
       if (seq === driverFallbackSeq.current) driverFallbackSeq.current += 1;
     };
-  }, [endpoint, selectedDriverKey, localDriverIsEmpty, gf.start_date, gf.end_date, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, data, fallbackScopeKey]);
+  }, [endpoint, selectedDriverKey, localDriverIsEmpty, gf.start_date, gf.end_date, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, data, driverPerformanceCacheKey]);
 
-  const currentDriverFallback = driverFallback?.scopeKey === fallbackScopeKey ? driverFallback.value : null;
-  return { data: (currentDriverFallback || data), error: "" };
+  return { data: (driverFallback || data), error: "" };
 }

@@ -68,8 +68,9 @@ async function fetchAllFromProjects<T>(table: string, columns: string, filters: 
       q = filters(q);
       const { data, error } = await q.range(from, from + pageSize - 1);
       if (error) {
-        if (out.length) break;
-        throw new Error(error.message);
+        // A failed later page invalidates this project's result; returning the
+        // earlier pages silently truncates SAP/GPS analytics.
+        throw new Error(`${table} page ${from}-${from + pageSize - 1}: ${error.message}`);
       }
       const page = (data || []) as T[];
       out.push(...page);

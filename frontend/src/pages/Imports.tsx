@@ -12,7 +12,9 @@ interface JobSnap {
 }
 interface Batch {
   batch_id: string; source_type: string; filename: string; imported_by: string;
-  label: string; imported_at: string; raw_row_count: number; parsed_fact_count: number; status?: string; error_message?: string; storage_project?: string;
+  label: string; imported_at: string; raw_row_count: number | null; parsed_fact_count: number | null;
+  reported_raw_row_count?: number; reported_fact_count?: number; verification_error?: string; count_mismatch?: boolean;
+  status?: string; error_message?: string; storage_project?: string;
 }
 interface BatchRowsResponse { rows: { row_index: number; data: string }[] }
 
@@ -206,11 +208,15 @@ function BatchManager({ refreshKey, isAdmin }: { refreshKey?: string; isAdmin: b
               </td>
               <td>{new Date(b.imported_at).toLocaleString()}</td>
               <td>{b.imported_by}</td>
-              <td>{b.raw_row_count}</td>
-              <td>{b.parsed_fact_count}</td>
-              <td><span className={"badge " + (b.status === "failed" ? "excluded" : b.status === "processing" ? "" : "ok")}>{b.status || "completed"}</span>{b.error_message && <div className="error-text" style={{fontSize:10,marginTop:4,maxWidth:220}}>{b.error_message}</div>}</td>
+              <td>{b.raw_row_count == null ? "—" : b.raw_row_count.toLocaleString()}</td>
+              <td>{b.parsed_fact_count == null ? "—" : b.parsed_fact_count.toLocaleString()}</td>
+              <td><span className={"badge " + (b.status === "failed" || b.count_mismatch || b.verification_error ? "excluded" : b.status === "processing" ? "" : "ok")}>{b.status || "completed"}</span>
+                {b.count_mismatch && <div className="error-text" style={{fontSize:10,marginTop:4,maxWidth:220}}>Metadata says {b.reported_raw_row_count?.toLocaleString()} raw / {b.reported_fact_count?.toLocaleString()} facts; actual stored counts differ.</div>}
+                {b.verification_error && <div className="error-text" style={{fontSize:10,marginTop:4,maxWidth:220}}>Count verification failed: {b.verification_error}</div>}
+                {b.error_message && <div className="error-text" style={{fontSize:10,marginTop:4,maxWidth:220}}>{b.error_message}</div>}
+              </td>
               <td style={{ display: "flex", gap: 6 }}>
-                <button className="btn" onClick={() => viewBatch(b)} disabled={b.raw_row_count === 0}>View</button>
+                <button className="btn" onClick={() => viewBatch(b)} disabled={b.raw_row_count == null || b.raw_row_count === 0}>View</button>
                 {isAdmin && <button className="btn" style={{background:"var(--red)"}} onClick={() => void deleteBatch(b.batch_id)}>Delete</button>}
               </td>
             </tr>

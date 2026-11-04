@@ -631,17 +631,35 @@ export async function processImportFile(
       progress({ current_step: "Saving V-Zone / Landmark visit facts", processed_units: rows.length, total_units: rows.length, progress_pct: 60 });
       await insertChunks("landmark_visit_facts", facts, importClient);
     }
+    // Verify persisted child rows on the same project that owns this import.
+    // Batch metadata alone is not proof that the raw rows and parsed facts exist.
+    progress({ current_step: "Verifying saved import records", processed_units: rows.length, total_units: rows.length, progress_pct: 88 });
+    const factTable = sourceType === "sap" ? "sap_invoice_facts" : "landmark_visit_facts";
+    const [rawVerification, factVerification] = await Promise.all([
+      importClient.from("raw_import_rows").select("id", { count: "exact", head: true }).eq("batch_id", batch.id),
+      importClient.from(factTable).select("id", { count: "exact", head: true }).eq("batch_id", batch.id),
+    ]);
+    if (rawVerification.error) throw new Error(`Import verification could not read raw rows: ${rawVerification.error.message}`);
+    if (factVerification.error) throw new Error(`Import verification could not read parsed facts: ${factVerification.error.message}`);
+    const actualRawRows = Number(rawVerification.count || 0);
+    const actualFacts = Number(factVerification.count || 0);
+    if (actualRawRows !== rows.length || actualFacts !== facts.length) {
+      throw new Error(`Import verification mismatch. Expected ${rows.length} raw rows and ${facts.length} parsed facts, but found ${actualRawRows} raw rows and ${actualFacts} parsed facts. The batch was not marked completed.`);
+    }
     const failed = rejected.length;
     const finished = await finalizeImportBatch(batch.id, { row_count: rows.length, success_count: facts.length, failed_count: failed, validation_errors: rejected.slice(0, 200) });
-    // The dashboard's IndexedDB snapshot must not hide a newly imported month.
+    // Clear both the local IndexedDB snapshot and in-memory analytics results;
+    // otherwise Driver Performance can keep serving the pre-import month.
     await invalidateDashboardLocalDataset();
+    const analytics = await import("./dashboardAnalytics");
+    analytics.invalidateDashboardAnalyticsCache();
     progress({ status: failed ? "partial" : "completed", current_step: "Import complete", progress_pct: 100, processed_units: rows.length, total_units: rows.length, log: `${facts.length} parsed facts stored. Original file retained in Supabase Storage.` });
     return finished;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (batch) {
       const ownerClient = getSupabaseClientByProject((batch.storage_project as any) || "primary");
-      await ownerClient.from("import_batches").update({ status: "failed", validation_errors: [message] }).eq("id", batch.id);
+      await ownerClient.from("import_batches").update({ status: "failed", error_message: message, validation_errors: [message] }).eq("id", batch.id);
     }
     progress({ status: "failed", current_step: "Import failed", error: message });
     throw error;
@@ -658,18 +676,24 @@ export async function getImportBatchesForUi() {
     if (error) throw new Error(error.message);
     for (const b of data || []) {
       const table = b.source_type === "sap" ? "sap_invoice_facts" : "landmark_visit_facts";
-      const [{ count: rawCount }, { count: factCount }] = await Promise.all([
+      const [rawResult, factResult] = await Promise.all([
         client.from("raw_import_rows").select("id", { count: "exact", head: true }).eq("batch_id", b.id),
         client.from(table).select("id", { count: "exact", head: true }).eq("batch_id", b.id),
       ]);
+      const countError = [rawResult.error, factResult.error].filter(Boolean).map((e: any) => e.message).join("; ");
+      const actualRaw = rawResult.error ? null : Number(rawResult.count || 0);
+      const actualFacts = factResult.error ? null : Number(factResult.count || 0);
+      const reportedRaw = Number(b.row_count || 0);
+      const reportedFacts = Number(b.success_count || 0);
+      const mismatch = actualRaw !== null && actualFacts !== null && (actualRaw !== reportedRaw || actualFacts !== reportedFacts);
       all.push({
         batch_id: b.id, source_type: b.source_type, filename: b.original_filename || b.file_name || "",
         imported_by: b.imported_by || "", label: b.label || "", imported_at: b.imported_at || b.created_at,
-        // The batch metadata is the authoritative persisted count. The direct COUNT query can
-        // legitimately return 0 when a client cannot see the child rows even though the import
-        // completed successfully, so never display a false zero when the batch recorded rows.
-        raw_row_count: Math.max(Number(rawCount || 0), Number(b.row_count || 0)),
-        parsed_fact_count: Math.max(Number(factCount || 0), Number(b.success_count || 0)),
+        // Show actual persisted child counts. Metadata is retained separately for diagnosis
+        // and is never substituted for a count that the database did not return.
+        raw_row_count: actualRaw, parsed_fact_count: actualFacts,
+        reported_raw_row_count: reportedRaw, reported_fact_count: reportedFacts,
+        verification_error: countError, count_mismatch: mismatch,
         status: b.status, error_message: b.error_message || "", storage_project: projectNames[i],
       });
     }
