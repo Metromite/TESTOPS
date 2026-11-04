@@ -6,7 +6,7 @@
  * without each tab file redefining its own copy of this shape.
  */
 export interface GlobalFilters {
-  drivers: string; areas: string; division: string; route_type: string; vehicle_type: string;
+  drivers: string; driver_aliases?: string; areas: string; division: string; route_type: string; vehicle_type: string;
   facility_type: string; salesman: string; start_date: string; end_date: string;
   // FINAL CORRECTION PASS ("single source of truth" for filters, item 12):
   // Lead Time Band / Classification used to live as LeadTimeTab-local
@@ -24,7 +24,7 @@ export interface GlobalFilters {
 }
 
 export const EMPTY_GLOBAL_FILTERS: GlobalFilters = {
-  drivers: "", areas: "", division: "", route_type: "", vehicle_type: "",
+  drivers: "", driver_aliases: "", areas: "", division: "", route_type: "", vehicle_type: "",
   facility_type: "", salesman: "", start_date: "", end_date: "",
   lead_time_band: "", classification: "",
 };
@@ -35,5 +35,8 @@ export const EMPTY_GLOBAL_FILTERS: GlobalFilters = {
  * resulting URLSearchParams shape - and therefore the useEffect dependency
  * array built from it - stays consistent across every tab. */
 export function dashboardFilterParams(driver: string, gf: GlobalFilters): Record<string, string> {
-  return { driver, ...gf };
+  // driver_aliases is a local SAP identity bridge only; keep it out of
+  // existing RPC query strings so every remote endpoint keeps its old contract.
+  const { driver_aliases: _driverAliases, ...remoteFilters } = gf;
+  return { driver, ...remoteFilters };
 }

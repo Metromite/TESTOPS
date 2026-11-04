@@ -2,8 +2,6 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { EMPTY_GLOBAL_FILTERS, type GlobalFilters } from "../types/dashboardFilters";
 import {
   buildLocalForEndpoint,
-  buildLocalDriverPerformance,
-  filterDashboardRows,
   getLocalFilterOptions,
   getDashboardLocalDataset,
   preloadDashboardLocalDataset,
@@ -37,13 +35,13 @@ function writeDriverPerformanceCache<T>(key: string, value: T) {
   try { window.localStorage.setItem(key, JSON.stringify({ savedAt: Date.now(), value })); } catch { /* storage may be unavailable or full */ }
 }
 
-export function useDashboardLocalData<T>(endpoint: string, globalFilters?: GlobalFilters, driver = "", driverSlicerValues: string[] = []): { data: T | null; error: string } {
+export function useDashboardLocalData<T>(endpoint: string, globalFilters?: GlobalFilters, driver = ""): { data: T | null; error: string } {
   const baseFilters = globalFilters || EMPTY_GLOBAL_FILTERS;
   const gf = useMemo<GlobalFilters>(() => {
     if (!driver) return baseFilters;
     const current = String(baseFilters.drivers || "").split(",").map((x) => x.trim()).filter(Boolean);
     return { ...baseFilters, drivers: [...new Set([driver.trim(), ...current])].join(",") };
-  }, [driver, baseFilters.drivers, baseFilters.areas, baseFilters.division, baseFilters.route_type, baseFilters.vehicle_type, baseFilters.facility_type, baseFilters.salesman, baseFilters.start_date, baseFilters.end_date, baseFilters.lead_time_band, baseFilters.classification]);
+  }, [driver, baseFilters.drivers, baseFilters.driver_aliases, baseFilters.areas, baseFilters.division, baseFilters.route_type, baseFilters.vehicle_type, baseFilters.facility_type, baseFilters.salesman, baseFilters.start_date, baseFilters.end_date, baseFilters.lead_time_band, baseFilters.classification]);
   const start = gf.start_date || "";
   const end = gf.end_date || "";
   const dataset = useSyncExternalStore(subscribeDashboardLocal, getDashboardLocalDataset, getDashboardLocalDataset);
@@ -56,71 +54,8 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
 
   const data = useMemo(() => {
     if (!dataset || dataset.key !== "ALL") return null;
-
-    // Preserve the known-good unfiltered Driver Performance reconstruction
-    // exactly. The resilient path below is used only when a real slicer value
-    // is selected, so an empty/default filter state cannot turn the page to 0.
-    const hasSelectedValue = (value: unknown) =>
-      String(value || "").split(",").map((item) => item.trim().toLowerCase())
-        .some((item) => item && item !== "all" && item !== "(all)" && item !== "select all");
-    const hasDriverPerformanceFilter = endpoint.includes("driver-performance") &&
-      [gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman]
-        .some(hasSelectedValue);
-
-    if (hasDriverPerformanceFilter) {
-      // Keep the established local dataset and date filtering, but apply the
-      // Driver Performance slicers with normalized comparisons. Other tabs
-      // continue using their original shared filter implementation.
-      const baseRows = filterDashboardRows(dataset, {
-        ...gf, drivers: "", areas: "", division: "", route_type: "",
-        vehicle_type: "", facility_type: "", salesman: "",
-      });
-      const selected = [...new Set([...String(gf.drivers || "").split(","), ...driverSlicerValues].map((value) => value.trim()).filter(Boolean))];
-      const normalize = (value: unknown) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
-      const compact = (value: unknown) => normalize(value).replace(/\s+/g, "");
-      const selectedValues = (value: unknown) => String(value || "").split(",").map((item) => normalize(item)).filter((item) => item && item !== "all" && item !== "(all)" && item !== "select all");
-      const matchesValue = (candidate: unknown, wantedValues: string[]) => {
-        if (!wantedValues.length) return true;
-        const candidateNorm = normalize(candidate);
-        const candidateCompact = compact(candidate);
-        return wantedValues.some((wanted) => candidateNorm === wanted || (!!candidateCompact && candidateCompact === wanted.replace(/\s+/g, "")));
-      };
-      const matchesDriver = (candidate: string, wanted: string) => {
-        const a = normalize(candidate), b = normalize(wanted);
-        if (!a || !b) return false;
-        if (a === b) return true;
-        const ca = compact(a), cb = compact(b);
-        if (Math.min(ca.length, cb.length) >= 5 && (ca.startsWith(cb) || cb.startsWith(ca))) return true;
-        const at = new Set(a.split(" ").filter((part) => part.length > 1));
-        const bt = b.split(" ").filter((part) => part.length > 1);
-        return bt.length > 0 && bt.filter((part) => at.has(part)).length / bt.length >= 0.8;
-      };
-      const areaValues = selectedValues(gf.areas);
-      const divisionValues = selectedValues(gf.division);
-      const vehicleValues = selectedValues(gf.vehicle_type);
-      const facilityValues = selectedValues(gf.facility_type);
-      const salesmanValues = selectedValues(gf.salesman);
-      const routeValues = selectedValues(gf.route_type);
-      const dimensionRows = baseRows.filter((row) =>
-        matchesValue(row.area, areaValues) &&
-        matchesValue(row.division_desc, divisionValues) &&
-        matchesValue(row.vehicle_type, vehicleValues) &&
-        matchesValue(row.facility_type, facilityValues) &&
-        matchesValue(row.salesman, salesmanValues) &&
-        matchesValue((row as any).route_type, routeValues)
-      );
-      const driverRows = selected.length
-        ? dimensionRows.filter((row) => selected.some((wanted) => matchesDriver(row.driver_name, wanted)))
-        : dimensionRows;
-      const resolvedDrivers = [...new Set(driverRows.map((row) => row.driver_name).filter(Boolean))];
-      const performanceFilters = { ...gf, drivers: selected.length ? resolvedDrivers.join(",") : "" };
-      return buildLocalDriverPerformance(driverRows, dataset.routeCards, performanceFilters, dataset.rows) as T;
-    }
-
-    // This is the exact pre-filter-fix path that previously displayed the full
-    // Driver Performance data correctly when no slicer was selected.
     return buildLocalForEndpoint(endpoint, dataset, gf) as T;
-  }, [dataset, endpoint, driver, driverSlicerValues, gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.start_date, gf.end_date, gf.lead_time_band, gf.classification]);
+  }, [dataset, endpoint, driver, gf.drivers, gf.driver_aliases, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.start_date, gf.end_date, gf.lead_time_band, gf.classification]);
 
   // Driver Performance only: if the local reconstruction returns zero for an
   // explicitly selected driver, ask the existing proven Driver Performance
@@ -134,13 +69,13 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
     const cacheFilters = {
       endpoint, driver: selectedDriverKey,
       start: gf.start_date || "", end: gf.end_date || "",
-      drivers: gf.drivers || "", areas: gf.areas || "", division: gf.division || "",
+      drivers: gf.drivers || "", driver_aliases: gf.driver_aliases || "", areas: gf.areas || "", division: gf.division || "",
       route_type: gf.route_type || "", vehicle_type: gf.vehicle_type || "",
       facility_type: gf.facility_type || "", salesman: gf.salesman || "",
       lead_time_band: gf.lead_time_band || "", classification: gf.classification || "",
     };
     return `dispatchops:driver-performance:v1:${encodeURIComponent(JSON.stringify(cacheFilters))}`;
-  }, [endpoint, selectedDriverKey, gf.start_date, gf.end_date, gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.lead_time_band, gf.classification]);
+  }, [endpoint, selectedDriverKey, gf.start_date, gf.end_date, gf.drivers, gf.driver_aliases, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.lead_time_band, gf.classification]);
   const [driverFallback, setDriverFallback] = useState<T | null>(() => driverPerformanceCacheKey ? readDriverPerformanceCache<T>(driverPerformanceCacheKey) : null);
   const driverFallbackSeq = useRef(0);
   const updateDriverFallback = (value: T | null) => {
@@ -170,8 +105,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
     // the endpoint.
     if (!selectedDriverKey) {
       if (!data || !dataset || dataset.key !== "ALL") {
-        // Keep the matching hydrated snapshot while the shared local dataset
-        // is momentarily unavailable or being refreshed.
+        updateDriverFallback(null);
         return;
       }
 
@@ -200,8 +134,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
       const missingDrivers = roster.filter((driverName) => !present.has(normalize(driverName)));
 
       if (!missingDrivers.length) {
-        // Keep any matching cached/hydrated result. The local snapshot may be
-        // intentionally smaller than the previously hydrated full result.
+        updateDriverFallback(null);
         return;
       }
       // A recent browser snapshot already contains the hydrated Driver Performance
@@ -316,7 +249,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
         const mergedStops = mergeChart(localStops, remoteStops);
         const mergedHours = mergeChart(localHours, remoteHours);
         if (mergedStops.labels.length <= localStops.labels.length && mergedHours.labels.length <= localHours.labels.length) {
-          // No new remote rows is not a reason to erase a valid cached result.
+          updateDriverFallback(null);
           return;
         }
         updateDriverFallback({ ...(data as any), chart_stops: mergedStops, chart_route_hours: mergedHours } as T);
@@ -355,15 +288,14 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
     // only request the missing drivers individually. This keeps the fast local
     // path intact and makes the fallback additive rather than destructive.
     if (!localDriverIsEmpty && selectedDriverKeys.length === 1 && missingDrivers.length === 0) {
-      // Preserve the matching cached/hydrated result; local cards can be a
-      // partial reconstruction even when the selected driver appears locally.
+      updateDriverFallback(null);
       return;
     }
     if (!localDriverIsEmpty && selectedDriverKeys.length === 1 && missingDrivers.length === 1) {
       // handled below as one additive card set; do not use the old whole-result replacement.
     }
     if (!missingDrivers.length) {
-      // Do not replace a complete cached result with a smaller local result.
+      updateDriverFallback(null);
       return;
     }
     if (driverPerformanceCacheKey && isFreshDriverPerformanceCache(driverPerformanceCacheKey)) return;
@@ -391,7 +323,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
       if (seq !== driverFallbackSeq.current) return;
       const valid = remotes.filter((remote) => !!remote && (Number((remote as any)?.kpis?.gps_vehicles || 0) > 0 || (Array.isArray((remote as any)?.route_cards) && (remote as any).route_cards.length > 0)));
       if (!valid.length) {
-        // An empty fallback response must never erase already valid cached data.
+        updateDriverFallback(null);
         return;
       }
 
