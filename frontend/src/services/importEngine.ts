@@ -763,15 +763,23 @@ export async function deleteImportedData(
   ) => {
     const CHUNK = 250;
     let chunks = 0;
+    // Keyset pagination is important here: batch_id may not be indexed in an
+    // existing deployment. Repeating LIMIT from the beginning forces the DB
+    // to rescan the same raw rows on every chunk and eventually times out.
+    // The primary-key id index lets each next page continue after the last id.
+    let lastSeenId: string | null = null;
     while (true) {
       report(Math.min(endPct - 1, startPct + Math.min(8, chunks)), `${label} · ${chunks} batches processed`);
-      const { data: ids, error: readError } = await client.from(table).select("id").eq(column, batchId).limit(CHUNK);
+      let query = client.from(table).select("id").eq(column, batchId).order("id", { ascending: true }).limit(CHUNK);
+      if (lastSeenId) query = query.gt("id", lastSeenId);
+      const { data: ids, error: readError } = await query;
       if (readError) throw new Error(`${table}.${column}: ${readError.message}`);
       const keys = (ids || []).map((row: any) => row.id).filter(Boolean);
       if (!keys.length) break;
       const { data: removed, error: deleteError } = await client.from(table).delete().in("id", keys).select("id");
       if (deleteError) throw new Error(`${table}: ${deleteError.message}`);
       if (!removed?.length) throw new Error(`${table}: deletion made no progress; remaining rows were left untouched.`);
+      lastSeenId = String(keys[keys.length - 1]);
       removedRows += removed.length;
       chunks += 1;
       report(Math.min(endPct - 1, startPct + Math.min(8, chunks)), `${label} · ${removedRows.toLocaleString()} rows removed`);
