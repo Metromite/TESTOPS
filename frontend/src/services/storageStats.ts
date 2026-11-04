@@ -51,7 +51,7 @@ export async function getDispatchopsStorageStats(): Promise<StorageStats> {
   const [p, s, t] = await Promise.all([walk(primary), secondary ? walk(secondary) : Promise.resolve({ count: 0, bytes: 0 }), tertiary ? walk(tertiary) : Promise.resolve({ count: 0, bytes: 0 })]);
   const totalBytes = p.bytes + s.bytes + t.bytes;
   return {
-    fileCount: p.count + s.count, bytesUsed: totalBytes, bucket: BUCKET,
+    fileCount: p.count + s.count + t.count, bytesUsed: totalBytes, bucket: BUCKET,
     primaryBytesUsed: p.bytes, secondaryBytesUsed: s.bytes, tertiaryBytesUsed: t.bytes,
     primaryFileCount: p.count, secondaryFileCount: s.count, tertiaryFileCount: t.count,
     primaryCapacityBytes: CAPACITY, secondaryCapacityBytes: secondary ? CAPACITY : 0, tertiaryCapacityBytes: tertiary ? CAPACITY : 0,
@@ -73,13 +73,23 @@ export function formatBytes(bytes: number): string {
 
 const DATABASE_CAPACITY = 500 * 1024 * 1024; // Supabase default database quota used by this UI; can be changed centrally later.
 
-export async function getDispatchopsDatabaseStats(): Promise<{ primary: DatabaseStats; secondary: DatabaseStats | null; tertiary: DatabaseStats | null }> {
-  const clients:any[]=[getPrimarySupabaseClient()];
-  const secondary=getSecondarySupabaseClient(); if(secondary) clients.push(secondary);
-  const tertiary=getTertiarySupabaseClient(); if(tertiary) clients.push(tertiary);
-  const results=await Promise.all(clients.map(c=>c.rpc("dispatchops_database_size")));
-  const err=results.map(r=>r.error).find(Boolean);
-  if(err) throw new Error(err.message);
-  const make=(r:any):DatabaseStats=>{const used=Math.max(0,Number(r.data?.used_bytes??r.data??0));return {usedBytes:used,capacityBytes:DATABASE_CAPACITY,remainingBytes:Math.max(0,DATABASE_CAPACITY-used),percentUsed:used/DATABASE_CAPACITY*100};};
-  return {primary:make(results[0]),secondary:secondary?make(results[1]):null,tertiary:tertiary?make(results[2]):null};
+export async function getDispatchopsDatabaseStats(): Promise<{ primary: DatabaseStats | null; secondary: DatabaseStats | null; tertiary: DatabaseStats | null }> {
+  const projects = [
+    { name: "primary" as const, client: getPrimarySupabaseClient() },
+    { name: "secondary" as const, client: getSecondarySupabaseClient() },
+    { name: "tertiary" as const, client: getTertiarySupabaseClient() },
+  ];
+  const pairs = await Promise.all(projects.map(async ({ name, client }) => {
+    if (!client) return [name, null] as const;
+    try {
+      const { data, error } = await client.rpc("dispatchops_database_size");
+      if (error) return [name, null] as const;
+      const used = Math.max(0, Number((data as any)?.used_bytes ?? data ?? 0));
+      if (!Number.isFinite(used) || used <= 0) return [name, null] as const;
+      return [name, { usedBytes: used, capacityBytes: DATABASE_CAPACITY, remainingBytes: Math.max(0, DATABASE_CAPACITY - used), percentUsed: used / DATABASE_CAPACITY * 100 }] as const;
+    } catch {
+      return [name, null] as const;
+    }
+  }));
+  return Object.fromEntries(pairs) as { primary: DatabaseStats | null; secondary: DatabaseStats | null; tertiary: DatabaseStats | null };
 }

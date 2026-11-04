@@ -128,7 +128,9 @@ export async function insertRawImportRows(rows: Omit<RawImportRow, "id" | "impor
       await new Promise(r => setTimeout(r, 0));
     }
   };
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.ceil(rows.length / CHUNK)) }, () => worker()));
+  const results = await Promise.allSettled(Array.from({ length: Math.min(CONCURRENCY, Math.ceil(rows.length / CHUNK)) }, () => worker()));
+  const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failed) throw failed.reason instanceof Error ? failed.reason : new Error(String(failed.reason));
   return processed;
 }
 

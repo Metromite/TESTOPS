@@ -1,9 +1,9 @@
 import { useRef, useState, useEffect } from "react";
 import { getRole } from "../api/client";
-import { deleteImportedData, getImportBatchRows, getImportBatchesForUi, labelImportBatch, previewImportFile, processImportFile, type ImportPreview } from "../services/importEngine";
+import { deleteImportedData, getImportBatchRows, getImportBatchesForUi, labelImportBatch, previewImportFile, processImportFile, type ImportPreview, type ImportDeleteProgress } from "../services/importEngine";
 import { useOperationalRealtime } from "../hooks/useOperationalRealtime";
 import Modal from "../components/Modal";
-import { formatBytes, getDispatchopsStorageStats, type StorageStats } from "../services/storageStats";
+import { formatBytes, getDispatchopsStorageStats, getDispatchopsDatabaseStats, type StorageStats, type DatabaseStats } from "../services/storageStats";
 
 interface JobSnap {
   status: string; progress_pct: number; current_step: string;
@@ -14,7 +14,7 @@ interface Batch {
   batch_id: string; source_type: string; filename: string; imported_by: string;
   label: string; imported_at: string; raw_row_count: number | null; parsed_fact_count: number | null;
   reported_raw_row_count?: number; reported_fact_count?: number; verification_error?: string; count_mismatch?: boolean;
-  status?: string; error_message?: string; storage_project?: string;
+  status?: string; error_message?: string; storage_project?: string; file_size_bytes?: number | null;
 }
 interface BatchRowsResponse { rows: { row_index: number; data: string }[] }
 
@@ -119,13 +119,19 @@ function BatchManager({ refreshKey, isAdmin }: { refreshKey?: string; isAdmin: b
   const [editingLabel, setEditingLabel] = useState<string | null>(null);
   const [labelInput, setLabelInput] = useState("");
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
+  const [databaseStats, setDatabaseStats] = useState<{ primary: DatabaseStats | null; secondary: DatabaseStats | null; tertiary: DatabaseStats | null }>({ primary: null, secondary: null, tertiary: null });
+  const [deletingBatch, setDeletingBatch] = useState<string | null>(null);
+  const [deleteProgress, setDeleteProgress] = useState<ImportDeleteProgress | null>(null);
 
   async function load() {
-    try {
-      const [batchRows, stats] = await Promise.all([getImportBatchesForUi(), getDispatchopsStorageStats()]);
-      setBatches(batchRows);
-      setStorageStats(stats);
-    } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+    const [batchResult, storageResult, databaseResult] = await Promise.allSettled([
+      getImportBatchesForUi(), getDispatchopsStorageStats(), getDispatchopsDatabaseStats(),
+    ]);
+    if (batchResult.status === "fulfilled") setBatches(batchResult.value);
+    if (storageResult.status === "fulfilled") setStorageStats(storageResult.value);
+    if (databaseResult.status === "fulfilled") setDatabaseStats(databaseResult.value);
+    const failed = [batchResult, storageResult, databaseResult].find(r => r.status === "rejected") as PromiseRejectedResult | undefined;
+    setError(failed ? (failed.reason instanceof Error ? failed.reason.message : String(failed.reason)) : "");
   }
   useEffect(() => { load(); }, [refreshKey]);
   useOperationalRealtime("imports", ["import_batches"], load);
@@ -147,24 +153,45 @@ function BatchManager({ refreshKey, isAdmin }: { refreshKey?: string; isAdmin: b
   }
 
   async function deleteBatch(batchId: string) {
+    if (deletingBatch) return;
     if (!confirm("Delete this import batch, its raw rows, parsed facts, and the original uploaded source file? This cannot be undone.")) return;
+    setDeletingBatch(batchId);
+    setDeleteProgress({ progress_pct: 1, current_step: "Starting deletion…", removed_rows: 0 });
+    setError("");
     try {
-      await deleteImportedData(batchId);
-      load();
-    } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+      await deleteImportedData(batchId, setDeleteProgress);
+      await new Promise(resolve => setTimeout(resolve, 650));
+      await load();
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+      await load();
+    } finally {
+      setDeletingBatch(null);
+      setDeleteProgress(null);
+    }
   }
 
   return (
     <div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12, marginBottom: 14 }}>
-        <div className="glass-card kpi-card"><div className="value">{storageStats?.fileCount ?? "—"}</div><div className="label">Files in Supabase Storage</div></div>
-        <div className="glass-card kpi-card"><div className="value">{storageStats ? formatBytes(storageStats.bytesUsed) : "—"}</div><div className="label">File Storage Used</div></div>
-        <div className="glass-card kpi-card"><div className="value">{batches.length}</div><div className="label">Uploaded Import Batches</div></div>
+      <div className="glass-card" style={{padding:14, marginBottom:14}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:10}}>
+          <div><strong>Database Usage</strong><div style={{fontSize:11,color:"var(--muted)",marginTop:3}}>Actual PostgreSQL database size per project · 500 MB reference capacity per cloud. This is where SAP and Landmark parsed records are stored.</div></div>
+          <span className="badge ok">DATABASE · 500 MB EACH</span>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:10}}>
+          {[{name:"Primary",stats:databaseStats.primary},{name:"Secondary",stats:databaseStats.secondary},{name:"Tertiary",stats:databaseStats.tertiary}].map(x=><div key={x.name} className="glass-card" style={{padding:12}}>
+            <strong>{x.name}</strong>
+            <div style={{fontSize:12,color:"var(--muted)",marginTop:6}}>Used: {x.stats?formatBytes(x.stats.usedBytes):"Not available"}</div>
+            <div style={{fontSize:12,color:"var(--muted)",marginTop:3}}>Remaining: {x.stats?formatBytes(x.stats.remainingBytes):"—"}</div>
+            <div style={{background:"var(--navy3)",borderRadius:999,height:7,marginTop:8,overflow:"hidden"}}><div style={{width:`${Math.min(100,x.stats?.percentUsed??0)}%`,background:"var(--teal)",height:"100%"}}/></div>
+            <div style={{fontSize:11,color:"var(--muted)",marginTop:4}}>{x.stats?`${x.stats.percentUsed.toFixed(1)}% of 500 MB`:"Database size RPC unavailable"}</div>
+          </div>)}
+        </div>
       </div>
       <div className="glass-card" style={{padding:14, marginBottom:14}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,marginBottom:10}}>
-          <div><strong>Supabase Storage Pool</strong><div style={{fontSize:11,color:"var(--muted)",marginTop:3}}>Live object storage usage. New imports stay whole in one cloud and move to the next cloud at 85% usage.</div></div>
-          <span className="badge ok">3 CLOUDS</span>
+          <div><strong>Original File Storage Pool</strong><div style={{fontSize:11,color:"var(--muted)",marginTop:3}}>Separate object storage for the original uploaded Excel/CSV files. These GB figures are not the PostgreSQL database size.</div></div>
+          <span className="badge ok">FILE STORAGE</span>
         </div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:10}}>
           {[
@@ -184,11 +211,21 @@ function BatchManager({ refreshKey, isAdmin }: { refreshKey?: string; isAdmin: b
       <div className="glass-card table-scroll">
       <strong>Uploaded Batches</strong>
       {error && <div className="error-text" style={{ fontSize: 12, marginTop: 8 }}>{error}</div>}
+      {deletingBatch && deleteProgress && <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: "var(--navy3)", border: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
+          <strong style={{ fontSize: 13 }}>{deleteProgress.current_step}</strong>
+          <strong style={{ fontSize: 13 }}>{deleteProgress.progress_pct}%</strong>
+        </div>
+        <div style={{ background: "var(--navy2)", borderRadius: 999, height: 10, overflow: "hidden" }}>
+          <div style={{ width: `${deleteProgress.progress_pct}%`, height: "100%", background: "var(--teal)", transition: "width .25s ease" }} />
+        </div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 7 }}>{deleteProgress.removed_rows.toLocaleString()} rows deleted so far. The batch stays visible until deletion succeeds.</div>
+      </div>}
       <table className="data-table" style={{ marginTop: 10 }}>
-        <thead><tr><th>Type</th><th>Filename</th><th>Label</th><th>Uploaded</th><th>By</th><th>Raw Rows</th><th>Parsed Facts</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Type</th><th>Filename</th><th>Label</th><th>Uploaded</th><th>By</th><th>Raw Rows</th><th>Parsed Facts</th><th>Original File</th><th>Database</th><th>Status</th><th></th></tr></thead>
         <tbody>
           {batches.length === 0 && (
-            <tr><td colSpan={9} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No uploads yet</td></tr>
+            <tr><td colSpan={11} style={{ textAlign: "center", color: "var(--muted)", padding: 20 }}>No uploads yet</td></tr>
           )}
           {batches.map((b) => (
             <tr key={b.batch_id}>
@@ -210,6 +247,8 @@ function BatchManager({ refreshKey, isAdmin }: { refreshKey?: string; isAdmin: b
               <td>{b.imported_by}</td>
               <td>{b.raw_row_count == null ? "—" : b.raw_row_count.toLocaleString()}</td>
               <td>{b.parsed_fact_count == null ? "—" : b.parsed_fact_count.toLocaleString()}</td>
+              <td>{b.file_size_bytes != null ? formatBytes(b.file_size_bytes) : "—"}</td>
+              <td>{b.storage_project ? b.storage_project.charAt(0).toUpperCase() + b.storage_project.slice(1) : "—"}</td>
               <td><span className={"badge " + (b.status === "failed" || b.count_mismatch || b.verification_error ? "excluded" : b.status === "processing" ? "" : "ok")}>{b.status || "completed"}</span>
                 {b.count_mismatch && <div className="error-text" style={{fontSize:10,marginTop:4,maxWidth:220}}>Metadata says {b.reported_raw_row_count?.toLocaleString()} raw / {b.reported_fact_count?.toLocaleString()} facts; actual stored counts differ.</div>}
                 {b.verification_error && <div className="error-text" style={{fontSize:10,marginTop:4,maxWidth:220}}>Count verification failed: {b.verification_error}</div>}
@@ -217,7 +256,7 @@ function BatchManager({ refreshKey, isAdmin }: { refreshKey?: string; isAdmin: b
               </td>
               <td style={{ display: "flex", gap: 6 }}>
                 <button className="btn" onClick={() => viewBatch(b)} disabled={b.raw_row_count == null || b.raw_row_count === 0}>View</button>
-                {isAdmin && <button className="btn" style={{background:"var(--red)"}} onClick={() => void deleteBatch(b.batch_id)}>Delete</button>}
+                {isAdmin && <button className="btn" style={{background:"var(--red)"}} disabled={!!deletingBatch} onClick={() => void deleteBatch(b.batch_id)}>{deletingBatch === b.batch_id ? "Deleting…" : "Delete"}</button>}
               </td>
             </tr>
           ))}
