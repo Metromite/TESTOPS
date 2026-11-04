@@ -41,7 +41,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
     if (!driver) return baseFilters;
     const current = String(baseFilters.drivers || "").split(",").map((x) => x.trim()).filter(Boolean);
     return { ...baseFilters, drivers: [...new Set([driver.trim(), ...current])].join(",") };
-  }, [driver, baseFilters.drivers, baseFilters.driver_aliases, baseFilters.areas, baseFilters.division, baseFilters.route_type, baseFilters.vehicle_type, baseFilters.facility_type, baseFilters.salesman, baseFilters.start_date, baseFilters.end_date, baseFilters.lead_time_band, baseFilters.classification]);
+  }, [driver, baseFilters.drivers, baseFilters.areas, baseFilters.division, baseFilters.route_type, baseFilters.vehicle_type, baseFilters.facility_type, baseFilters.salesman, baseFilters.start_date, baseFilters.end_date, baseFilters.lead_time_band, baseFilters.classification]);
   const start = gf.start_date || "";
   const end = gf.end_date || "";
   const dataset = useSyncExternalStore(subscribeDashboardLocal, getDashboardLocalDataset, getDashboardLocalDataset);
@@ -55,7 +55,7 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
   const data = useMemo(() => {
     if (!dataset || dataset.key !== "ALL") return null;
     return buildLocalForEndpoint(endpoint, dataset, gf) as T;
-  }, [dataset, endpoint, driver, gf.drivers, gf.driver_aliases, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.start_date, gf.end_date, gf.lead_time_band, gf.classification]);
+  }, [dataset, endpoint, driver, gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.start_date, gf.end_date, gf.lead_time_band, gf.classification]);
 
   // Driver Performance only: if the local reconstruction returns zero for an
   // explicitly selected driver, ask the existing proven Driver Performance
@@ -69,13 +69,13 @@ export function useDashboardLocalData<T>(endpoint: string, globalFilters?: Globa
     const cacheFilters = {
       endpoint, driver: selectedDriverKey,
       start: gf.start_date || "", end: gf.end_date || "",
-      drivers: gf.drivers || "", driver_aliases: gf.driver_aliases || "", areas: gf.areas || "", division: gf.division || "",
+      drivers: gf.drivers || "", areas: gf.areas || "", division: gf.division || "",
       route_type: gf.route_type || "", vehicle_type: gf.vehicle_type || "",
       facility_type: gf.facility_type || "", salesman: gf.salesman || "",
       lead_time_band: gf.lead_time_band || "", classification: gf.classification || "",
     };
     return `dispatchops:driver-performance:v1:${encodeURIComponent(JSON.stringify(cacheFilters))}`;
-  }, [endpoint, selectedDriverKey, gf.start_date, gf.end_date, gf.drivers, gf.driver_aliases, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.lead_time_band, gf.classification]);
+  }, [endpoint, selectedDriverKey, gf.start_date, gf.end_date, gf.drivers, gf.areas, gf.division, gf.route_type, gf.vehicle_type, gf.facility_type, gf.salesman, gf.lead_time_band, gf.classification]);
   const [driverFallback, setDriverFallback] = useState<T | null>(() => driverPerformanceCacheKey ? readDriverPerformanceCache<T>(driverPerformanceCacheKey) : null);
   const driverFallbackSeq = useRef(0);
   const updateDriverFallback = (value: T | null) => {

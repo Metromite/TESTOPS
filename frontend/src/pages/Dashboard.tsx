@@ -174,10 +174,7 @@ export default function Dashboard() {
   });
 
   const globalFilters = {
-    // Keep the existing canonical driver names for every current consumer,
-    // and carry the exact slicer identifiers as local matching aliases.
-    // This is data compatibility only: the slicer UI and selected values stay unchanged.
-    drivers: canonicalSelectedDrivers.join(","), driver_aliases: selDrivers.join(","), areas: selAreas.join(","), division: selDivisions.join(","),
+    drivers: canonicalSelectedDrivers.join(","), areas: selAreas.join(","), division: selDivisions.join(","),
     route_type: "", vehicle_type: selVehicleTypes.join(","),
     facility_type: selFacilityTypes.join(","), salesman: selSalesmen.join(","),
     start_date: dateFrom, end_date: dateTo,
@@ -419,12 +416,14 @@ export default function Dashboard() {
       <DashboardTabs tabs={TABS} active={tab} onChange={selectTab} />
 
       {tab === "home" && <HomeTab driver={driver} onSelectDriver={(name) => { setDriver(name); setSelDrivers([]); }} onDriverListLoaded={setDriverList} globalFilters={globalFilters} />}
-      {/* Keep Driver Performance mounted with the Dashboard, just like the shared
-          dashboard dataset. Its local reconstruction and additive RPC hydration
-          must finish before the user opens the tab, rather than starting on click. */}
-      <div style={{ display: tab === "driver-performance" ? "block" : "none" }}>
-        <DriverPerformanceTab driver={driver} globalFilters={globalFilters} />
-      </div>
+      {/* Driver Performance must wait until the shared dataset and latest imported
+          date range are ready. Mounting it earlier can calculate against a stale
+          cached month during the October refresh and leave the tab showing zeroes. */}
+      {localDataset && latestRangeReady && initialLoadComplete && (
+        <div style={{ display: tab === "driver-performance" ? "block" : "none" }}>
+          <DriverPerformanceTab driver={driver} globalFilters={globalFilters} />
+        </div>
+      )}
       {tab === "lead-time" && <LeadTimeTab driver={driver} globalFilters={globalFilters} setLeadTimeBand={setSelLeadTimeBand} setClassification={setSelClassification} />}
       {tab === "order-summary" && <OrderSummaryTab driver={driver} globalFilters={globalFilters} />}
       {tab === "area-analytics" && <AreaAnalyticsTab driver={driver} globalFilters={globalFilters} />}

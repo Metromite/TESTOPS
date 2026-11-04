@@ -389,7 +389,7 @@ export function useDashboardLocalSnapshot(start: string, end: string): Dashboard
 }
 
 function matches(row: LocalSapRow, gf: GlobalFilters): boolean {
-  const drivers = new Set([...selectedSet(gf.drivers), ...selectedSet(gf.driver_aliases)]), areas = selectedSet(gf.areas), divisions = selectedSet(gf.division);
+  const drivers = selectedSet(gf.drivers), areas = selectedSet(gf.areas), divisions = selectedSet(gf.division);
   const vehicleTypes = selectedSet(gf.vehicle_type), facilities = selectedSet(gf.facility_type), salesmen = selectedSet(gf.salesman);
   if (drivers.size && !drivers.has(row.driver_name)) return false;
   if (areas.size && !areas.has(row.area)) return false;
@@ -425,7 +425,7 @@ export function getLocalFilterOptions(dataset: DashboardLocalDataset, globalFilt
   // row. On a large historical dataset that made every slicer click feel heavy.
   // A row can contribute to a slicer when it passes every OTHER active slicer;
   // therefore we only need to identify which active dimensions (if any) reject it.
-  const drivers = new Set([...selectedSet(gf.drivers), ...selectedSet(gf.driver_aliases)]);
+  const drivers = selectedSet(gf.drivers);
   const areas = selectedSet(gf.areas);
   const divisions = selectedSet(gf.division);
   const vehicleTypes = selectedSet(gf.vehicle_type);
@@ -1091,8 +1091,8 @@ export function buildLocalDriverPerformance(rows: LocalSapRow[], routeCards: Rou
   };
 
   const selectedDrivers = new Set(
-    [String(gf?.drivers || ""), String(gf?.driver_aliases || "")]
-      .flatMap((value) => value.split(","))
+    String(gf?.drivers || "")
+      .split(",")
       .map((value) => normalizeDriverIdentity(value))
       .filter(Boolean)
   );
