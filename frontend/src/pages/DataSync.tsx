@@ -24,7 +24,7 @@ export default function DataSync() {
   const [editing, setEditing] = useState<SupabaseProfile>(() => getActiveSupabaseProfile() ?? newProfile());
   const [message, setMessage] = useState("");
   const [testing, setTesting] = useState(false);
-  const [dbStats, setDbStats] = useState<{primary:DatabaseStats;secondary:DatabaseStats|null;tertiary:DatabaseStats|null}|null>(null);
+  const [dbStats, setDbStats] = useState<{primary:DatabaseStats|null;secondary:DatabaseStats|null;tertiary:DatabaseStats|null}|null>(null);
   const [dbStatsError, setDbStatsError] = useState("");
 
   const active = useMemo(() => profiles.find((p) => p.id === activeId) ?? null, [profiles, activeId]);
