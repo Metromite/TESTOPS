@@ -37,6 +37,9 @@ export interface PerfData {
   chart_stops: { labels: string[]; values: number[] };
   chart_route_hours: { labels: string[]; values: number[] };
   route_cards: RouteCard[];
+  /** SAP-only dispatch summary used when Landmark/GPS facts are absent. */
+  sap_vehicles?: number;
+  sap_driver_summary?: { driver: string; invoices: number; boxes: number; vehicles: number; dispatch_days: number }[];
 }
 const methodTone: Record<string, "ok" | "neutral" | "danger"> = { vehicle: "ok", manual: "ok", name: "neutral", none: "danger" };
 

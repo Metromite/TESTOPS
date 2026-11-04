@@ -98,8 +98,8 @@ export async function finalizeImportBatch(
   return data as ImportBatch;
 }
 
-export async function insertRawImportRows(rows: Omit<RawImportRow, "id" | "imported_at">[], clientOverride?: import("@supabase/supabase-js").SupabaseClient, onProgress?: (processed: number, total: number) => void): Promise<void> {
-  if (!rows.length) return;
+export async function insertRawImportRows(rows: Omit<RawImportRow, "id" | "imported_at">[], clientOverride?: import("@supabase/supabase-js").SupabaseClient, onProgress?: (processed: number, total: number) => void): Promise<number> {
+  if (!rows.length) return 0;
   const client = clientOverride ?? supabase;
   const CHUNK = 250;
   const CONCURRENCY = 4;
@@ -113,8 +113,11 @@ export async function insertRawImportRows(rows: Omit<RawImportRow, "id" | "impor
       const batch = rows.slice(start, start + CHUNK);
       let error: any = null;
       for (let attempt = 0; attempt < 3; attempt++) {
-        const result = await client.from("raw_import_rows").insert(batch);
+        const result = await client.from("raw_import_rows").insert(batch).select("id");
         error = result.error;
+        if (!error && (result.data?.length ?? 0) !== batch.length) {
+          throw new Error(`Raw import chunk verification mismatch: expected ${batch.length} returned IDs, received ${result.data?.length ?? 0}.`);
+        }
         if (!error) break;
         if (!/timeout|canceling statement|payload|too large|gateway/i.test(error.message || "")) break;
         await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
@@ -126,6 +129,7 @@ export async function insertRawImportRows(rows: Omit<RawImportRow, "id" | "impor
     }
   };
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.ceil(rows.length / CHUNK)) }, () => worker()));
+  return processed;
 }
 
 

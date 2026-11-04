@@ -212,12 +212,20 @@ async function fetchRowsForClient(client: any, start = "", end = "", onPage?: (r
   const PAGE = 1000;
   const out: LocalSapRow[] = [];
   for (let from = 0; ; from += PAGE) {
-    let q = client.from("sap_invoice_facts").select(
-      "invoice_no,invoice_date,dispatch_date,driver_name,helper_name,customer_name,facility_type,area,division_desc,vehicle_type,vehicle_num,vehicle_key,boxes,normal_boxes,freezer_boxes,not_supplied_reason,salesman"
-    );
-    if (start) q = q.gte("dispatch_date", start);
-    if (end) q = q.lte("dispatch_date", end);
-    const { data, error } = await q.range(from, from + PAGE - 1);
+    let data: any[] | null = null;
+    let error: any = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let q = client.from("sap_invoice_facts").select(
+        "id,invoice_no,invoice_date,dispatch_date,driver_name,helper_name,customer_name,facility_type,area,division_desc,vehicle_type,vehicle_num,vehicle_key,boxes,normal_boxes,freezer_boxes,not_supplied_reason,salesman"
+      ).order("id", { ascending: true });
+      if (start) q = q.gte("dispatch_date", start);
+      if (end) q = q.lte("dispatch_date", end);
+      const result = await q.range(from, from + PAGE - 1);
+      data = result.data;
+      error = result.error;
+      if (!error) break;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
+    }
     if (error) {
       // Never present a partial project read as a complete SAP month. The caller
       // can still use other healthy projects, but this source is marked failed.
@@ -835,12 +843,21 @@ async function hydrateSharedVehicleDriverCards(dataset: DashboardLocalDataset, s
       // silently stopped at PostgREST's 1,000-row default.
       for (const client of clients) {
         for (let from = 0; ; from += 1000) {
-          let q = client.from("landmark_visit_facts")
-            .select("vehicle_key,vehicle_raw,driver_name,customer_name,visit_date,arrival,departure,minutes,is_passthrough,is_depot");
-          if (periodStart) q = q.gte("visit_date", periodStart);
-          if (periodEnd) q = q.lte("visit_date", periodEnd);
+          let data: any[] | null = null;
+          let error: any = null;
           try {
-            const { data, error } = await q.range(from, from + 999);
+            for (let attempt = 0; attempt < 3; attempt++) {
+              let q = client.from("landmark_visit_facts")
+                .select("id,vehicle_key,vehicle_raw,driver_name,customer_name,visit_date,arrival,departure,minutes,is_passthrough,is_depot")
+                .order("id", { ascending: true });
+              if (periodStart) q = q.gte("visit_date", periodStart);
+              if (periodEnd) q = q.lte("visit_date", periodEnd);
+              const result = await q.range(from, from + 999);
+              data = result.data;
+              error = result.error;
+              if (!error) break;
+              if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
+            }
             if (error) {
               landmarkReadIncomplete = true;
               break;
@@ -1187,10 +1204,38 @@ export function buildLocalDriverPerformance(rows: LocalSapRow[], routeCards: Rou
   const stops=cards.reduce((n,r)=>n+Number(r.stops||0),0);
   const hours=cards.map(r=>{const m=String(r.route_duration_hm||"").match(/(\d+)h\s+(\d+)m/);return m?Number(m[1])+Number(m[2])/60:0;}).filter(n=>n>0);
   const gpsVehicleCount=new Set(cards.map(r=>normalizeMatchKey(r.vehicle_key||r.vehicle_num)).filter(Boolean)).size;
+
+  // Keep a truthful SAP dispatch view available when Landmark/GPS has not
+  // been imported for the selected month. The old page exposed only GPS KPIs,
+  // so a valid October SAP dataset looked like an entirely empty page.
+  // Build this summary from all SAP rows (including zero-box/not-supplied
+  // invoices), while respecting the same date and active slicer selections.
+  const sapRowsForPeriod = ownershipRows.filter((row) => {
+    const date = String(row.dispatch_date || "").slice(0, 10);
+    if (!date || (selectedStart && date < selectedStart) || (selectedEnd && date > selectedEnd)) return false;
+    return matches(row, gf || EMPTY);
+  });
+  const sapDriverMap = new Map<string, { invoices: number; boxes: number; vehicles: Set<string>; days: Set<string> }>();
+  const sapVehicles = new Set<string>();
+  for (const row of sapRowsForPeriod) {
+    const name = String(row.driver_name || "").trim() || "Unknown";
+    const item = sapDriverMap.get(name) || { invoices: 0, boxes: 0, vehicles: new Set<string>(), days: new Set<string>() };
+    item.invoices += 1;
+    item.boxes += Number(row.boxes || 0);
+    const vehicle = String(row.vehicle_num || row.vehicle_key || "").trim();
+    if (vehicle) { item.vehicles.add(vehicle); sapVehicles.add(vehicle); }
+    const day = String(row.dispatch_date || "").slice(0, 10);
+    if (day) item.days.add(day);
+    sapDriverMap.set(name, item);
+  }
+  const sapDriverSummary = [...sapDriverMap.entries()]
+    .map(([driver, item]) => ({ driver, invoices: item.invoices, boxes: item.boxes, vehicles: item.vehicles.size, dispatch_days: item.days.size }))
+    .sort((a, b) => b.invoices - a.invoices || a.driver.localeCompare(b.driver));
+
   const driverMap=new Map<string,{stops:number;hours:number}>();
   for(const r of cards){const d=String(r.display_driver||"Unknown").trim()||"Unknown";const x=driverMap.get(d)||{stops:0,hours:0};x.stops+=Number(r.stops||0);const m=String(r.route_duration_hm||"").match(/(\d+)h\s+(\d+)m/);if(m)x.hours+=Number(m[1])+Number(m[2])/60;driverMap.set(d,x);}
   const chart=[...driverMap.entries()].map(([driver,v])=>({driver,stops:v.stops,hours:round(v.hours)})).sort((a,b)=>b.stops-a.stops);
-  return {standalone_mode:false,validation_results:[],kpis:{gps_vehicles:gpsVehicleCount,total_gps_stops:stops,avg_stops_per_vehicle:gpsVehicleCount?round(stops/gpsVehicleCount):0,avg_route_duration_hrs:hours.length?round(hours.reduce((a,b)=>a+b,0)/hours.length):null,avg_stop_duration:"",sap_orders:rows.length,sap_total_boxes:rows.reduce((n,r)=>n+r.boxes,0)},chart_stops:{labels:chart.map(x=>x.driver),values:chart.map(x=>x.stops)},chart_route_hours:{labels:chart.map(x=>x.driver),values:chart.map(x=>x.hours)},route_cards:cards};
+  return {standalone_mode:false,validation_results:[],kpis:{gps_vehicles:gpsVehicleCount,total_gps_stops:stops,avg_stops_per_vehicle:gpsVehicleCount?round(stops/gpsVehicleCount):0,avg_route_duration_hrs:hours.length?round(hours.reduce((a,b)=>a+b,0)/hours.length):null,avg_stop_duration:"",sap_orders:sapRowsForPeriod.length,sap_total_boxes:sapRowsForPeriod.reduce((n,r)=>n+Number(r.boxes||0),0)},chart_stops:{labels:chart.map(x=>x.driver),values:chart.map(x=>x.stops)},chart_route_hours:{labels:chart.map(x=>x.driver),values:chart.map(x=>x.hours)},route_cards:cards,sap_vehicles:sapVehicles.size,sap_driver_summary:sapDriverSummary};
 }
 
 export function buildLocalForEndpoint(endpoint: string, dataset: DashboardLocalDataset, gf?: GlobalFilters): any {

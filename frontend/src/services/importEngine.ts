@@ -239,11 +239,18 @@ function parseLandmarkFacts(grid: unknown[][], batchId: string, filename: string
   return facts;
 }
 
-async function insertChunks(table: string, rows: JsonRow[], client = supabase, chunkSize = 400): Promise<void> {
+async function insertChunks(table: string, rows: JsonRow[], client = supabase, chunkSize = 400): Promise<number> {
+  let saved = 0;
   for (let i = 0; i < rows.length; i += chunkSize) {
-    const { error } = await client.from(table).insert(rows.slice(i, i + chunkSize));
+    const chunk = rows.slice(i, i + chunkSize);
+    const { data, error } = await client.from(table).insert(chunk).select("id");
     if (error) throw new Error(`${table}: ${error.message}`);
+    if ((data?.length ?? 0) !== chunk.length) {
+      throw new Error(`${table} chunk verification mismatch: expected ${chunk.length} returned IDs, received ${data?.length ?? 0}.`);
+    }
+    saved += data.length;
   }
+  return saved;
 }
 
 async function updateLearnedValues(rows: JsonRow[], client = supabase): Promise<void> {
@@ -612,16 +619,17 @@ export async function processImportFile(
       throw new Error(errors.join("\n"));
     }
     progress({ current_step: "Saving raw audit rows", processed_units: 0, total_units: rows.length, progress_pct: 25 });
-    await insertRawImportRows(
+    const rawSaved = await insertRawImportRows(
       rows.map((row, index) => ({ source_type: sourceType, batch_id: batch!.id, source_filename: file.name, row_index: index, row_json: row, imported_by: "", label: "" })),
       importClient,
       (processed, total) => progress({ current_step: `Saving raw audit rows (${processed.toLocaleString()}/${total.toLocaleString()})`, processed_units: processed, total_units: total, progress_pct: 25 + Math.round((processed / Math.max(total, 1)) * 20) })
     );
     let facts: JsonRow[] = [], rejected: string[] = [];
+    let factsSaved = 0;
     if (sourceType === "sap") {
       ({ facts, rejected } = parseSapFacts(rows, batch.id, file.name));
       progress({ current_step: "Saving SAP invoice facts", processed_units: rows.length, total_units: rows.length, progress_pct: 55 });
-      await insertChunks("sap_invoice_facts", facts, importClient);
+      factsSaved = await insertChunks("sap_invoice_facts", facts, importClient);
       await updateLearnedValues(rows, importClient);
       // Experience is intentionally independent from the normal SAP Dashboard import.
       // Only the dedicated Experience upload is allowed to write experience_history.
@@ -629,22 +637,14 @@ export async function processImportFile(
     } else {
       facts = parseLandmarkFacts(firstSheetGrid(workbook), batch.id, file.name);
       progress({ current_step: "Saving V-Zone / Landmark visit facts", processed_units: rows.length, total_units: rows.length, progress_pct: 60 });
-      await insertChunks("landmark_visit_facts", facts, importClient);
+      factsSaved = await insertChunks("landmark_visit_facts", facts, importClient);
     }
-    // Verify persisted child rows on the same project that owns this import.
-    // Batch metadata alone is not proof that the raw rows and parsed facts exist.
+    // Verify each inserted chunk from the IDs returned by PostgREST.
+    // Avoid COUNT EXACT over raw_import_rows: that table is large and has no
+    // batch_id index, so a full count can hit the database statement timeout.
     progress({ current_step: "Verifying saved import records", processed_units: rows.length, total_units: rows.length, progress_pct: 88 });
-    const factTable = sourceType === "sap" ? "sap_invoice_facts" : "landmark_visit_facts";
-    const [rawVerification, factVerification] = await Promise.all([
-      importClient.from("raw_import_rows").select("id", { count: "exact", head: true }).eq("batch_id", batch.id),
-      importClient.from(factTable).select("id", { count: "exact", head: true }).eq("batch_id", batch.id),
-    ]);
-    if (rawVerification.error) throw new Error(`Import verification could not read raw rows: ${rawVerification.error.message}`);
-    if (factVerification.error) throw new Error(`Import verification could not read parsed facts: ${factVerification.error.message}`);
-    const actualRawRows = Number(rawVerification.count || 0);
-    const actualFacts = Number(factVerification.count || 0);
-    if (actualRawRows !== rows.length || actualFacts !== facts.length) {
-      throw new Error(`Import verification mismatch. Expected ${rows.length} raw rows and ${facts.length} parsed facts, but found ${actualRawRows} raw rows and ${actualFacts} parsed facts. The batch was not marked completed.`);
+    if (rawSaved !== rows.length || factsSaved !== facts.length) {
+      throw new Error(`Import verification mismatch. Expected ${rows.length} raw rows and ${facts.length} parsed facts, but confirmed ${rawSaved} raw rows and ${factsSaved} parsed facts. The batch was not marked completed.`);
     }
     const failed = rejected.length;
     const finished = await finalizeImportBatch(batch.id, { row_count: rows.length, success_count: facts.length, failed_count: failed, validation_errors: rejected.slice(0, 200) });
