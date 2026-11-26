@@ -1,0 +1,78 @@
+/* Rating page-only control polish. Keep all other application pages untouched. */
+.rating-page .rating-type-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 18px 0;
+  padding: 5px;
+  width: fit-content;
+  border: 1px solid var(--dispatch-border);
+  border-radius: 14px;
+  background: var(--dispatch-inner);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
+}
+.rating-page .rating-type-button {
+  min-width: 132px;
+  padding: 10px 20px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--dispatch-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background .16s ease, color .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+.rating-page .rating-type-button:hover:not(.active) {
+  background: color-mix(in srgb, var(--dispatch-text) 7%, transparent);
+  color: var(--dispatch-text);
+}
+.rating-page .rating-type-button.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--blue), var(--blue2));
+  border-color: color-mix(in srgb, var(--blue) 70%, white 30%);
+  box-shadow: 0 5px 16px rgba(0, 90, 190, .25), inset 0 1px 0 rgba(255,255,255,.24);
+}
+.rating-page .rating-type-button:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+/* Native select popup options need explicit colors; otherwise some browsers
+   render the popup with a black system surface and low-contrast hover text. */
+.rating-page select {
+  color-scheme: dark;
+}
+.rating-page select option,
+.rating-page select optgroup {
+  background-color: #17283e;
+  color: #eef6ff;
+}
+.rating-page select option:checked,
+.rating-page select option:hover {
+  background-color: #2868ad;
+  color: #fff;
+}
+html[data-theme="light"] .rating-page select {
+  color-scheme: light;
+}
+html[data-theme="light"] .rating-page select option,
+html[data-theme="light"] .rating-page select optgroup {
+  background-color: #fff;
+  color: #1a2440;
+}
+html[data-theme="light"] .rating-page select option:checked,
+html[data-theme="light"] .rating-page select option:hover {
+  background-color: #dcecff;
+  color: #142d4d;
+}
+html[data-theme="high_contrast"] .rating-page select option,
+html[data-theme="high_contrast"] .rating-page select optgroup {
+  background-color: #000;
+  color: #fff;
+}
+@media (max-width: 520px) {
+  .rating-page .rating-type-switch { width: 100%; }
+  .rating-page .rating-type-button { flex: 1; min-width: 0; }
+}

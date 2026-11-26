@@ -5,6 +5,7 @@ import { driversService } from "../services/drivers";
 import { helpersService } from "../services/helpers";
 import type { Driver, Helper } from "../services/types";
 import { createRatingIncident, deleteRatingIncident, getRatingPermissions, listRatingIncidents, resetAllRatings, reviewRatingIncident, type RatingIncident, type RatingPersonType, type RatingSeverity, type RatingStatus } from "../services/rating";
+import "./RatingPage.css";
 
 const CATEGORIES = ["Wrong Delivery","Returned Order","Damaged Items","Missing Items","Vehicle Cleanliness","Vehicle Condition","Temperature / Data Logger","Delivery Delay","Customer Complaint","Documentation Error","Safety Violation","Attendance / Punctuality","Unprofessional Behaviour","Failure to Follow Instructions","Others"];
 const GRADE = (score: number) => score >= 97 ? "A+" : score >= 93 ? "A" : score >= 90 ? "A-" : score >= 87 ? "B+" : score >= 83 ? "B" : score >= 80 ? "B-" : score >= 77 ? "C+" : score >= 73 ? "C" : score >= 70 ? "C-" : score >= 60 ? "D" : "F";
@@ -46,9 +47,15 @@ export default function RatingPage() {
   },[sessionToken,kind]);
   useEffect(()=>{ void reload(); },[reload]);
 
-  const filteredPeople = useMemo(()=>people.filter(p=>`${p.name} ${p.code}`.toLowerCase().includes(search.toLowerCase())),[people,search]);
   const approvedFor = (p:Person) => incidents.filter(i=>i.person_type===kind && i.person_id===p.id && i.status==="approved");
   const scoreFor = (p:Person) => Math.max(0,100-approvedFor(p).reduce((s,i)=>s+Number(i.points_deducted||0),0));
+  const filteredPeople = useMemo(()=>people
+    .filter(p=>`${p.name} ${p.code}`.toLowerCase().includes(search.toLowerCase()))
+    .sort((a,b)=>{
+      const scoreA=Math.max(0,100-incidents.filter(i=>i.person_type===kind&&i.person_id===a.id&&i.status==="approved").reduce((sum,i)=>sum+Number(i.points_deducted||0),0));
+      const scoreB=Math.max(0,100-incidents.filter(i=>i.person_type===kind&&i.person_id===b.id&&i.status==="approved").reduce((sum,i)=>sum+Number(i.points_deducted||0),0));
+      return scoreB-scoreA || a.name.localeCompare(b.name);
+    }),[people,search,incidents,kind]);
   const selected = people.find(p=>p.id===selectedPerson) || null;
   const visibleIncidents = useMemo(()=>incidents.filter(i=>i.person_type===kind && (!selectedPerson || i.person_id===selectedPerson) && (statusFilter==="all" || i.status===statusFilter) && (severityFilter==="all" || i.severity===severityFilter) && (!fromDate || i.occurred_at.slice(0,10)>=fromDate) && (!toDate || i.occurred_at.slice(0,10)<=toDate) && (`${i.person_name} ${i.person_code} ${i.category} ${i.details}`.toLowerCase().includes(search.toLowerCase()))),[incidents,kind,selectedPerson,statusFilter,severityFilter,search,fromDate,toDate]);
   const pendingCount = incidents.filter(i=>i.status==="pending").length;
@@ -94,13 +101,13 @@ export default function RatingPage() {
     XLSX.writeFile(wb,`Driver-Helper-Rating-${new Date().toISOString().slice(0,10)}.xlsx`);
   }
 
-  return <div className="page" style={{maxWidth:1500,margin:"0 auto",padding:"22px 24px 48px"}}>
+  return <div className="page rating-page" style={{maxWidth:1500,margin:"0 auto",padding:"22px 24px 48px"}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:16,flexWrap:"wrap"}}>
       <div><div style={{display:"flex",alignItems:"center",gap:10}}><Star size={25}/><h1 style={{fontSize:26,fontWeight:800,margin:0}}>Driver &amp; Helper Rating</h1></div><p style={{color:"var(--muted)",marginTop:7}}>Incident tracking, supervisor approval and performance scores.</p></div>
       <div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="btn" onClick={()=>void reload()} disabled={loading||busy}><RefreshCw size={15}/> Refresh</button><button className="btn" onClick={exportExcel}><Download size={15}/> Export Excel</button><button className="btn" onClick={()=>{setForm(f=>({...f,personId:selectedPerson||"",occurredAt:localDateTime()}));setPersonSearch(selected?`${selected.code} ${selected.name}`:"");setShowForm(true);}}><Plus size={15}/> Add Incident</button></div>
     </div>
-    <div style={{display:"flex",gap:8,margin:"18px 0",padding:5,borderRadius:14,background:"var(--surface-2,rgba(127,127,127,.10))",width:"fit-content"}}>
-      {(["Driver","Helper"] as RatingPersonType[]).map(v=><button key={v} className="btn" onClick={()=>{setKind(v);setSelectedPerson("");setSearch("");}} style={{background:kind===v?"var(--primary)":"transparent",color:kind===v?"white":"var(--text)",border:0,minWidth:130}}>{v==="Driver"?"Drivers":"Helpers"}</button>)}
+    <div className="rating-type-switch" role="group" aria-label="Choose rating group">
+      {(["Driver","Helper"] as RatingPersonType[]).map(v=><button key={v} type="button" aria-pressed={kind===v} className={`rating-type-button${kind===v?" active":""}`} onClick={()=>{setKind(v);setSelectedPerson("");setSearch("");}}>{v==="Driver"?"Drivers":"Helpers"}</button>)}
     </div>
     <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:12,marginBottom:18}}>
       {[{label:`${kind}s in Fleet`,value:people.length,icon:<Users size={18}/>},{label:"Approved Incidents",value:approvedCount,icon:<Check size={18}/>},{label:"Pending Approval",value:pendingCount,icon:<AlertTriangle size={18}/>},{label:"Your Permission",value:permissions?.is_admin?"Admin":permissions?.is_supervisor?"Supervisor":"User",icon:<ShieldCheck size={18}/>}].map(x=><div className="glass-card" key={x.label} style={{padding:16}}><div style={{display:"flex",alignItems:"center",gap:8,color:"var(--muted)",fontSize:12}}>{x.icon}{x.label}</div><div style={{fontSize:25,fontWeight:800,marginTop:7}}>{x.value}</div></div>)}
