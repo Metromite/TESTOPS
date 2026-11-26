@@ -118,6 +118,7 @@ async function loadDrivers(): Promise<DriverRow[]> {
   if (error) throw new Error(error.message);
   return (data ?? []).map((d: any) => ({
     ...d,
+    name: d.name || d.driver_name || "",
     anchored_areas: (d.driver_anchored_areas ?? [])
       .sort((a: any, b: any) => a.sort_order - b.sort_order)
       .map((r: any) => r.areas)

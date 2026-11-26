@@ -7797,3 +7797,45 @@ html[data-theme="dark"] .dashboard-loading-hint { background:rgba(66,137,255,.09
 
 /* LOGI 3.6 — final greeting alignment requested by user. */
 .logi-hover-tip { bottom: 155px !important; right: 26px !important; }
+
+/* App-wide native select menus: keep the opened option list readable and
+   visually consistent with the app's glass controls in every page/theme.
+   The select itself retains its existing layout, sizing and interaction. */
+html[data-theme="dark"] select,
+html.dark select { color-scheme: dark; }
+html[data-theme="dark"] select option,
+html[data-theme="dark"] select optgroup,
+html.dark select option,
+html.dark select optgroup {
+  background-color: #0c1d30;
+  color: #e2ecf8;
+}
+html[data-theme="dark"] select option:checked,
+html[data-theme="dark"] select option:hover,
+html.dark select option:checked,
+html.dark select option:hover {
+  background-color: #2878d6;
+  color: #fff;
+}
+html[data-theme="light"] select { color-scheme: light; }
+html[data-theme="light"] select option,
+html[data-theme="light"] select optgroup {
+  background-color: #fff;
+  color: #1a1a3d;
+}
+html[data-theme="light"] select option:checked,
+html[data-theme="light"] select option:hover {
+  background-color: #dcecff;
+  color: #142d4d;
+}
+html[data-theme="high_contrast"] select { color-scheme: dark; }
+html[data-theme="high_contrast"] select option,
+html[data-theme="high_contrast"] select optgroup {
+  background-color: #000;
+  color: #fff;
+}
+html[data-theme="high_contrast"] select option:checked,
+html[data-theme="high_contrast"] select option:hover {
+  background-color: #1f5fa8;
+  color: #fff;
+}

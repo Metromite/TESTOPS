@@ -2,11 +2,12 @@ import { getPrimarySupabaseClient } from "../lib/supabase";
 
 export type RatingPersonType = "Driver" | "Helper";
 export type RatingSeverity = "Low" | "Medium" | "High";
+export type RatingEntryType = "negative" | "positive";
 export type RatingStatus = "pending" | "approved" | "rejected";
 export interface RatingPermissions { user_id: string; username: string; is_admin: boolean; is_supervisor: boolean }
 export interface RatingIncident {
   id: string; person_type: RatingPersonType; person_id: string; person_code: string; person_name: string;
-  occurred_at: string; category: string; category_other: string; severity: RatingSeverity; points_deducted: number;
+  occurred_at: string; category: string; category_other: string; severity: RatingSeverity; entry_type: RatingEntryType; points_deducted: number; points_awarded: number;
   details: string; status: RatingStatus; created_by: string; created_by_name: string; approved_by: string | null;
   approved_by_name: string; approved_at: string | null; review_note: string; created_at: string; updated_at: string;
 }
@@ -26,11 +27,11 @@ export async function listRatingIncidents(sessionToken: string): Promise<RatingI
   const { data, error } = await db().rpc("dispatchops_rating_list", { p_session_token: sessionToken });
   raise(error, "Could not load incidents"); return (Array.isArray(data) ? data : []) as RatingIncident[];
 }
-export async function createRatingIncident(sessionToken: string, input: {personType: RatingPersonType; personId: string; category: string; categoryOther: string; severity: RatingSeverity; details: string; occurredAt: string}): Promise<RatingIncident> {
-  const { data, error } = await db().rpc("dispatchops_rating_create", {
+export async function createRatingIncident(sessionToken: string, input: {personType: RatingPersonType; personId: string; category: string; categoryOther: string; entryType: RatingEntryType; severity: RatingSeverity; details: string; occurredAt: string}): Promise<RatingIncident> {
+  const { data, error } = await db().rpc("dispatchops_rating_create_entry", {
     p_session_token: sessionToken, p_person_type: input.personType, p_person_id: input.personId,
-    p_category: input.category, p_category_other: input.categoryOther, p_severity: input.severity,
-    p_details: input.details, p_occurred_at: input.occurredAt,
+    p_category: input.category, p_category_other: input.categoryOther, p_entry_type: input.entryType,
+    p_severity: input.severity, p_details: input.details, p_occurred_at: input.occurredAt,
   });
   raise(error, "Could not save incident"); return data as RatingIncident;
 }
