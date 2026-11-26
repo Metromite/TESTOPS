@@ -63,6 +63,7 @@ const PriceChangeManager = lazy(
 const BulkOrganizer = lazy(
   () => import("./pages/BulkOrganizer")
 );
+const RatingPage = lazy(() => import("./pages/RatingPage"));
 
 
 function AuthGate({
@@ -171,6 +172,8 @@ export default function App() {
                             path="/fleet"
                             element={<Fleet />}
                           />
+
+                          <Route path="/rating" element={<RatingPage />} />
 
                           <Route
                             path="/experience"

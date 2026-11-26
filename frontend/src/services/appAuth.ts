@@ -1,7 +1,7 @@
 import { getPrimarySupabaseClient } from "../lib/supabase";
 
 export type AppRole = "admin" | "user" | "dispatcher";
-export interface AppUser { id:string; username:string; role:AppRole; active:boolean; created_at?:string; updated_at?:string }
+export interface AppUser { id:string; username:string; role:AppRole; active:boolean; supervisor?:boolean; created_at?:string; updated_at?:string }
 
 const db=()=>getPrimarySupabaseClient();
 

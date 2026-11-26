@@ -13,6 +13,7 @@ export function logout(): void {
   sessionStorage.removeItem("dispatchops-role");
   sessionStorage.removeItem("dispatchops-username");
   sessionStorage.removeItem("dispatchops-user-id");
+  sessionStorage.removeItem("dispatchops-rating-session");
 }
 
 export function isAuthEnabled(): boolean {

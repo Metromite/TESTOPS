@@ -2,6 +2,7 @@ import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTheme } from "./theme/ThemeProvider";
 import { loginAppUser } from "./services/appAuth";
+import { openRatingSession } from "./services/rating";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -26,6 +27,8 @@ export default function Login() {
     setError("");
     try {
       const account = await loginAppUser(username.trim(), password);
+      try { sessionStorage.setItem("dispatchops-rating-session", await openRatingSession(username.trim(), password)); }
+      catch { sessionStorage.removeItem("dispatchops-rating-session"); }
       sessionStorage.setItem("dispatchops-auth", "true");
       sessionStorage.setItem("dispatchops-role", account.role);
       sessionStorage.setItem("dispatchops-username", account.username);

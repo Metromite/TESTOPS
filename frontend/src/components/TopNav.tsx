@@ -16,6 +16,7 @@ import {
   Tags,
   MapPinned,
   Boxes,
+  Star,
 } from "lucide-react";
 
 import { useTheme } from "../theme/ThemeProvider";
@@ -76,6 +77,13 @@ export default function TopNav() {
         icon={
           <LayoutDashboard className="h-4 w-4" />
         }
+      />
+
+      <GlassNavItem
+        layoutId="nav-pill"
+        to="/rating"
+        label="Driver & Helper Rating"
+        icon={<Star className="h-4 w-4" />}
       />
 
       <GlassNavItem

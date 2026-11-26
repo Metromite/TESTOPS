@@ -5,6 +5,7 @@ import { resetWallpaper, setWallpaper } from "../services/wallpaper";
 import { deleteAppUser, listAppUsers, saveAppUser, unlockAppUser, unlockLocalLogin, type AppRole, type AppUser } from "../services/appAuth";
 import { getAudit } from "../services/operational";
 import { getPrimarySupabaseClient, getSecondarySupabaseClient, getTertiarySupabaseClient } from "../lib/supabase";
+import { listRatingSupervisors, setRatingSupervisor } from "../services/rating";
 
 interface ProviderInfo { key: string; label: string; needs_key: boolean; default_model: string; }
 interface FallbackChainEntry { provider: string; model: string; api_key_set: boolean }
@@ -36,6 +37,7 @@ export default function AiSettings() {
   const [adminPassword, setAdminPassword] = useState("");
   const [users, setUsers] = useState<AppUser[]>([]);
   const [usersLoaded, setUsersLoaded] = useState(false);
+  const [ratingSupervisorIds, setRatingSupervisorIds] = useState<string[]>([]);
   const [userBusy, setUserBusy] = useState(false);
   const [userMsg, setUserMsg] = useState("");
   const [userForm, setUserForm] = useState<{id?:string;username:string;password:string;role:AppRole;active:boolean}>({username:"",password:"",role:"user",active:true});
@@ -123,8 +125,8 @@ export default function AiSettings() {
     if (!adminPassword) { setUserMsg("Enter the current admin password first."); return; }
     setUserBusy(true); setUserMsg("");
     try {
-      const rows = await listAppUsers(currentAdminUsername, adminPassword);
-      setUsers(rows); setUsersLoaded(true);
+      const [rows, supervisors] = await Promise.all([listAppUsers(currentAdminUsername, adminPassword), listRatingSupervisors(currentAdminUsername, adminPassword)]);
+      setUsers(rows); setRatingSupervisorIds(supervisors); setUsersLoaded(true);
     } catch (e:any) { setUserMsg(e.message || "Could not load users"); }
     finally { setUserBusy(false); }
   }
@@ -278,8 +280,9 @@ export default function AiSettings() {
           <button className="btn" type="button" disabled={userBusy} onClick={()=>void loadUsers()}>{userBusy?"Loading…":"Load users"}</button>
         </div>
         <div style={{marginTop:14,display:"grid",gap:8}}>
-          {usersLoaded && users.map(u=><div key={u.id} style={{display:"grid",gridTemplateColumns:"minmax(130px,1fr) 120px 90px 90px auto",gap:8,alignItems:"center",padding:9,border:"1px solid var(--line)",borderRadius:10}}>
+          {usersLoaded && users.map(u=><div key={u.id} style={{display:"grid",gridTemplateColumns:"minmax(130px,1fr) 100px 85px 130px auto auto auto",gap:8,alignItems:"center",padding:9,border:"1px solid var(--line)",borderRadius:10}}>
             <b>{u.username}</b><span className="muted small">{u.role}</span><span className="muted small">{u.active?"Active":"Disabled"}</span>
+            <label className="muted small" style={{display:"flex",alignItems:"center",gap:6}}><input type="checkbox" checked={u.role==="admin"||ratingSupervisorIds.includes(u.id)} disabled={!u.active||userBusy||u.role==="admin"} onChange={async e=>{setUserBusy(true);try{await setRatingSupervisor(currentAdminUsername,adminPassword,u.id,e.target.checked);setRatingSupervisorIds(ids=>e.target.checked?[...ids,u.id]:ids.filter(id=>id!==u.id));setUserMsg(`${u.username} ${e.target.checked?"assigned as":"removed from"} Rating Supervisor.`);}catch(err:any){setUserMsg(err.message||"Could not update supervisor");}finally{setUserBusy(false);}}}/> Rating Supervisor</label>
             <button className="btn" type="button" onClick={()=>setUserForm({id:u.id,username:u.username,password:"",role:u.role,active:u.active})}>Edit</button><button className="btn" type="button" onClick={async()=>{try{await unlockAppUser(currentAdminUsername,adminPassword,u.id,u.username);unlockLocalLogin(u.username);setUserMsg(`Login lock cleared for ${u.username}.`);}catch(e:any){setUserMsg(e.message||"Could not unlock user");}}}>Unlock</button>
             <button className="btn" type="button" style={{background:"var(--red)"}} onClick={()=>void removeUser(u.id)}>Delete</button>
           </div>)}
